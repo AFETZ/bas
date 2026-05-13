@@ -17,8 +17,8 @@ services:
   # Gazebo + SITL на host-network: ardupilot_gazebo plugin использует
   # fdm_addr=127.0.0.1, поэтому SITL и Gazebo должны разделять loopback.
   # На WSL2 network_mode: "service:..." подвисает в Created-состоянии,
-  # поэтому используем host. На этапе 1.4 (ns-3 в радио-петле) перейдём
-  # на bridge + TAP/veth.
+  # поэтому используем host. На этапе 1.5.1 (ns-3 в радио-петле) используется
+  # отдельный compose-файл docker-compose.shared-netns.yml.
   gazebo:
     build:
       context: .

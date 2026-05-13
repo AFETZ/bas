@@ -1,0 +1,59 @@
+# Compose-файл для этапа 1.5.1: SITL+Gazebo в shared network namespace.
+#
+# Топология:
+#   uav-net   - pause-контейнер (Kubernetes pod sandbox pattern). Держит netns живым.
+#               В этот netns инжектируется veth-eth0 → br-ctrl-near (host-side).
+#   gazebo    - использует netns от uav-net (network_mode: container:bas-uav-net).
+#               FDM 9002/9003 ходит через loopback в этом netns.
+#   sitl      - использует тот же netns. MAVLink 5760 биндится на 0.0.0.0,
+#               внешне доступен только через eth0 → ns-3.
+#
+# Использование:
+#   docker compose -f docker-compose.shared-netns.yml up -d uav-net
+#   # инжектируем veth извне (см. scripts/run_stage_1_5_1.sh)
+#   docker compose -f docker-compose.shared-netns.yml up -d gazebo sitl
+#
+# Сборка не дублируется - используем уже собранные образы bas/gazebo-harmonic:dev и bas/ardupilot-sitl:dev.
+
+services:
+  uav-net:
+    image: busybox:latest
+    container_name: bas-uav-net
+    network_mode: none
+    # sleep infinity нужен чтобы контейнер не вышел и netns не уничтожилось.
+    # trap нужен чтобы реагировать на docker stop.
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+
+  gazebo:
+    image: bas/gazebo-harmonic:dev
+    container_name: bas-gazebo
+    network_mode: "container:bas-uav-net"
+    volumes:
+      - ./gazebo:/work/gazebo:ro
+      - ./logs:/work/logs
+    environment:
+      GZ_VERSION: harmonic
+    command: ["gz", "sim", "-s", "-r", "-v3", "iris_runway.sdf"]
+    depends_on:
+      uav-net:
+        condition: service_started
+
+  sitl:
+    image: bas/ardupilot-sitl:dev
+    container_name: bas-sitl
+    network_mode: "container:bas-uav-net"
+    volumes:
+      - ./ardupilot:/work/ardupilot:ro
+      - ./logs:/work/logs
+    command:
+      - /home/ardupilot/ardupilot/build/sitl/bin/arducopter
+      - -I0
+      - --model
+      - JSON
+      - --speedup
+      - "1"
+      - --defaults
+      - /home/ardupilot/ardupilot/Tools/autotest/default_params/gazebo-iris.parm
+    depends_on:
+      gazebo:
+        condition: service_started
