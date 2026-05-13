@@ -181,6 +181,9 @@ build_channel(const ChannelParams& p) {
     rate_ss << static_cast<uint64_t>(p.bandwidth_mbps * 1'000'000) << "bps";
     csma.SetChannelAttribute("DataRate", StringValue(rate_ss.str()));
     csma.SetChannelAttribute("Delay", TimeValue(MilliSeconds(p.delay_ms)));
+    // Большой DropTail queue — BDP для 20Mbps × 500ms RTT ~800 пакетов.
+    // Default 100p выкидывает ARP когда Gazebo Transport multicast наполняет канал.
+    csma.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue("5000p"));
 
     NetDeviceContainer devs = csma.Install(nodes);
 

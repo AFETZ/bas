@@ -106,10 +106,16 @@ up_channel() {
     ip link set "$veth_far"  netns "$netns_far"
 
     # 5. IP и UP внутри netns'ов.
-    # ВАЖНО: near (БАС-сторона) = .2, far (GCS-сторона) = .1.
-    # Это нужно потому что в этапе 1.5.0 host-gateway (.99) сидит на br-near.
-    ip netns exec "$netns_near" ip addr add "${subnet}.2/24" dev "$veth_near"
-    ip netns exec "$netns_far"  ip addr add "${subnet}.1/24" dev "$veth_far"
+    # NEAR netns (БАС-сторона) — по умолчанию БЕЗ IP. В этапе 1.5.1+ БАС-сторону
+    # обеспечивает pause-контейнер с собственным IP 10.10.0.2/24 в bas-uav netns,
+    # которое L2-связано через br-${chan}-near (см. run_stage_1_5_1_mission.sh).
+    # Если назначить .2 ещё и в bas-${chan}-near — получим ДВА ARP responder'а
+    # на один IP, что ломает соединение (особенно при больших задержках в ns-3).
+    # Чтобы воспроизвести legacy ping-тест 1.4-эпохи установите RADIO_NEAR_NETNS_IP=1.
+    if [ "${RADIO_NEAR_NETNS_IP:-0}" = "1" ]; then
+        ip netns exec "$netns_near" ip addr add "${subnet}.2/24" dev "$veth_near"
+    fi
+    ip netns exec "$netns_far" ip addr add "${subnet}.1/24" dev "$veth_far"
     ip netns exec "$netns_near" ip link set "$veth_near" up
     ip netns exec "$netns_far"  ip link set "$veth_far"  up
     ip netns exec "$netns_near" ip link set lo up
@@ -130,7 +136,11 @@ up_channel() {
 
     echo "  br-${chan}-{near,far}: up"
     echo "  tap-${chan}-{near,far}: user=${USER_NAME}, в bridge"
-    echo "  netns bas-${chan}-near (БАС-сторона):  ${subnet}.2/24"
+    if [ "${RADIO_NEAR_NETNS_IP:-0}" = "1" ]; then
+        echo "  netns bas-${chan}-near (БАС-сторона):  ${subnet}.2/24 (LEGACY: для ping-тестов)"
+    else
+        echo "  netns bas-${chan}-near (БАС-сторона):  L2-stub (без IP, BAS-side приходит из bas-uav)"
+    fi
     echo "  netns bas-${chan}-far  (GCS-сторона):  ${subnet}.1/24"
 }
 
