@@ -33,6 +33,15 @@ services:
       - ./logs:/work/logs
     environment:
       GZ_VERSION: harmonic
+      # Ограничиваем gz-transport на loopback. Без этого gz discovery шлёт
+      # multicast UDP 239.255.0.7 на eth0 (т.е. через ns-3), что забивает
+      # симулированный 20Мбит/с канал и ломает ARP/MAVLink для bas-ctrl-far.
+      # IGN_* — legacy для Ignition; GZ_* — для Gazebo Harmonic gz-transport13.
+      GZ_PARTITION: bas-uav-local
+      GZ_IP: 127.0.0.1
+      IGN_PARTITION: bas-uav-local
+      IGN_IP: 127.0.0.1
+      GZ_TRANSPORT_TOPIC_MULTICAST_NIC: lo
     command: ["gz", "sim", "-s", "-r", "-v3", "iris_runway.sdf"]
     depends_on:
       uav-net:

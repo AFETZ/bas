@@ -62,7 +62,8 @@ either dropped or arrives after Linux ARP solicit timeout (3 seconds).
 
 A. **Gazebo env vars** — set `GZ_PARTITION` / `GZ_TRANSPORT_TOPIC_MULTICAST_NIC=lo` in
    `docker-compose.shared-netns.yml` to force gz-transport onto loopback only. Most promising
-   path — addresses root cause directly.
+   path — addresses root cause directly. **APPLIED in v0.5** — works, gz multicast больше
+   не уходит через ns-3.
 
 B. **tc filter on `veth-uav-br`** — egress filter dropping IPv4 multicast at qdisc level.
    Should work in WSL2 where ebtables doesn't.
@@ -73,6 +74,36 @@ C. **Replace `tap-ctrl-near` bridge port mode** — make TapBridge see ONLY ARP 
 D. **Higher CSMA `DataRate`** — bumping channel bandwidth from 20 Mbps to e.g. 1 Gbps would
    reduce the simulated transmission delay component. But this affects the radio model
    semantics — defeats the purpose of "LoRa-like degraded channel".
+
+## Root cause #3: MAVLink TCP backlog in lossy channel (v0.5 partial — ARM works, TAKEOFF
+still fails)
+
+После фикса #1 и #2 ARM проходит в degraded_lora (250ms delay + 2% loss), но БАС
+авто-disarm'ится через 30с потому что TAKEOFF не реагирует. Глубокая причина — **TCP
+backlog**: MAVLink commands отправленные orchestrator'ом приходят к SITL с задержкой 8-22
+секунды (видно по COMMAND_ACK с large wall_time delta после command_long_send). При
+RTT=500ms + 2% loss TCP retransmits + slow-start вызывают throughput collapse.
+
+ARM удалось обойти через `_arm()` спамом 10 команд × 6 attempts (общее окно 6 минут).
+TAKEOFF/SET_POSITION_TARGET с такой стратегией не успели — auto-disarm срабатывает за 30с
+после ARM, а команды накапливаются в TCP-очереди.
+
+### Hypotheses for #3
+
+- Send ALL flight commands periodically (every 0.5s) instead of one-shot
+- Increase TCP send/recv buffers via PARAM_SET `TCP_NODELAY` or socket options
+- Use MAVLink 1 (smaller packets, faster propagation)
+- Lower the simulated loss from 2% to 0.5% for working degraded scenario
+- Don't auto-disarm: PARAM_SET `DISARM_DELAY` to long value
+
+### State per stage (post-v0.5)
+
+| Stage | Status |
+|---|---|
+| 1.4 (host network mission) | ✅ works |
+| 1.5.0 (shadow GCS in netns through ns-3) | ✅ works |
+| 1.5.1 wifi_good mission через ns-3 | ✅ works (mission landed) |
+| 1.5.1 degraded_lora mission через ns-3 | ⚠️ ARM works, TAKEOFF fails (RC #3 above) |
 
 ## Files involved in debug
 

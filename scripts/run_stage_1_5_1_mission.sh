@@ -134,12 +134,18 @@ done
 echo "[6/7] прогон миссии через ns-3 канал (orchestrator в bas-ctrl-far netns)"
 echo "  endpoint=tcp:10.10.0.2:5760 (через ns-3)"
 
+set +e
 ip netns exec bas-ctrl-far "${REPO_ROOT}/.venv/bin/bas-orchestrator" "${SCENARIO}" \
     --real --external-compose \
     --mavlink-endpoint tcp:10.10.0.2:5760 \
     --run-dir "${LOG_DIR}" \
     --project-root "${REPO_ROOT}" 2>&1 | tee "${LOG_DIR}/orchestrator_stdout.log"
 RC=${PIPESTATUS[0]}
+set -e
+
+# Save SITL logs for post-mortem (особенно про ARM).
+sg docker -c "docker logs bas-sitl 2>&1" > "${LOG_DIR}/sitl.log" 2>&1 || true
+sg docker -c "docker logs bas-gazebo 2>&1" > "${LOG_DIR}/gazebo.log" 2>&1 || true
 
 echo
 echo "[7/7] анализ"
