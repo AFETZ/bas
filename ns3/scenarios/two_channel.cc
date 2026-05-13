@@ -17,6 +17,7 @@
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/csma-module.h"
+#include "ns3/point-to-point-module.h"
 #include "ns3/tap-bridge-module.h"
 
 #include <fstream>
@@ -173,7 +174,8 @@ build_channel(const ChannelParams& p) {
     NodeContainer nodes;
     nodes.Create(2);
 
-    // CSMA как simulated wire с rate + delay.
+    // CSMA как simulated wire с rate + delay. TapBridge требует CSMA-совместимый
+    // NetDevice (P2P не поддерживается).
     CsmaHelper csma;
     std::ostringstream rate_ss;
     rate_ss << static_cast<uint64_t>(p.bandwidth_mbps * 1'000'000) << "bps";

@@ -28,12 +28,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Запустить с реальными компонентами через Docker (требует собранных образов).",
     )
+    parser.add_argument(
+        "--mavlink-endpoint",
+        default="tcp:127.0.0.1:5760",
+        help="MAVLink endpoint для подключения к SITL (по умолчанию loopback). "
+             "Для этапа 1.5.1+ через ns-3 указать tcp:10.10.0.2:5760.",
+    )
+    parser.add_argument(
+        "--external-compose",
+        action="store_true",
+        help="Контейнеры подняты внешним скриптом. Оркестратор НЕ делает compose up/down "
+             "и не ждёт open порт 5760 — сразу подключается к --mavlink-endpoint.",
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="Использовать заданный каталог прогона (а не генерировать). "
+             "Нужно когда host-скрипт уже создал каталог под run_id.",
+    )
     args = parser.parse_args(argv)
 
     run_dir = run_scenario(
         scenario_id=args.scenario_id,
         project_root=args.project_root,
         stub=not args.real,
+        mavlink_endpoint=args.mavlink_endpoint,
+        external_compose=args.external_compose,
+        run_dir_override=args.run_dir,
     )
     print(f"Прогон завершён. Логи: {run_dir}")
     return 0

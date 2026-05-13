@@ -42,12 +42,18 @@ class DockerComposeFlightStack:
         compose_file: Path,
         logger: EventLogger,
         mavlink_endpoint: str = "tcp:127.0.0.1:5760",
-        startup_timeout_s: float = 60.0,
+        startup_timeout_s: float = 120.0,
+        external_compose: bool = False,
     ) -> None:
+        """external_compose=True: контейнеры подняты внешним скриптом, оркестратор
+        НЕ делает docker compose up/down, не ждёт TCP-порт (предполагаем что он
+        уже открыт). Используется для этапов 1.5.1+ где host-скрипт управляет
+        жизненным циклом контейнеров и netns'ов."""
         self.compose_file = compose_file
         self.logger = logger
         self.mavlink_endpoint = mavlink_endpoint
         self.startup_timeout_s = startup_timeout_s
+        self.external_compose = external_compose
         self.mav: Optional[mavutil.mavfile] = None
         self._listener_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -66,16 +72,20 @@ class DockerComposeFlightStack:
     # ---------- lifecycle ----------
 
     def start(self) -> None:
-        self.logger.emit("component", component=self.name, phase="compose_up_start")
-        # docker compose up -d gazebo sitl
-        self._run_compose(["up", "-d", "--no-build", "gazebo", "sitl"])
-        self.logger.emit("component", component=self.name, phase="compose_up_done")
+        if not self.external_compose:
+            self.logger.emit("component", component=self.name, phase="compose_up_start")
+            self._run_compose(["up", "-d", "--no-build", "gazebo", "sitl"])
+            self.logger.emit("component", component=self.name, phase="compose_up_done")
 
-        if not self._wait_for_port(host="127.0.0.1", port=5760, timeout_s=self.startup_timeout_s):
-            raise RuntimeError(
-                f"MAVLink порт 5760 не открылся за {self.startup_timeout_s} с. "
-                "Проверьте `docker logs bas-sitl` и `docker logs bas-gazebo`."
-            )
+            if not self._wait_for_port(host="127.0.0.1", port=5760,
+                                       timeout_s=self.startup_timeout_s):
+                raise RuntimeError(
+                    f"MAVLink порт 5760 не открылся за {self.startup_timeout_s} с. "
+                    "Проверьте `docker logs bas-sitl` и `docker logs bas-gazebo`."
+                )
+        else:
+            self.logger.emit("component", component=self.name, phase="external_compose_assumed",
+                             endpoint=self.mavlink_endpoint)
 
         # SITL биндит порт сразу, но MAVLink-поток стартует только после
         # инициализации (EKF, GPS, sensors). До этого ранние подключения
@@ -141,9 +151,12 @@ class DockerComposeFlightStack:
                 self.mav.close()
             except Exception:
                 pass
-        self.logger.emit("component", component=self.name, phase="compose_down_start")
-        self._run_compose(["down", "-v"], check=False)
-        self.logger.emit("component", component=self.name, phase="compose_down_done")
+        if not self.external_compose:
+            self.logger.emit("component", component=self.name, phase="compose_down_start")
+            self._run_compose(["down", "-v"], check=False)
+            self.logger.emit("component", component=self.name, phase="compose_down_done")
+        else:
+            self.logger.emit("component", component=self.name, phase="external_compose_teardown_skipped")
 
     @property
     def is_complete(self) -> bool:

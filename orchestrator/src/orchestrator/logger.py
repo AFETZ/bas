@@ -42,7 +42,9 @@ class EventLogger:
         self._lock = threading.Lock()
         self._start_wall = time.time()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fp: TextIO = log_path.open("w", encoding="utf-8")
+        # buffering=1 = line buffered, ВАЖНО для отладки: события появляются в
+        # JSONL немедленно, не ждут заполнения 8KB block-буфера.
+        self._fp: TextIO = log_path.open("w", encoding="utf-8", buffering=1)
 
     def emit(self, event_type: str, **fields: Any) -> None:
         if event_type not in EVENT_TYPES:

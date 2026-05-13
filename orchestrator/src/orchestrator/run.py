@@ -20,13 +20,34 @@ def _new_run_id() -> str:
     return f"{ts}-{uuid.uuid4().hex[:8]}"
 
 
-def run_scenario(scenario_id: str, project_root: Path, *, stub: bool = True) -> Path:
-    """Прогнать сценарий, вернуть путь к каталогу с логами прогона."""
+def run_scenario(
+    scenario_id: str,
+    project_root: Path,
+    *,
+    stub: bool = True,
+    mavlink_endpoint: str = "tcp:127.0.0.1:5760",
+    external_compose: bool = False,
+    run_dir_override: Path | None = None,
+) -> Path:
+    """Прогнать сценарий, вернуть путь к каталогу с логами прогона.
+
+    Параметры:
+        mavlink_endpoint - адрес MAVLink (по умолчанию loopback; для радио-петли
+            передаётся IP внутри netns, например tcp:10.10.0.2:5760).
+        external_compose - True если контейнеры подняты внешним скриптом
+            (этап 1.5.1+); оркестратор не делает docker compose up/down.
+        run_dir_override - использовать заданный run_dir вместо генерации.
+            Нужно когда host-скрипт уже создал каталог.
+    """
     paths = Paths.from_root(project_root)
     scenario = load_scenario(scenario_id, paths)
 
-    run_id = _new_run_id()
-    run_dir = paths.logs / run_id
+    if run_dir_override is not None:
+        run_dir = run_dir_override
+        run_id = run_dir.name
+    else:
+        run_id = _new_run_id()
+        run_dir = paths.logs / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "events.jsonl"
 
@@ -35,7 +56,9 @@ def run_scenario(scenario_id: str, project_root: Path, *, stub: bool = True) -> 
         if stub:
             _run_stub(scenario, logger)
         else:
-            _run_real(scenario, logger, project_root=paths.root)
+            _run_real(scenario, logger, project_root=paths.root,
+                      mavlink_endpoint=mavlink_endpoint,
+                      external_compose=external_compose)
         _emit_run_end(logger, scenario)
 
     return run_dir
@@ -64,17 +87,26 @@ def _emit_run_end(logger: EventLogger, scenario: Scenario) -> None:
     logger.emit("run_end", scenario_id=scenario.scenario_id)
 
 
-def _run_real(scenario: Scenario, logger: EventLogger, project_root: Path) -> None:
+def _run_real(
+    scenario: Scenario,
+    logger: EventLogger,
+    project_root: Path,
+    *,
+    mavlink_endpoint: str = "tcp:127.0.0.1:5760",
+    external_compose: bool = False,
+) -> None:
     """Запуск через Docker compose (gazebo + sitl, реальная физика и MAVLink)."""
     from .real_components import DockerComposeFlightStack, MissionRunner
 
     compose_file = project_root / "docker-compose.yml"
-    if not compose_file.exists():
+    if not compose_file.exists() and not external_compose:
         raise FileNotFoundError(f"docker-compose.yml не найден: {compose_file}")
 
     stack = DockerComposeFlightStack(
         compose_file=compose_file,
         logger=logger,
+        mavlink_endpoint=mavlink_endpoint,
+        external_compose=external_compose,
     )
     stack.start()
 

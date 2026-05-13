@@ -119,16 +119,19 @@ up_channel() {
     #    проходили через bridge без вмешательства iptables.
     sysctl -w "net.bridge.bridge-nf-call-iptables=0" >/dev/null 2>&1 || true
 
-    # 7. Host-gateway IP на br-near: позволяет host-приложениям (socat-proxy)
-    # быть видимыми из far-netns через ns-3 (этап 1.5.0).
-    # Если в будущем SITL переедет в свой netns (этап 1.5.1), эту IP можно убрать.
-    ip addr add "${subnet}.99/24" dev "$br_near" 2>/dev/null || true
+    # 7. Host-gateway IP на br-near (опционально, для этапа 1.5.0).
+    # ВАЖНО: если включён, host kernel считает 10.10.0.0/24 локальной сетью,
+    # ARP-запросы к 10.10.0.2 могут уходить в LOCAL receive вместо tap → ns-3,
+    # что ломает радио-петлю в 1.5.1. Включается через RADIO_HOST_GATEWAY=1.
+    if [ "${RADIO_HOST_GATEWAY:-0}" = "1" ]; then
+        ip addr add "${subnet}.99/24" dev "$br_near" 2>/dev/null || true
+        echo "  br-${chan}-near host-gateway:          ${subnet}.99/24"
+    fi
 
     echo "  br-${chan}-{near,far}: up"
     echo "  tap-${chan}-{near,far}: user=${USER_NAME}, в bridge"
     echo "  netns bas-${chan}-near (БАС-сторона):  ${subnet}.2/24"
     echo "  netns bas-${chan}-far  (GCS-сторона):  ${subnet}.1/24"
-    echo "  br-${chan}-near host-gateway:          ${subnet}.99/24"
 }
 
 down_channel() {
