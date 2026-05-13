@@ -1,0 +1,24 @@
+# Простой маршрут БАС: взлёт, 4 точки, возврат к точке старта, посадка.
+# Координаты в локальной системе (метры от стартовой точки).
+
+mission_id: simple_route
+description: Прямоугольный маршрут с углами 50м, высота 30м.
+
+home:
+  lat: 55.7558      # Москва, демо-координата
+  lon: 37.6173
+  alt_m: 200.0      # AMSL стартовой площадки
+
+waypoints:
+  - {action: takeoff, alt_m: 30.0}
+  - {action: waypoint, x_m: 50.0,  y_m: 0.0,   alt_m: 30.0}
+  - {action: waypoint, x_m: 50.0,  y_m: 50.0,  alt_m: 30.0}
+  - {action: waypoint, x_m: 0.0,   y_m: 50.0,  alt_m: 30.0}
+  - {action: waypoint, x_m: 0.0,   y_m: 0.0,   alt_m: 30.0}
+  - {action: land}
+
+# Критерий "сценарий завершён":
+success_criteria:
+  - mission_state == "landed"
+  - position_error_m < 5.0      # на финальной точке
+  - timeout: false

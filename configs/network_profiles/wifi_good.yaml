@@ -1,0 +1,28 @@
+# Профиль "WiFi в нормальных условиях" для ns-3.
+# Соответствует контрольной точке в таблице 1 архитектурного документа.
+
+profile_id: wifi_good
+transport: udp
+link_type: wifi_ip
+description: WiFi/IP без существенной деградации. Используется как контроль.
+
+# Параметры применяются в ns-3 как атрибуты канала и узлов:
+parameters:
+  bandwidth_mbps: 20.0
+  delay_ms: 5
+  jitter_ms: 1
+  packet_loss_ratio: 0.0
+  outage_periods: []         # без разрывов связи
+
+# Параметры журналирования
+log_fields:
+  - flow_id
+  - packet_id
+  - tx_time
+  - rx_time
+  - drop_reason
+  - delay
+  - jitter
+  - throughput
+  - loss_ratio
+  - outage_state

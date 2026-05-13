@@ -1,0 +1,103 @@
+# Docker compose первого прототипа.
+#
+# Топология сетей:
+#   sim-net   - приватная "внутрисамолётная" сеть для FDM (Gazebo <-> SITL UDP 9002/9003).
+#               Это локальная физика, она НЕ должна проходить через ns-3.
+#   radio-net - внешняя радиосеть, через которую идёт MAVLink (НПУ <-> SITL) и
+#               видеопоток. На этап 1.2 это обычный docker bridge; на этапе 1.4
+#               сюда добавится ns-3 с TapBridge как man-in-the-middle.
+#
+# Сервисы:
+#   sitl        - ArduPilot SITL (arducopter --model JSON).
+#   gazebo      - Gazebo Sim Harmonic + ardupilot_gazebo plugin.
+#   ns3         - ns-3 RealTime + сценарий two_channel (этап 1.4, пока заглушка).
+#   orchestrator- Python оркестратор + анализатор.
+
+services:
+  # Gazebo + SITL на host-network: ardupilot_gazebo plugin использует
+  # fdm_addr=127.0.0.1, поэтому SITL и Gazebo должны разделять loopback.
+  # На WSL2 network_mode: "service:..." подвисает в Created-состоянии,
+  # поэтому используем host. На этапе 1.4 (ns-3 в радио-петле) перейдём
+  # на bridge + TAP/veth.
+  gazebo:
+    build:
+      context: .
+      dockerfile: docker/gazebo/Dockerfile
+    image: bas/gazebo-harmonic:dev
+    container_name: bas-gazebo
+    network_mode: host
+    volumes:
+      - ./gazebo:/work/gazebo:ro
+      - ./logs:/work/logs
+    environment:
+      GZ_VERSION: harmonic
+    command: ["gz", "sim", "-s", "-r", "-v3", "iris_runway.sdf"]
+
+  sitl:
+    build:
+      context: .
+      dockerfile: docker/ardupilot-sitl/Dockerfile
+    image: bas/ardupilot-sitl:dev
+    container_name: bas-sitl
+    network_mode: host
+    volumes:
+      - ./ardupilot:/work/ardupilot:ro
+      - ./logs:/work/logs
+    depends_on:
+      gazebo:
+        condition: service_started
+    command:
+      - /home/ardupilot/ardupilot/build/sitl/bin/arducopter
+      - -I0
+      - --model
+      - JSON
+      - --speedup
+      - "1"
+      - --defaults
+      - /home/ardupilot/ardupilot/Tools/autotest/default_params/gazebo-iris.parm
+
+  ns3:
+    build:
+      context: .
+      dockerfile: docker/ns3/Dockerfile
+    image: bas/ns3:dev
+    container_name: bas-ns3
+    networks:
+      radio-net:
+        aliases: [ns3]
+    cap_add:
+      - NET_ADMIN     # нужен для TapBridge
+    privileged: true  # упрощает работу с TUN/TAP в WSL2
+    volumes:
+      - ./ns3:/work/ns3:ro
+      - ./logs:/work/logs
+    environment:
+      NS3_SCENARIO: two_channel
+    # На этапе 1.2 ns-3 контейнер не запускается с compose; стартуется оркестратором
+    # на 1.4 (когда two_channel.cc будет полноценным).
+    profiles: ["radio"]
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/orchestrator/Dockerfile
+    image: bas/orchestrator:dev
+    container_name: bas-orchestrator
+    networks:
+      radio-net:
+        aliases: [orchestrator]
+    volumes:
+      - ./configs:/work/configs:ro
+      - ./logs:/work/logs
+      - ./orchestrator:/work/orchestrator:ro
+    # Оркестратор обычно запускают с host через ./scripts/run_scenario.sh,
+    # а не как compose-сервис. Этот блок - для случая запуска из контейнера.
+    profiles: ["docker-orch"]
+
+networks:
+  sim-net:
+    name: bas-sim-net
+    driver: bridge
+  radio-net:
+    name: bas-radio-net
+    driver: bridge

@@ -1,0 +1,10 @@
+# Не отправлять в build context (контекст = корень репо)
+logs/
+.venv/
+.git/
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/
+docs/
+README.md
+.gitignore

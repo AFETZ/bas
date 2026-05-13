@@ -1,0 +1,32 @@
+# Деградированный сценарий: тот же маршрут, узкополосный LoRa-подобный канал.
+# Должно быть видно влияние сетевого профиля на телеметрию и полезную нагрузку.
+
+scenario_id: degraded_lora
+description: Один БАС, маршрут тот же, канал управления LoRa-like (узкополосный, высокие задержки и потери).
+
+seed: 42
+
+mission:
+  ref: simple_route
+  vehicle: arducopter
+  max_duration_s: 240        # больше времени из-за задержек
+
+network:
+  control_channel:
+    profile: lora_narrowband
+  payload_channel:
+    profile: wifi_good       # видеоканал оставляем WiFi — деградируем только управление
+
+logging:
+  level: info
+  flush_every_s: 1.0
+
+components:
+  gazebo:
+    world: basic
+  ardupilot_sitl:
+    frame: gazebo-iris
+    parameters: default
+  ns3:
+    real_time: true
+    scenario: two_channel

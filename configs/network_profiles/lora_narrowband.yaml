@@ -1,0 +1,29 @@
+# Профиль "LoRa-подобный узкополосный канал" для ns-3.
+# Упрощённая сценарная модель, не настоящий LoRaWAN MAC.
+# Используется для демонстрации деградации в таблице 4 архитектурного документа.
+
+profile_id: lora_narrowband
+transport: udp
+link_type: lora_like
+description: Узкополосный канал с высокими задержками, потерями и периодическими разрывами связи.
+
+parameters:
+  bandwidth_mbps: 0.05      # ~50 kbps - порядок LoRaWAN полезной пропускной
+  delay_ms: 250
+  jitter_ms: 80
+  packet_loss_ratio: 0.02
+  outage_periods:           # [start_s, end_s] относительно начала прогона
+    - [10, 13]
+    - [25, 27]
+
+log_fields:
+  - flow_id
+  - packet_id
+  - tx_time
+  - rx_time
+  - drop_reason
+  - delay
+  - jitter
+  - throughput
+  - loss_ratio
+  - outage_state

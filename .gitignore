@@ -1,0 +1,30 @@
+# logs - per-run output
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Docker
+.docker-state/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+build/
+dist/
+ns3/build/

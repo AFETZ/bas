@@ -1,0 +1,32 @@
+# Baseline сценарий: один БАС, простой маршрут, WiFi-канал без деградации.
+# Демонстрирует факт завершения маршрута и единый журнал без сетевых эффектов.
+
+scenario_id: baseline_wifi
+description: Один БАС летит по простому маршруту, канал управления WiFi без потерь.
+
+seed: 42
+
+mission:
+  ref: simple_route          # ссылка на configs/missions/simple_route.yaml
+  vehicle: arducopter
+  max_duration_s: 180        # жёсткий тайм-аут оркестратора
+
+network:
+  control_channel:
+    profile: wifi_good       # ссылка на configs/network_profiles/wifi_good.yaml
+  payload_channel:
+    profile: wifi_good       # на baseline видеоданные идут через тот же профиль
+
+logging:
+  level: info
+  flush_every_s: 1.0
+
+components:
+  gazebo:
+    world: basic
+  ardupilot_sitl:
+    frame: gazebo-iris
+    parameters: default
+  ns3:
+    real_time: true
+    scenario: two_channel
