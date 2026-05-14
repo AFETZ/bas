@@ -75,6 +75,47 @@ D. **Higher CSMA `DataRate`** — bumping channel bandwidth from 20 Mbps to e.g.
    reduce the simulated transmission delay component. But this affects the radio model
    semantics — defeats the purpose of "LoRa-like degraded channel".
 
+## Root cause #4 (v0.6): MAVLink mission upload OPERATION_CANCELLED в degraded_lora
+
+После реализации AUTO-режима (mission upload + AUTO mode + MISSION_START — Codex'овский
+вариант для устойчивости к live-control потерям) проблема сместилась с TAKEOFF на сам
+mission upload. ArduPilot отвечает MISSION_ACK type=15 (OPERATION_CANCELLED) во время
+upload. Причина: TCP head-of-line blocking настолько серьёзный что между SITL'овым
+MISSION_REQUEST(seq=N) и нашим MISSION_ITEM(seq=N) проходит >ArduPilot's internal
+mission timeout (~5s), и ArduPilot отменяет upload.
+
+AUTO режим verified working на wifi_good: 1824 flight events, max alt 30.04m, mission
+landed at +195s. degraded_lora — OPERATION_CANCELLED посреди upload (item seq=0
+переотправлен 4 раза, потом cancel).
+
+### Hypotheses for #4
+
+A. **UDP MAVLink через socat sidecar в bas-uav netns** — обходит TCP HoL blocking.
+   `socat TCP4:127.0.0.1:5760 UDP4-LISTEN:14550,reuseaddr` запускается рядом с SITL,
+   orchestrator подключается по `udp:10.10.0.2:14550`. UDP пакеты не queue-ятся,
+   каждый MAVLink-message отправляется независимо. Mission upload protocol сам
+   retransmits лост-айтемы. Самый чистый путь.
+
+B. **MAVProxy между SITL и ns-3** — MAVProxy known-good в lossy MAVLink сценариях
+   (используется в реальных дронах с радио). Запустить mavproxy в SITL netns,
+   bridge TCP-SITL ↔ UDP-out:14550.
+
+C. **TCP_NODELAY + increased buffer** в pymavlink — паллиатив, не решает root cause.
+
+D. **"Less degraded" профиль** — уменьшить delay до 100ms или loss до 0.5% где
+   MAVLink mission upload успевает в SITL timeout. Это "characterization" подход.
+
+### State per stage (post-v0.6)
+
+| Stage | Status |
+|---|---|
+| 1.4 (host network mission) | ✅ works |
+| 1.5.0 (shadow GCS in netns through ns-3) | ✅ works |
+| 1.5.1 wifi_good via ns-3 (GUIDED) | ✅ works |
+| 1.5.1 wifi_good via ns-3 (AUTO, v0.6) | ✅ works (mission upload + autonomous flight) |
+| 1.5.1 degraded_lora via ns-3 (GUIDED) | ❌ TCP HoL → TAKEOFF не доходит |
+| 1.5.1 degraded_lora via ns-3 (AUTO, v0.6) | ❌ MAVLink mission upload OPERATION_CANCELLED |
+
 ## Root cause #3: MAVLink TCP backlog in lossy channel (v0.5 partial — ARM works, TAKEOFF
 still fails)
 

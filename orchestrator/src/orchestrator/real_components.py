@@ -67,6 +67,10 @@ class DockerComposeFlightStack:
         self.last_gps_fix: int = 0
         self.home_position: Optional[tuple[float, float, float]] = None  # lat, lon, alt_m
         self.mission_state: str = ""
+        # Mission upload protocol state
+        self.last_mission_request: Optional[tuple[int, float]] = None  # (seq, wall_time)
+        self.last_mission_ack: Optional[tuple[int, float]] = None  # (type, wall_time)
+        self.last_mission_current_seq: int = 0
         self._lock = threading.Lock()
 
     # ---------- lifecycle ----------
@@ -255,6 +259,8 @@ class DockerComposeFlightStack:
                 alt_amsl_m=msg.altitude / 1000.0,
             )
         elif t == "MISSION_CURRENT":
+            with self._lock:
+                self.last_mission_current_seq = int(msg.seq)
             self.logger.emit(
                 "control_telemetry",
                 sim_time=sim_time,
@@ -279,13 +285,35 @@ class DockerComposeFlightStack:
                 severity=int(msg.severity),
                 text=text,
             )
-            # Распознаём ИСТИННУЮ посадку: "land complete" - явный сигнал
-            # ArduCopter после успешного LAND mode. "Disarming" + alt<1m НЕ
-            # достаточно — может быть auto-disarm из-за того что не взлетел.
             lower = text.lower()
             if "land complete" in lower:
                 with self._lock:
                     self.mission_state = "landed"
+        elif t == "MISSION_REQUEST" or t == "MISSION_REQUEST_INT":
+            with self._lock:
+                self.last_mission_request = (int(msg.seq), time.time())
+            self.logger.emit(
+                "control_telemetry",
+                sim_time=sim_time,
+                message_type=t,
+                seq=int(msg.seq),
+            )
+        elif t == "MISSION_ACK":
+            with self._lock:
+                self.last_mission_ack = (int(msg.type), time.time())
+            self.logger.emit(
+                "control_telemetry",
+                sim_time=sim_time,
+                message_type="MISSION_ACK",
+                ack_type=int(msg.type),  # 0=ACCEPTED 1=ERROR 2=UNSUPPORTED_FRAME ...
+            )
+        elif t == "MISSION_ITEM_REACHED":
+            self.logger.emit(
+                "control_telemetry",
+                sim_time=sim_time,
+                message_type="MISSION_ITEM_REACHED",
+                seq=int(msg.seq),
+            )
 
 
 # -----------------------------------------------------------------------------
@@ -315,38 +343,257 @@ class MissionRunner:
         self.logger = logger
 
     def upload_and_start(self, *, gps_wait_timeout_s: float = 60.0) -> None:
-        """Выполнить миссию в GUIDED режиме (без mission upload протокола).
+        """Выбирает стратегию полёта: AUTO (mission upload) или GUIDED (live commands).
 
-        Поток: GPS -> home -> GUIDED -> ARM -> цикл по waypoints через
-        SET_POSITION_TARGET_GLOBAL_INT -> LAND. Завершение фиксируется по
-        STATUSTEXT "land complete" в листенере либо по достижению последнего WP.
+        AUTO режим устойчивее к lossy MAVLink каналу - mission upload протокол
+        имеет встроенные ретраи (SITL пере-запрашивает потерянные items), и
+        после MISSION_START БАС летит автономно без необходимости в live
+        SET_POSITION_TARGET каждый шаг. Этот режим выбран по умолчанию.
+
+        GUIDED режим (старый): постоянно шлёт команды через канал, чувствителен
+        к head-of-line blocking в TCP при потерях.
         """
         assert self.stack.mav is not None
 
-        # 1. Дождаться 3D-GPS-фикса.
         self._wait_for_gps_fix(min_fix=3, timeout_s=gps_wait_timeout_s)
-
-        # 2. SITL home как точка отсчёта (YAML home - только метаданные).
         home_lat, home_lon, home_alt = self._wait_for_home(timeout_s=30.0)
         self.logger.emit("component", component=self.name, phase="using_sitl_home",
                          lat=home_lat, lon=home_lon, alt=home_alt)
 
-        # 3. GUIDED + ARM.
-        self._set_mode("GUIDED")
-        self._arm()
+        # AUTO режим через mission upload.
+        self._set_mode("GUIDED")  # сначала GUIDED чтобы upload mission работал
+        self._disable_arming_check()
+        time.sleep(2.0)
 
-        # 4. Запустить миссию в фоновом потоке (run.py наблюдает за stack.is_complete).
+        items = self._build_auto_mission(home_lat, home_lon, home_alt)
+        self._upload_mission(items)
+        self._set_mode("AUTO")
+        self._arm()
+        self._mission_start()
+
+        # Запустить наблюдение за миссией в фоне.
         threading.Thread(
-            target=self._fly_mission,
-            args=(home_lat, home_lon),
+            target=self._fly_auto_mission,
+            args=(home_lat, home_lon, len(items)),
             name="mission-runner",
             daemon=True,
         ).start()
         self.logger.emit("component", component=self.name, phase="mission_started",
-                         n_waypoints=len(self._waypoints_xyz()))
+                         n_waypoints=len(items), mode="AUTO")
+
+    def _build_auto_mission(self, home_lat: float, home_lon: float,
+                            home_alt: float) -> list:
+        """Собрать MISSION_ITEM_INT'ы для AUTO режима.
+
+        ArduCopter ожидает:
+          item 0: HOME (frame=GLOBAL, cmd=NAV_WAYPOINT, current=1, lat/lon/alt home)
+          item 1: TAKEOFF (cmd=NAV_TAKEOFF, frame=GLOBAL_RELATIVE_ALT, alt=takeoff_alt)
+          item 2..N: WAYPOINTs (cmd=NAV_WAYPOINT, frame=GLOBAL_RELATIVE_ALT)
+          item last: LAND (cmd=NAV_LAND)
+        """
+        from pymavlink.dialects.v20 import ardupilotmega as mavlink
+        items = []
+        seq = 0
+        # item 0: HOME (любой mission в ArduCopter требует первый item=home).
+        items.append(mavlink.MAVLink_mission_item_int_message(
+            target_system=self.stack._sys_id,
+            target_component=self.stack._comp_id,
+            seq=seq,
+            frame=mavlink.MAV_FRAME_GLOBAL,
+            command=mavlink.MAV_CMD_NAV_WAYPOINT,
+            current=1, autocontinue=1,
+            param1=0, param2=0, param3=0, param4=0,
+            x=int(home_lat * 1e7), y=int(home_lon * 1e7),
+            z=float(home_alt),
+            mission_type=0,
+        ))
+        seq += 1
+
+        # Mission items из YAML waypoints.
+        wps = self._waypoints_xyz()
+        for wp in wps:
+            if wp.is_takeoff:
+                lat, lon = home_lat, home_lon
+                cmd = mavlink.MAV_CMD_NAV_TAKEOFF
+                alt = wp.z
+            elif wp.is_land:
+                lat, lon = 0.0, 0.0  # 0,0 = land at current position
+                cmd = mavlink.MAV_CMD_NAV_LAND
+                alt = 0.0
+            else:
+                lat, lon = self._offset_lat_lon(home_lat, home_lon, wp.x, wp.y)
+                cmd = mavlink.MAV_CMD_NAV_WAYPOINT
+                alt = wp.z
+            items.append(mavlink.MAVLink_mission_item_int_message(
+                target_system=self.stack._sys_id,
+                target_component=self.stack._comp_id,
+                seq=seq,
+                frame=mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                command=cmd,
+                current=0, autocontinue=1,
+                param1=0, param2=0, param3=0, param4=0,
+                x=int(lat * 1e7), y=int(lon * 1e7),
+                z=float(alt),
+                mission_type=0,
+            ))
+            seq += 1
+
+        self.logger.emit("component", component=self.name, phase="mission_built",
+                         n_items=len(items))
+        return items
+
+    def _upload_mission(self, items: list) -> None:
+        """Загрузить миссию в SITL через стандартный MAVLink protocol.
+
+        Протокол:
+            GCS -> MISSION_COUNT(n)
+            SITL -> MISSION_REQUEST/MISSION_REQUEST_INT(seq=0)
+            GCS -> MISSION_ITEM_INT(seq=0)
+            SITL -> MISSION_REQUEST(seq=1) ... (retry on loss)
+            GCS -> MISSION_ITEM_INT(seq=1)
+            ...
+            SITL -> MISSION_ACK(type=0=ACCEPTED)
+        В lossy канале SITL сам пере-запрашивает потерянные item'ы.
+        """
+        mav = self.stack.mav
+        assert mav is not None
+        n = len(items)
+        self.logger.emit("component", component=self.name, phase="mission_upload_start",
+                         n_items=n)
+
+        # Reset listener state for upload protocol.
+        with self.stack._lock:
+            self.stack.last_mission_request = None
+            self.stack.last_mission_ack = None
+
+        # Шлём ONE MISSION_COUNT. КАЖДЫЙ повтор cancel-ит активную upload-сессию
+        # (ArduPilot отвечает MISSION_ACK type=15 OPERATION_CANCELLED).
+        # Resend только если 60s+ нет MISSION_REQUEST.
+        mav.mav.mission_count_send(
+            self.stack._sys_id, self.stack._comp_id, n, mission_type=0,
+        )
+        count_sent_at = time.time()
+        last_request_at = 0.0  # время последнего MISSION_REQUEST от SITL
+
+        upload_deadline = time.time() + 180
+        next_seq = 0
+        while time.time() < upload_deadline:
+            with self.stack._lock:
+                ack = self.stack.last_mission_ack
+                req = self.stack.last_mission_request
+
+            if ack is not None:
+                ack_type, _ = ack
+                if ack_type == 0:
+                    self.logger.emit("component", component=self.name,
+                                     phase="mission_upload_ack", ack_type=ack_type)
+                    return
+                raise RuntimeError(f"MISSION_ACK error type={ack_type}")
+
+            if req is not None:
+                req_seq, req_t = req
+                last_request_at = req_t
+                if req_seq < n:
+                    try:
+                        mav.mav.send(items[req_seq])
+                    except Exception as exc:
+                        self.logger.emit("component", component=self.name,
+                                         phase="mission_item_send_error",
+                                         seq=req_seq, error=repr(exc))
+                    self.logger.emit("component", component=self.name,
+                                     phase="mission_item_sent", seq=req_seq)
+                    next_seq = max(next_seq, req_seq + 1)
+                    with self.stack._lock:
+                        self.stack.last_mission_request = None
+
+            # Если SITL замолчал (нет MISSION_REQUEST 60s от COUNT или прошлого
+            # request) — пере-шлём COUNT для перезапуска протокола.
+            silence_from = max(count_sent_at, last_request_at)
+            if time.time() - silence_from > 60.0:
+                mav.mav.mission_count_send(
+                    self.stack._sys_id, self.stack._comp_id, n, mission_type=0,
+                )
+                count_sent_at = time.time()
+                with self.stack._lock:
+                    self.stack.last_mission_ack = None
+                    self.stack.last_mission_request = None
+                self.logger.emit("component", component=self.name,
+                                 phase="mission_count_resent_after_silence", n=n,
+                                 next_seq=next_seq)
+                next_seq = 0
+            time.sleep(0.3)
+
+        raise RuntimeError(f"Mission upload не завершён за 180s (next_seq={next_seq}/{n})")
+
+    def _mission_start(self) -> None:
+        """Send MAV_CMD_MISSION_START via command_long."""
+        mav = self.stack.mav
+        assert mav is not None
+        for _ in range(3):
+            mav.mav.command_long_send(
+                self.stack._sys_id, self.stack._comp_id,
+                mavutil.mavlink.MAV_CMD_MISSION_START,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            )
+            time.sleep(0.5)
+        self.logger.emit("component", component=self.name, phase="mission_start_sent")
+
+    def _fly_auto_mission(self, home_lat: float, home_lon: float, n_items: int) -> None:
+        """Мониторинг AUTO миссии: ждём пока БАС долетит и landed."""
+        # Стартовая высота и переход в landed.
+        # Ждём пока mission_state="landed" (set по STATUSTEXT "Land complete")
+        # ИЛИ MISSION_CURRENT.seq дойдёт до n_items-1 (LAND) и alt < 1m.
+        wall_start = time.time()
+        max_wait_s = 300  # 5 минут на всю миссию
+
+        # Phase 1: ждём takeoff (alt > 5m или MISSION_CURRENT >= 2)
+        while time.time() - wall_start < 90:
+            _, _, alt = self.stack.last_position
+            seq = self.stack.last_mission_current_seq
+            if alt > 5.0 or seq >= 2:
+                self.logger.emit("component", component=self.name,
+                                 phase="takeoff_observed", alt=alt, mission_seq=seq)
+                break
+            time.sleep(1.0)
+        else:
+            self.logger.emit("component", component=self.name, phase="takeoff_not_observed",
+                             alt=self.stack.last_position[2],
+                             mission_seq=self.stack.last_mission_current_seq)
+            with self.stack._lock:
+                self.stack.mission_state = "failed"
+            return
+
+        # Phase 2: ждём landed.
+        while time.time() - wall_start < max_wait_s:
+            if self.stack.mission_state == "landed":
+                self.logger.emit("component", component=self.name,
+                                 phase="mission_complete", final_state="landed")
+                return
+            seq = self.stack.last_mission_current_seq
+            _, _, alt = self.stack.last_position
+            if seq >= n_items - 1 and alt < 1.0:
+                with self.stack._lock:
+                    self.stack.mission_state = "landed"
+                self.logger.emit("component", component=self.name,
+                                 phase="mission_complete", final_state="landed",
+                                 last_seq=seq)
+                return
+            time.sleep(2.0)
+
+        self.logger.emit("component", component=self.name, phase="mission_timeout",
+                         mission_seq=self.stack.last_mission_current_seq,
+                         alt=self.stack.last_position[2])
+        with self.stack._lock:
+            self.stack.mission_state = "failed"
 
     def _fly_mission(self, home_lat: float, home_lon: float) -> None:
         wps = self._waypoints_xyz()
+        # Текущий streaming-target: непрерывно шлётся 2Гц независимо от потери
+        # отдельных пакетов. {lat, lon, alt_rel_m} or None для остановки потока.
+        self._stream_target: Optional[tuple[float, float, float]] = None
+        self._stream_stop = threading.Event()
+        threading.Thread(target=self._streaming_target_loop, daemon=True,
+                         name="pos-target-stream").start()
         try:
             for idx, wp in enumerate(wps):
                 self._fly_one_waypoint(idx, wp, home_lat, home_lon)
@@ -355,7 +602,9 @@ class MissionRunner:
                              error=repr(exc))
             with self.stack._lock:
                 self.stack.mission_state = "failed"
+            self._stream_stop.set()
             return
+        self._stream_stop.set()
         # Если последний WP не был LAND - всё равно посадить.
         if not any(w.is_land for w in wps):
             self._land()
@@ -376,16 +625,51 @@ class MissionRunner:
                          idx=idx, x=wp.x, y=wp.y, z=wp.z,
                          is_takeoff=wp.is_takeoff, is_land=wp.is_land)
         if wp.is_takeoff:
+            # NAV_TAKEOFF переводит ArduCopter из landed в active flight.
+            # Stream NE запускается во время takeoff - меньше TCP backlog,
+            # ArduCopter сам тянет вверх через NAV_TAKEOFF.
             self._takeoff(wp.z)
-            self._wait_for_altitude(wp.z, tolerance_m=1.5, timeout_s=45.0)
+            self._wait_for_altitude(wp.z, tolerance_m=1.5, timeout_s=120.0)
+            # После взлёта запускаем streaming для waypoint'ов.
+            self._stream_target = (home_lat, home_lon, wp.z)
         elif wp.is_land:
+            # Останавливаем поток позиций и переходим в LAND mode.
+            self._stream_target = None
+            time.sleep(0.5)
             self._land()
-            self._wait_for_landed(timeout_s=120.0)
+            self._wait_for_landed(timeout_s=180.0)
         else:
             lat, lon = self._offset_lat_lon(home_lat, home_lon, wp.x, wp.y)
-            self._send_position_target(lat, lon, wp.z)
-            self._wait_for_position(lat, lon, wp.z, tolerance_m=3.0, timeout_s=60.0)
+            # Обновляем поток на новую цель - streaming loop её будет долбить.
+            self._stream_target = (lat, lon, wp.z)
+            self._wait_for_position(lat, lon, wp.z, tolerance_m=3.0, timeout_s=90.0)
         self.logger.emit("component", component=self.name, phase="waypoint_done", idx=idx)
+
+    def _streaming_target_loop(self) -> None:
+        """Фоновый поток: непрерывно шлёт self._stream_target в SITL с частотой 2Гц.
+
+        Защищает полётный контур от потерь пакетов в lossy канале. ArduCopter
+        принимает повторы как обновление цели - без проблем.
+        """
+        mav = self.stack.mav
+        assert mav is not None
+        type_mask = 0b110_111_111_000
+        while not self._stream_stop.is_set():
+            target = self._stream_target
+            if target is not None:
+                lat, lon, alt = target
+                try:
+                    mav.mav.set_position_target_global_int_send(
+                        int(time.time() * 1000) & 0xFFFFFFFF,
+                        self.stack._sys_id, self.stack._comp_id,
+                        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                        type_mask,
+                        int(lat * 1e7), int(lon * 1e7), float(alt),
+                        0, 0, 0, 0, 0, 0, 0, 0,
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.5)
 
     # ---------- internals ----------
 
@@ -438,12 +722,26 @@ class MissionRunner:
                          lat=lat, lon=lon, alt_rel_m=alt_rel_m, repeats=repeats)
 
     def _wait_for_altitude(self, target_alt_m: float, tolerance_m: float, timeout_s: float) -> None:
+        """Ждём target_alt с периодическим re-send NAV_TAKEOFF (раз в 10с)."""
+        mav = self.stack.mav
+        assert mav is not None
         deadline = time.time() + timeout_s
+        last_resend = time.time()
         while time.time() < deadline:
             _, _, alt = self.stack.last_position
             if abs(alt - target_alt_m) <= tolerance_m:
                 return
-            time.sleep(0.3)
+            # Re-send TAKEOFF every 10s in case earlier was lost.
+            if time.time() - last_resend > 10.0 and alt < 1.0:
+                mav.mav.command_long_send(
+                    self.stack._sys_id, self.stack._comp_id,
+                    mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+                    0, 0, 0, 0, 0, 0, 0, target_alt_m,
+                )
+                last_resend = time.time()
+                self.logger.emit("component", component=self.name,
+                                 phase="takeoff_resent", alt_m=target_alt_m)
+            time.sleep(0.5)
         raise TimeoutError(f"высота {target_alt_m:.1f}m не достигнута за {timeout_s}s "
                           f"(текущая {self.stack.last_position[2]:.2f})")
 
@@ -520,21 +818,28 @@ class MissionRunner:
         time.sleep(0.5)
 
     def _disable_arming_check(self) -> None:
-        """Установить ARMING_CHECK=0 через PARAM_SET перед arm.
+        """Установить ARMING_CHECK=0 + DISARM_DELAY=0 через PARAM_SET.
 
         В degraded_lora канале pre-arm проходит, но финальное MAV_CMD_ARM
         иногда теряется или ArduCopter не отвечает COMMAND_ACK через lossy
-        link. ARMING_CHECK=0 убирает все checks - arm проходит безусловно.
-        Это допустимо для контролируемого test bench.
+        link. ARMING_CHECK=0 убирает все checks. DISARM_DELAY=0 отключает
+        auto-disarm (по дефолту 10с после ARM без throttle) - нужно потому
+        что TAKEOFF в lossy канале может прийти спустя 30+ секунд после ARM.
         """
         mav = self.stack.mav
         assert mav is not None
+        params = [
+            (b"ARMING_CHECK", 0.0),
+            (b"DISARM_DELAY", 0.0),
+        ]
         for _ in range(3):
-            mav.mav.param_set_send(
-                self.stack._sys_id, self.stack._comp_id,
-                b"ARMING_CHECK", 0.0, mavutil.mavlink.MAV_PARAM_TYPE_INT32,
-            )
-            time.sleep(0.5)
+            for name, value in params:
+                mav.mav.param_set_send(
+                    self.stack._sys_id, self.stack._comp_id,
+                    name, value, mavutil.mavlink.MAV_PARAM_TYPE_INT32,
+                )
+                time.sleep(0.2)
+            time.sleep(0.3)
         self.logger.emit("component", component=self.name, phase="arming_check_disabled")
 
     def _arm(self, *, settle_wait_s: float = 70.0, retries: int = 6) -> None:
@@ -552,52 +857,45 @@ class MissionRunner:
                          wait_s=settle_wait_s)
         time.sleep(settle_wait_s)
 
-        # Снимаем все arming checks - в lossy ns-3 канале они мешают.
+        # Снимаем все arming checks (важно для lossy канала где telemetry разорвана).
         self._disable_arming_check()
-        time.sleep(2.0)
+        time.sleep(3.0)
 
-        # Стратегия для lossy канала: спамим много ARM команд, потом ждём долго.
-        # HEARTBEAT 1Hz приходит с потерями ~60%; шанс увидеть armed=True
-        # за 30s окно при реально арм'е - 99%+.
+        # СТРАТЕГИЯ "polite client": не спамим, а ждём долго каждую попытку.
+        # В lossy канале спам ARM создаёт TCP backlog и блокирует TAKEOFF.
+        # Шлём ровно ОДНУ ARM команду, ждём 60s появления armed=True в HEARTBEAT.
+        # При неудаче повторяем.
         for attempt in range(1, retries + 1):
-            force = True  # всегда force в lossy канале
             self.logger.emit("component", component=self.name, phase="arm_attempt",
-                             attempt=attempt, force=force)
-            # Спам 10 ARM команд с интервалом 0.5s = 5 секунд флуда.
-            for _ in range(10):
-                mav.mav.command_long_send(
-                    self.stack._sys_id, self.stack._comp_id,
-                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                    0, 1, 21196.0, 0, 0, 0, 0, 0,
-                )
-                if self.stack.last_armed:
-                    self.logger.emit("component", component=self.name, phase="armed",
-                                     attempt=attempt, force=force, fast_path=True)
-                    return
-                time.sleep(0.5)
-            # Долгое окно для прихода HEARTBEAT с armed=True (учитывая потери).
-            deadline = time.time() + 30
+                             attempt=attempt, force=True)
+            mav.mav.command_long_send(
+                self.stack._sys_id, self.stack._comp_id,
+                mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                0, 1, 21196.0, 0, 0, 0, 0, 0,
+            )
+            deadline = time.time() + 60
             while time.time() < deadline:
                 if self.stack.last_armed:
                     self.logger.emit("component", component=self.name, phase="armed",
-                                     attempt=attempt, force=force)
+                                     attempt=attempt)
                     return
                 time.sleep(0.5)
 
         raise RuntimeError(
-            f"Автопилот не армится за {retries} попыток (всего {retries*10} ARM команд). "
-            "Смотрите STATUSTEXT 'Arm: ...' и sitl.log в events.jsonl."
+            f"Автопилот не армится за {retries}×60s попыток. "
+            "Смотрите STATUSTEXT 'Arm: ...' и sitl.log."
         )
 
     def _takeoff(self, alt_m: float) -> None:
+        """ОДНА NAV_TAKEOFF команда + повтор раз в 5s если высота не растёт.
+
+        В lossy TCP канале спам команд создаёт backlog. Лучше slow-and-steady.
+        """
         mav = self.stack.mav
         assert mav is not None
-        # Спамим TAKEOFF командой 10 раз - в lossy канале одиночка часто теряется.
-        for _ in range(10):
-            mav.mav.command_long_send(
-                self.stack._sys_id, self.stack._comp_id,
-                mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-                0, 0, 0, 0, 0, 0, 0, alt_m,
-            )
-            time.sleep(0.3)
+        mav.mav.command_long_send(
+            self.stack._sys_id, self.stack._comp_id,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0, 0, 0, 0, 0, 0, 0, alt_m,
+        )
         self.logger.emit("component", component=self.name, phase="takeoff_sent", alt_m=alt_m)

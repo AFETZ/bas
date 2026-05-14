@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .load import find_run_dir, load_events
+from .load import find_run_dir, load_run_events
 from .metrics import compute
 from .report import to_markdown
 
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Не найден журнал событий: {log_path}", file=sys.stderr)
         return 2
 
-    events = load_events(log_path)
+    events = load_run_events(run_dir)
     report = compute(events)
     md = to_markdown(report)
 

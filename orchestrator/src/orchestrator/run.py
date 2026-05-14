@@ -134,8 +134,16 @@ def _run_real(
                 last_status_emit = now
 
             if stack.is_complete:
-                logger.emit("scenario", sim_time=now - wall_start, status="success",
-                            reason="mission_landed")
+                # Статус сценария отражает реальный mission_state, а не всегда success.
+                state = stack.mission_state
+                if state == "landed":
+                    status, reason = "success", "mission_landed"
+                elif state == "complete":
+                    status, reason = "success", "mission_complete"
+                else:  # "failed"
+                    status, reason = "failed", f"mission_state={state}"
+                logger.emit("scenario", sim_time=now - wall_start,
+                            status=status, reason=reason)
                 break
             if now > deadline:
                 logger.emit("scenario", sim_time=now - wall_start, status="timeout",

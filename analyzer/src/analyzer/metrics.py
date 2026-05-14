@@ -24,6 +24,7 @@ class FlowMetrics:
     bytes_sent: int = 0
     bytes_delivered: int = 0
     duration_s: float = 0.0
+    configured_delay_s: float | None = None
 
     @property
     def pdr(self) -> float:
@@ -39,11 +40,15 @@ class FlowMetrics:
 
     @property
     def mean_delay_ms(self) -> float:
+        if not self.delays_s and self.configured_delay_s is not None:
+            return 1000.0 * self.configured_delay_s
         return 1000.0 * statistics.mean(self.delays_s) if self.delays_s else 0.0
 
     @property
     def p95_delay_ms(self) -> float:
         if not self.delays_s:
+            if self.configured_delay_s is not None:
+                return 1000.0 * self.configured_delay_s
             return 0.0
         sorted_d = sorted(self.delays_s)
         k = max(0, int(0.95 * len(sorted_d)) - 1)
@@ -119,6 +124,8 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
 
     first_pkt_time: dict[str, float] = {}
     last_pkt_time: dict[str, float] = {}
+    prev_aggregate_tx: dict[str, int] = {}
+    configured_delays_s: dict[str, float] = {}
 
     # для подсчёта траектории по двум форматам позиции
     prev_pos_xyz: tuple[float, float, float] | None = None
@@ -138,6 +145,13 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
             scenario_status = ev.get("status", scenario_status)
 
         elif et == "component":
+            if ev.get("component") == "ns3" and ev.get("phase") == "start":
+                ctrl = ev.get("ctrl", {})
+                pload = ev.get("pload", {})
+                if "delay_ms" in ctrl:
+                    configured_delays_s["control"] = float(ctrl["delay_ms"]) / 1000.0
+                if "delay_ms" in pload:
+                    configured_delays_s["payload"] = float(pload["delay_ms"]) / 1000.0
             # Реальный режим: mission-runner emits waypoint_start/_done/mission_started с n_waypoints.
             if ev.get("component", "").startswith("mission-runner"):
                 phase = ev.get("phase")
@@ -194,6 +208,33 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
         elif et in ("network", "payload"):
             flow_id = ev.get("flow_id", "<unknown>")
             fm = flows.setdefault(flow_id, FlowMetrics(flow_id=flow_id))
+            if flow_id in configured_delays_s:
+                fm.configured_delay_s = configured_delays_s[flow_id]
+
+            # ns-3 currently emits one cumulative counter sample per second.
+            if "packets_tx" in ev or "packets_rx" in ev:
+                tx = int(ev.get("packets_tx", fm.packets_total) or 0)
+                rx = int(ev.get("packets_rx", fm.packets_delivered) or 0)
+                bytes_tx = int(ev.get("bytes_tx", fm.bytes_sent) or 0)
+                bytes_rx = int(ev.get("bytes_rx", fm.bytes_delivered) or 0)
+
+                prev_tx = prev_aggregate_tx.get(flow_id, tx)
+                if ev.get("outage_state"):
+                    fm.packets_in_outage += max(0, tx - prev_tx)
+                prev_aggregate_tx[flow_id] = tx
+
+                fm.packets_total = max(fm.packets_total, tx)
+                fm.packets_delivered = max(fm.packets_delivered, rx)
+                fm.packets_lost = max(0, fm.packets_total - fm.packets_delivered)
+                fm.bytes_sent = max(fm.bytes_sent, bytes_tx)
+                fm.bytes_delivered = max(fm.bytes_delivered, bytes_rx)
+
+                t = ev.get("sim_time")
+                if t is not None:
+                    first_pkt_time.setdefault(flow_id, t)
+                    last_pkt_time[flow_id] = t
+                continue
+
             fm.packets_total += 1
             fm.bytes_sent += ev.get("size_bytes", 0)
             if ev.get("drop_reason") is None and ev.get("rx_time") is not None:

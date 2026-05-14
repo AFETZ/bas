@@ -23,6 +23,15 @@ def load_events(log_path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def load_run_events(run_dir: Path) -> list[dict[str, Any]]:
+    """Читает основной журнал и, если есть, журнал ns-3 в том же каталоге."""
+    events = load_events(run_dir / "events.jsonl")
+    ns3_path = run_dir / "ns3_events.jsonl"
+    if ns3_path.exists():
+        events.extend(load_events(ns3_path))
+    return events
+
+
 def group_by_event_type(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for ev in events:
