@@ -1,19 +1,28 @@
-# Compose-файл для этапа 1.5.1: SITL+Gazebo в shared network namespace.
+# Compose-файл для этапов 1.5.1 / 1.5.2: SITL+Gazebo+video pipeline в shared network namespaces.
 #
 # Топология:
-#   uav-net   - pause-контейнер (Kubernetes pod sandbox pattern). Держит netns живым.
-#               В этот netns инжектируется veth-eth0 → br-ctrl-near (host-side).
-#   gazebo    - использует netns от uav-net (network_mode: container:bas-uav-net).
-#               FDM 9002/9003 ходит через loopback в этом netns.
-#   sitl      - использует тот же netns. MAVLink 5760 биндится на loopback.
-#   mavbridge - переводит UDP 14550 на стороне БАС в локальный TCP SITL 5760.
+#   uav-net        - pause-контейнер «БАС-pod» (Kubernetes pod sandbox pattern).
+#                    В netns инжектируются:
+#                      eth0=10.10.0.2/24 → br-ctrl-near  (control)
+#                      eth1=10.20.0.2/24 → br-pload-near (payload, для 1.5.2)
+#   gazebo         - shares netns с uav-net. FDM 9002/9003 через loopback.
+#   sitl           - shares netns с uav-net. MAVLink 5760 на loopback.
+#   mavbridge      - UDP 14550 ↔ TCP 5760 (SITL), внутри uav-net netns.
+#   video-sender   - GStreamer pipeline (videotestsrc / camera → x264 → RTP)
+#                    через eth1 → ns-3 payload channel → bas-pload-far-net.
+#   pload-far-net  - pause-контейнер для приёмной стороны видео.
+#                    В netns инжектируется eth=10.20.0.3/24 → br-pload-far.
+#   video-receiver - GStreamer pipeline (udpsrc → RTP → decode), shares netns
+#                    с pload-far-net. Пишет video_rx.jsonl.
 #
-# Использование:
-#   docker compose -f docker-compose.shared-netns.yml up -d uav-net
-#   # инжектируем veth извне (см. scripts/run_stage_1_5_1.sh)
-#   docker compose -f docker-compose.shared-netns.yml up -d gazebo sitl
+# Использование (через scripts/run_stage_1_5_1_mission.sh или run_stage_1_5_2_mission.sh):
+#   docker compose -f docker-compose.shared-netns.yml up -d uav-net pload-far-net
+#   # инжектируем veth извне
+#   docker compose -f docker-compose.shared-netns.yml up -d gazebo sitl mavbridge
+#   # (для 1.5.2) docker compose ... up -d video-sender video-receiver
 #
-# Сборка не дублируется - используем уже собранные образы bas/gazebo-harmonic:dev и bas/ardupilot-sitl:dev.
+# Образы не пересобираются: bas/gazebo-harmonic:dev, bas/ardupilot-sitl:dev собраны заранее;
+# bas/video:dev собирается через `docker compose build video` (см. docker-compose.yml).
 
 services:
   uav-net:
@@ -80,4 +89,59 @@ services:
       - TCP4:127.0.0.1:5760,retry=30,interval=2
     depends_on:
       sitl:
+        condition: service_started
+
+  # ---- Stage 1.5.2 video pipeline -----------------------------------------
+  # Симметричный pause-контейнер для bas-pload-far netns. Скрипт-обвязка
+  # (run_stage_1_5_2_mission.sh) инжектирует в его netns veth → br-pload-far
+  # и адрес 10.20.0.3/24. Receiver-контейнер крепится к этому netns через
+  # network_mode: container:bas-pload-far-net.
+  pload-far-net:
+    image: busybox:latest
+    container_name: bas-pload-far-net
+    network_mode: none
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+
+  # Видео-sender: лежит в bas-uav netns (тот же что Gazebo/SITL/mavbridge).
+  # Имеет eth0=10.10.0.2/24 (control, уже инжектирован) и eth1=10.20.0.2/24
+  # (payload, инжектируется отдельно run-скриптом). Поток уходит на
+  # 10.20.0.3:5000 через eth1 → br-pload-near → tap-pload-near → ns-3 pload
+  # channel → tap-pload-far → eth в bas-pload-far-net.
+  video-sender:
+    image: bas/video:dev
+    container_name: bas-video-sender
+    network_mode: "container:bas-uav-net"
+    volumes:
+      - ./video:/work/video:ro
+      - ./logs:/work/logs
+    environment:
+      BAS_VIDEO_SOURCE: "${BAS_VIDEO_SOURCE:-videotestsrc}"
+      BAS_VIDEO_DEST_HOST: "${BAS_VIDEO_DEST_HOST:-10.20.0.3}"
+      BAS_VIDEO_DEST_PORT: "${BAS_VIDEO_DEST_PORT:-5000}"
+      BAS_VIDEO_BITRATE_KBPS: "${BAS_VIDEO_BITRATE_KBPS:-2000}"
+      BAS_VIDEO_FPS: "${BAS_VIDEO_FPS:-30}"
+      BAS_VIDEO_WIDTH: "${BAS_VIDEO_WIDTH:-640}"
+      BAS_VIDEO_HEIGHT: "${BAS_VIDEO_HEIGHT:-480}"
+      BAS_VIDEO_LOG: "${BAS_VIDEO_TX_LOG:-/work/logs/video_tx.jsonl}"
+    command: ["python3", "/work/video/sender.py"]
+    depends_on:
+      sitl:
+        condition: service_started
+      pload-far-net:
+        condition: service_started
+
+  # Видео-receiver: в bas-pload-far netns.
+  video-receiver:
+    image: bas/video:dev
+    container_name: bas-video-receiver
+    network_mode: "container:bas-pload-far-net"
+    volumes:
+      - ./video:/work/video:ro
+      - ./logs:/work/logs
+    environment:
+      BAS_VIDEO_LISTEN_PORT: "${BAS_VIDEO_DEST_PORT:-5000}"
+      BAS_VIDEO_LOG: "${BAS_VIDEO_RX_LOG:-/work/logs/video_rx.jsonl}"
+    command: ["python3", "/work/video/receiver.py"]
+    depends_on:
+      pload-far-net:
         condition: service_started

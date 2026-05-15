@@ -94,6 +94,17 @@ services:
     # а не как compose-сервис. Этот блок - для случая запуска из контейнера.
     profiles: ["docker-orch"]
 
+  # Видео-канал этапа 1.5.2: общий образ для sender и receiver (gstreamer + Python).
+  # Сами сервисы в docker-compose.shared-netns.yml; здесь только build-hook,
+  # чтобы `docker compose build video` собирал bas/video:dev.
+  video:
+    build:
+      context: .
+      dockerfile: docker/video/Dockerfile
+    image: bas/video:dev
+    profiles: ["video"]
+    command: ["true"]
+
 networks:
   sim-net:
     name: bas-sim-net
