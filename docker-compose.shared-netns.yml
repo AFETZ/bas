@@ -111,6 +111,11 @@ services:
     image: bas/video:dev
     container_name: bas-video-sender
     network_mode: "container:bas-uav-net"
+    # CPU-limit: x264 encoder под полной нагрузкой может занимать всё ядро,
+    # вытесняя orchestrator listener (приходит к INVALID_SEQUENCE на degraded_lora,
+    # см. docs/stage_1_5_2_plan.md). 0.8 ядра достаточно для 2000 kbps @ 30 fps
+    # с tune=zerolatency speed-preset=ultrafast.
+    cpus: "${BAS_VIDEO_SENDER_CPUS:-0.8}"
     volumes:
       - ./video:/work/video:ro
       - ./logs:/work/logs

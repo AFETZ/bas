@@ -71,7 +71,7 @@ python -m analyzer logs/<run_id>
 | Shadow GCS в bas-ctrl-far netns через ns-3 | да | **работает** (этап 1.5.0) |
 | Mission через ns-3, profile `wifi_good` | да | **работает** v0.7 (AUTO + UDP bridge) |
 | Mission через ns-3, profile `degraded_lora` | да | **работает** v0.7 (250ms delay + 2% loss + outage) |
-| Видеопоток камеры Gazebo через payload-канал | нет | этап 1.5.2 (следующий) |
+| Видеопоток камеры Gazebo через payload-канал | частично | этап 1.5.2.a (videotestsrc через ns-3 — works v0.8) |
 | Сравнительный отчёт WiFi vs LoRa | нет | этап 1.6 |
 | Sionna RT (офлайн радиокарты) | нет | этап 2 |
 | AirSim / Cosys-AirSim | нет | этап 2 |
@@ -97,9 +97,25 @@ sudo bash scripts/run_stage_1_5_1_mission.sh degraded_lora
 Отчёт по прогону — `logs/<run_id>/report.md`. Подробности про root causes и решения —
 [docs/stage_1_5_1_known_issues.md](docs/stage_1_5_1_known_issues.md).
 
+## Этап 1.5.2.a (v0.8): RTP-видео через payload-канал
+
+Под-этап smoke реализован: H.264 RTP-поток (sender → ns-3 payload TAP → receiver)
+работает на обоих профилях. На `wifi_good` mission landed=True + видео через ns-3
+без потерь; на `degraded_lora` — mission landed=True + 12 payload-пакетов в outage
+(корреляция outage↔frame loss демонстрируется).
+
+```bash
+sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
+sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
+```
+
+Источник видео сейчас — `videotestsrc` (smoke), реальная камера Gazebo — в 1.5.2.b.
+Frame-level метрики (FPS / e2e latency / frame loss / RFC 3550 jitter) появятся
+в следующей итерации; см. [docs/stage_1_5_2_plan.md](docs/stage_1_5_2_plan.md).
+
 ## Дальнейшие шаги
 
-1. Этап 1.5.2 — реальный видеопоток камеры Gazebo через payload-канал ns-3 (RTP/UDP),
-   метрики FPS / e2e latency / frame loss
-2. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
-3. Этап 2 — Sionna RT (офлайн радиокарты), AirSim/Cosys-AirSim, рой
+1. Этап 1.5.2.a метрики — VideoMetrics в анализаторе и секция «Видеопоток» в report.md
+2. Этап 1.5.2.b — заменить `videotestsrc` на реальную Gazebo-камеру через custom SDF
+3. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
+4. Этап 2 — Sionna RT (офлайн радиокарты), AirSim/Cosys-AirSim, рой

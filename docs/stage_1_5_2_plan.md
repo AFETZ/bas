@@ -200,12 +200,63 @@ Acceptance check 1.5.2.b: то же что 1.5.2.a, но при детально
 
 Расширить report.md секцией с раздельной статистикой «вне outage» / «в outage» — чтобы видно было ровно сколько пакетов потеряно из-за outage и сколько из-за loss-ratio. ns-3 уже отмечает в network events поле `outage_state`; receiver кладёт wall_time, analyzer матчит по window.
 
-## Известная регрессия 1.5.2.a — INVALID_SEQUENCE на degraded_lora с видео
+## Регрессия 1.5.2.a — INVALID_SEQUENCE на degraded_lora с видео — FIXED
 
-После реализации smoke инфраструктуры обнаружено, что включение `video-sender`
-+ `video-receiver` параллельно с mission upload на профиле `degraded_lora`
-ломает mission upload: ArduPilot отвечает `MISSION_ACK type=13`
-(`MAV_MISSION_INVALID_SEQUENCE`).
+**Status: FIXED через CPU-limit + lower bitrate для degraded_lora.**
+
+`sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora` теперь приводит к
+mission landed=True, 7/7 waypoints, 30.0m max alt. Control PDR 1.000 (21 пакет
+в outage), payload PDR 1.000 (12 пакетов в outage — корреляция outage↔frame loss
+демонстрируется). Регрессии 1.5.1 не возвращается.
+
+### Fix
+
+В `docker-compose.shared-netns.yml` для `video-sender`:
+
+```yaml
+cpus: "${BAS_VIDEO_SENDER_CPUS:-0.8}"
+```
+
+В `scripts/run_stage_1_5_2_mission.sh` для профиля `degraded_lora`:
+
+```bash
+DEFAULT_VIDEO_BITRATE_KBPS=500   # вместо 2000
+```
+
+(LoRa-подобный канал реалистично не тянет 2 Мбит/с HD-видео в любом случае,
+так что снижение оправдано не только тестовой задачей.)
+
+### Что было
+
+x264 encoder без CPU-limit под полной нагрузкой занимал ~80-100% одного ядра
+WSL2. Под этим Python `_listener_loop` в orchestrator-е (blocking `recv_match`)
+читал MAVLink с задержкой — Linux scheduler отдавал CPU active gst-thread
+вместо idle Python-thread. SITL retry-цикл (~600ms) опережал наш ответ,
+накопился burst MISSION_REQUEST seq=0, мы отвечали 5+ копиями MISSION_ITEM,
+ArduPilot mission state machine ловила несоответствие → MISSION_ACK type=13
+INVALID_SEQUENCE.
+
+### Известный артефакт video_tx vs video_rx vs ns-3
+
+После fix tx_tap.appsink пишет 53,153 packets за 210s (~300 кбит/с
+после RTP overhead), но ns-3 видит 2,742 packets (~16 кбит/с goodput) и
+receiver получает 2,650. То есть **95% packets** теряется между tx_tap и
+выходом из netns. Гипотеза: queue leaky=downstream перед udpsink в
+gstreamer-pipeline дропает буферы под CPU-лимитом (encoder выдаёт быстрее
+чем udpsink успевает отправлять). Tx_tap (после tee) видит **все** буферы
+до queue drop, поэтому пишет в JSONL гораздо больше чем реально уходит на
+сеть.
+
+Для метрик в анализаторе нужно **брать ns-3 payload-packets как
+authoritative tx-count**, а video_tx.jsonl использовать **только для матчинга
+tx_time по rtp_seq** (для e2e latency). Документировать в analyzer-итерации.
+
+---
+
+## Старая регрессия (для архива)
+
+До v0.8 в этой секции была проблема: включение video-канала под `degraded_lora`
+ломало mission upload (INVALID_SEQUENCE type=13).
 
 ### Картина из events.jsonl (cooldown=5s, оригинальный v0.7)
 

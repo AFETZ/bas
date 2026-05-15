@@ -71,7 +71,9 @@
 | 1.4 | MAVLink команды и телеметрия через host network (без ns-3) | **готов** (v0.1) |
 | 1.5.0 | Shadow GCS в bas-ctrl-far netns через ns-3 control TAP | **готов** (v0.2) |
 | 1.5.1 | Полная mission через ns-3 control канал, `wifi_good` + `degraded_lora` | **готов** (v0.7) |
-| 1.5.2 | Видеопоток камеры Gazebo через TAP payload (RTP/UDP, метрики FPS/e2e/loss) | следующий шаг |
+| 1.5.2.a | RTP H.264 видео-pipeline (videotestsrc) через ns-3 payload TAP | **готов** (v0.8) |
+| 1.5.2.a-metrics | VideoMetrics в анализаторе (FPS/e2e latency/frame loss/jitter) | следующий шаг |
+| 1.5.2.b | Реальная Gazebo-камера через custom SDF + camera plugin | после метрик |
 | 1.6 | Сценарии нагрузочного теста + сравнительный отчёт WiFi vs LoRa | после 1.5.2 |
 | 2.x | Sionna RT (офлайн радиокарты) | этап 2 |
 | 2.x | AirSim / Cosys-AirSim как визуально-сенсорная ветка | этап 2 |

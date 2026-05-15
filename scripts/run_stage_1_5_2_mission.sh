@@ -50,6 +50,12 @@ case "$PROFILE" in
         # Payload deg-профиль: меньше delay но c loss и кратким outage —
         # чтобы видеть frame_loss spike'и без полного blackout'а.
         PLOAD_DELAY_MS=80; PLOAD_LOSS=0.01; PLOAD_OUTAGE="140-141"
+        # Под degraded_lora bitrate понижен с 2000 до 500 kbps:
+        # 1) LoRa-подобный канал реалистично не тянет HD-видео,
+        # 2) меньше нагрузка на x264 encoder → orchestrator listener
+        #    не вытесняется (см. docs/stage_1_5_2_plan.md, INVALID_SEQUENCE
+        #    regression).
+        DEFAULT_VIDEO_BITRATE_KBPS=500
         ;;
     moderate)
         SCENARIO=baseline_wifi
@@ -69,7 +75,7 @@ NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 export BAS_VIDEO_SOURCE="${BAS_VIDEO_SOURCE:-videotestsrc}"
 export BAS_VIDEO_DEST_HOST="${BAS_VIDEO_DEST_HOST:-10.20.0.3}"
 export BAS_VIDEO_DEST_PORT="${BAS_VIDEO_DEST_PORT:-5000}"
-export BAS_VIDEO_BITRATE_KBPS="${BAS_VIDEO_BITRATE_KBPS:-2000}"
+export BAS_VIDEO_BITRATE_KBPS="${BAS_VIDEO_BITRATE_KBPS:-${DEFAULT_VIDEO_BITRATE_KBPS:-2000}}"
 export BAS_VIDEO_FPS="${BAS_VIDEO_FPS:-30}"
 export BAS_VIDEO_WIDTH="${BAS_VIDEO_WIDTH:-640}"
 export BAS_VIDEO_HEIGHT="${BAS_VIDEO_HEIGHT:-480}"
