@@ -68,7 +68,8 @@ class DockerComposeFlightStack:
         self.home_position: Optional[tuple[float, float, float]] = None  # lat, lon, alt_m
         self.mission_state: str = ""
         # Mission upload protocol state
-        self.last_mission_request: Optional[tuple[int, float]] = None  # (seq, wall_time)
+        # (seq, wall_time, message_type) where type is "MISSION_REQUEST" or "_INT"
+        self.last_mission_request: Optional[tuple[int, float, str]] = None
         self.last_mission_ack: Optional[tuple[int, float]] = None  # (type, wall_time)
         self.last_mission_current_seq: int = 0
         self._lock = threading.Lock()
@@ -107,6 +108,17 @@ class DockerComposeFlightStack:
                 self.mav = mavutil.mavlink_connection(self.mavlink_endpoint, source_system=254)
                 self.logger.emit("component", component=self.name, phase="mavlink_connecting",
                                  endpoint=self.mavlink_endpoint)
+                # Для udpout endpoint'ов: посылаем GCS heartbeat, чтобы peer
+                # узнал наш адрес. Для udpin сначала ждём heartbeat от SITL.
+                if self.mavlink_endpoint.startswith("udpout:"):
+                    try:
+                        self.mav.mav.heartbeat_send(
+                            mavutil.mavlink.MAV_TYPE_GCS,
+                            mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                            0, 0, 0,
+                        )
+                    except Exception:
+                        pass
                 hb = self.mav.recv_match(type="HEARTBEAT", blocking=True, timeout=10)
                 if hb is not None:
                     break
@@ -129,11 +141,22 @@ class DockerComposeFlightStack:
                          sys_id=self._sys_id, comp_id=self._comp_id,
                          autopilot=int(hb.autopilot), type=int(hb.type))
 
-        # Попросить максимальную частоту телеметрии.
-        self.mav.mav.request_data_stream_send(
-            self._sys_id, self._comp_id,
-            mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1,
-        )
+        # Попросить поток телеметрии. Для degraded_lora держим частоту умеренной:
+        # mission upload чувствителен к очередям, а 2 Гц хватает для контроля.
+        for _ in range(3):
+            try:
+                self.mav.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0, 0, 0,
+                )
+            except Exception:
+                pass
+            self.mav.mav.request_data_stream_send(
+                self._sys_id, self._comp_id,
+                mavutil.mavlink.MAV_DATA_STREAM_ALL, 2, 1,
+            )
+            time.sleep(0.2)
 
         # Запустить листенер в потоке.
         self._listener_thread = threading.Thread(target=self._listener_loop, name="mavlink-listener", daemon=True)
@@ -291,7 +314,7 @@ class DockerComposeFlightStack:
                     self.mission_state = "landed"
         elif t == "MISSION_REQUEST" or t == "MISSION_REQUEST_INT":
             with self._lock:
-                self.last_mission_request = (int(msg.seq), time.time())
+                self.last_mission_request = (int(msg.seq), time.time(), t)
             self.logger.emit(
                 "control_telemetry",
                 sim_time=sim_time,
@@ -356,7 +379,7 @@ class MissionRunner:
         assert self.stack.mav is not None
 
         self._wait_for_gps_fix(min_fix=3, timeout_s=gps_wait_timeout_s)
-        home_lat, home_lon, home_alt = self._wait_for_home(timeout_s=30.0)
+        home_lat, home_lon, home_alt = self._wait_for_home(timeout_s=90.0)
         self.logger.emit("component", component=self.name, phase="using_sitl_home",
                          lat=home_lat, lon=home_lon, alt=home_alt)
 
@@ -466,17 +489,18 @@ class MissionRunner:
             self.stack.last_mission_request = None
             self.stack.last_mission_ack = None
 
-        # Шлём ONE MISSION_COUNT. КАЖДЫЙ повтор cancel-ит активную upload-сессию
-        # (ArduPilot отвечает MISSION_ACK type=15 OPERATION_CANCELLED).
-        # Resend только если 60s+ нет MISSION_REQUEST.
-        mav.mav.mission_count_send(
-            self.stack._sys_id, self.stack._comp_id, n, mission_type=0,
-        )
+        # Повтор COUNT во время активной upload-сессии сбрасывает протокол у
+        # ArduPilot, поэтому до первого request ретраим коротким burst'ом, а
+        # после первого request даём автопилоту самому пере-запрашивать item'ы.
+        self._send_mission_count(n, repeats=5)
         count_sent_at = time.time()
         last_request_at = 0.0  # время последнего MISSION_REQUEST от SITL
 
-        upload_deadline = time.time() + 180
+        upload_timeout_s = 300.0
+        upload_deadline = time.time() + upload_timeout_s
         next_seq = 0
+        last_item_sent_at: dict[int, float] = {}
+        highest_request_seq_seen = -1
         while time.time() < upload_deadline:
             with self.stack._lock:
                 ack = self.stack.last_mission_ack
@@ -491,39 +515,112 @@ class MissionRunner:
                 raise RuntimeError(f"MISSION_ACK error type={ack_type}")
 
             if req is not None:
-                req_seq, req_t = req
+                req_seq, req_t, req_type = req
                 last_request_at = req_t
                 if req_seq < n:
-                    try:
-                        mav.mav.send(items[req_seq])
-                    except Exception as exc:
+                    if req_seq < highest_request_seq_seen:
                         self.logger.emit("component", component=self.name,
-                                         phase="mission_item_send_error",
-                                         seq=req_seq, error=repr(exc))
+                                         phase="mission_request_stale_ignored",
+                                         seq=req_seq, highest_request_seq_seen=highest_request_seq_seen)
+                        with self.stack._lock:
+                            self.stack.last_mission_request = None
+                        time.sleep(0.1)
+                        continue
+                    highest_request_seq_seen = max(highest_request_seq_seen, req_seq)
+
+                    now = time.time()
+                    last_sent = last_item_sent_at.get(req_seq, 0.0)
+                    if now - last_sent < 5.0:
+                        self.logger.emit("component", component=self.name,
+                                         phase="mission_request_duplicate_ignored",
+                                         seq=req_seq, since_last_send_s=now - last_sent)
+                        with self.stack._lock:
+                            self.stack.last_mission_request = None
+                        time.sleep(0.1)
+                        continue
+
+                    # ArduPilot SITL в успешном wifi_good прогоне присылает
+                    # legacy MISSION_REQUEST, но принимает MISSION_ITEM_INT.
+                    # Legacy MISSION_ITEM в degraded_lora застревал на seq=0,
+                    # поэтому для обоих request-вариантов шлём INT item burst'ом.
+                    messages_to_send = [("MISSION_ITEM_INT", items[req_seq])]
+                    sends_ok = 0
+                    sent_formats = []
+                    for fmt, msg_to_send in messages_to_send:
+                        try:
+                            mav.mav.send(msg_to_send)
+                            sends_ok += 1
+                            sent_formats.append(fmt)
+                        except Exception as exc:
+                            self.logger.emit("component", component=self.name,
+                                             phase="mission_item_send_error",
+                                             seq=req_seq, fmt=fmt,
+                                             attempt=1,
+                                             error=repr(exc))
+                    last_item_sent_at[req_seq] = time.time()
                     self.logger.emit("component", component=self.name,
-                                     phase="mission_item_sent", seq=req_seq)
+                                     phase="mission_item_sent", seq=req_seq,
+                                     proto=req_type, repeats=sends_ok,
+                                     formats=",".join(sent_formats))
                     next_seq = max(next_seq, req_seq + 1)
                     with self.stack._lock:
                         self.stack.last_mission_request = None
 
-            # Если SITL замолчал (нет MISSION_REQUEST 60s от COUNT или прошлого
-            # request) — пере-шлём COUNT для перезапуска протокола.
+            # Если SITL замолчал — пере-шлём COUNT для перезапуска протокола.
+            # До первого request это дешёвый retry потерянного COUNT. После request
+            # ждём гораздо дольше, чтобы не cancel'ить уже начатый upload.
             silence_from = max(count_sent_at, last_request_at)
-            if time.time() - silence_from > 60.0:
-                mav.mav.mission_count_send(
-                    self.stack._sys_id, self.stack._comp_id, n, mission_type=0,
-                )
+            silence_limit_s = 60.0 if last_request_at > 0.0 else 15.0
+            if time.time() - silence_from > silence_limit_s:
+                self._send_mission_count(n, repeats=5)
                 count_sent_at = time.time()
                 with self.stack._lock:
                     self.stack.last_mission_ack = None
                     self.stack.last_mission_request = None
                 self.logger.emit("component", component=self.name,
                                  phase="mission_count_resent_after_silence", n=n,
-                                 next_seq=next_seq)
+                                 next_seq=next_seq, silence_limit_s=silence_limit_s)
                 next_seq = 0
             time.sleep(0.3)
 
-        raise RuntimeError(f"Mission upload не завершён за 180s (next_seq={next_seq}/{n})")
+        raise RuntimeError(f"Mission upload не завершён за {upload_timeout_s:.0f}s (next_seq={next_seq}/{n})")
+
+    def _send_mission_count(self, n: int, repeats: int = 1) -> None:
+        mav = self.stack.mav
+        assert mav is not None
+        sent = 0
+        for i in range(repeats):
+            try:
+                mav.mav.mission_count_send(
+                    self.stack._sys_id, self.stack._comp_id, n, mission_type=0,
+                )
+                sent += 1
+            except Exception as exc:
+                self.logger.emit("component", component=self.name,
+                                 phase="mission_count_send_error",
+                                 attempt=i + 1, error=repr(exc))
+            time.sleep(0.2)
+        self.logger.emit("component", component=self.name,
+                         phase="mission_count_sent", n=n, repeats=sent)
+
+    def _to_legacy_item(self, item_int):
+        """Конвертирует MISSION_ITEM_INT в legacy MISSION_ITEM (float coords)."""
+        from pymavlink.dialects.v20 import ardupilotmega as mavlink
+        return mavlink.MAVLink_mission_item_message(
+            target_system=item_int.target_system,
+            target_component=item_int.target_component,
+            seq=item_int.seq,
+            frame=item_int.frame,
+            command=item_int.command,
+            current=item_int.current,
+            autocontinue=item_int.autocontinue,
+            param1=item_int.param1, param2=item_int.param2,
+            param3=item_int.param3, param4=item_int.param4,
+            x=item_int.x / 1e7,  # lat: int32 1e-7 deg → float deg
+            y=item_int.y / 1e7,  # lon
+            z=item_int.z,
+            mission_type=item_int.mission_type,
+        )
 
     def _mission_start(self) -> None:
         """Send MAV_CMD_MISSION_START via command_long."""
@@ -778,15 +875,19 @@ class MissionRunner:
 
     def _wait_for_home(self, timeout_s: float) -> tuple[float, float, float]:
         deadline = time.time() + timeout_s
-        # Попросить HOME_POSITION (запрос-сообщение через MAV_CMD_REQUEST_MESSAGE).
         mav = self.stack.mav
         assert mav is not None
-        mav.mav.command_long_send(
-            self.stack._sys_id, self.stack._comp_id,
-            mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
-            0, mavutil.mavlink.MAVLINK_MSG_ID_HOME_POSITION, 0, 0, 0, 0, 0, 0,
-        )
+        last_request = 0.0
         while time.time() < deadline:
+            if time.time() - last_request >= 3.0:
+                mav.mav.command_long_send(
+                    self.stack._sys_id, self.stack._comp_id,
+                    mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
+                    0, mavutil.mavlink.MAVLINK_MSG_ID_HOME_POSITION, 0, 0, 0, 0, 0, 0,
+                )
+                last_request = time.time()
+                self.logger.emit("component", component=self.name,
+                                 phase="home_position_requested")
             if self.stack.home_position is not None:
                 return self.stack.home_position
             time.sleep(0.3)

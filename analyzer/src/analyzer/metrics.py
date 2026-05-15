@@ -143,6 +143,8 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
 
         elif et == "scenario":
             scenario_status = ev.get("status", scenario_status)
+            if ev.get("status") == "success" and ev.get("reason") == "mission_landed":
+                flight.landed = True
 
         elif et == "component":
             if ev.get("component") == "ns3" and ev.get("phase") == "start":
@@ -159,6 +161,11 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
                     flight.waypoints_planned = ev.get("n_waypoints", flight.waypoints_planned)
                 elif phase == "waypoint_done":
                     flight.waypoints_reached = max(flight.waypoints_reached, ev.get("idx", -1) + 1)
+                elif phase == "mission_complete":
+                    if ev.get("final_state") == "landed":
+                        flight.landed = True
+                    if "last_seq" in ev:
+                        flight.waypoints_reached = max(flight.waypoints_reached, int(ev["last_seq"]) + 1)
 
         elif et == "flight":
             flight.samples += 1
@@ -204,6 +211,10 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
                 flight.max_speed_mps = max(flight.max_speed_mps, math.sqrt(vx*vx + vy*vy + vz*vz))
             elif isinstance(vel, (int, float)):
                 flight.max_speed_mps = max(flight.max_speed_mps, float(vel))
+
+        elif et == "control_telemetry":
+            if ev.get("message_type") == "MISSION_ITEM_REACHED":
+                flight.waypoints_reached = max(flight.waypoints_reached, int(ev.get("seq", -1)) + 1)
 
         elif et in ("network", "payload"):
             flow_id = ev.get("flow_id", "<unknown>")

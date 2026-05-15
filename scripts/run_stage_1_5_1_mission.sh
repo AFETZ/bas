@@ -6,12 +6,12 @@
 # Топология (как 1.5.1) + mission в bas-ctrl-far netns:
 #
 #   [bas-ctrl-far netns: bas-orchestrator+MissionRunner]
-#         │ tcp:10.10.0.2:5760
+#         │ udpout:10.10.0.2:14550
 #         ▼
 #   ns-3 control channel (delay+loss+outage по профилю)
 #         │
 #         ▼
-#   [bas-uav netns: gazebo + sitl на shared loopback, MAVLink на eth0=10.10.0.2:5760]
+#   [bas-uav netns: gazebo + sitl + mavbridge на shared loopback]
 #
 # Использование:
 #   sudo bash scripts/run_stage_1_5_1_mission.sh wifi_good       # без деградации
@@ -38,17 +38,26 @@ case "$PROFILE" in
     *) echo "Неизвестный профиль: $PROFILE" >&2; exit 1 ;;
 esac
 
-# Длительность ns-3: с запасом на миссию (mission max_duration_s в YAML + buffer).
-# При degraded_lora даём больше времени на IMU settle + повторы команд.
-NS3_DURATION="${NS3_DURATION:-300}"
+# Длительность ns-3: с запасом на mission upload + миссию.
+# degraded_lora может долго ретраить MAVLink upload, поэтому держим радио-петлю дольше.
+if [ -z "${NS3_DURATION:-}" ]; then
+    if [ "$PROFILE" = "degraded_lora" ]; then
+        NS3_DURATION=600
+    else
+        NS3_DURATION=300
+    fi
+fi
+# Холодный/полухолодный `./ns3 build` внутри контейнера может занимать больше
+# двух минут, при этом stdout уходит в /tmp/build.log и внешний скрипт видит тишину.
+NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
 
 cleanup() {
     set +e
     echo "[cleanup]"
-    sg docker -c "docker rm -f bas-ns3-stage15 2>/dev/null" >/dev/null 2>&1
-    sg docker -c "docker compose -f ${COMPOSE_FILE} down -v 2>/dev/null" >/dev/null 2>&1
+    timeout 30 sg docker -c "docker rm -f bas-ns3-stage15 2>/dev/null" >/dev/null 2>&1
+    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} down -v 2>/dev/null" >/dev/null 2>&1
     ip link del veth-uav-br 2>/dev/null
     rm -f /var/run/netns/bas-uav
     set -e
@@ -81,7 +90,7 @@ ip -n bas-uav addr add 10.10.0.2/24 dev eth0
 ip -n bas-uav link set eth0 up
 ip -n bas-uav link set lo up
 
-sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo sitl" 2>&1 | tail -3
+sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo sitl mavbridge" 2>&1 | tail -3
 
 echo "[4/7] ждём SITL MAVLink на eth0:5760"
 for i in $(seq 1 60); do
@@ -96,6 +105,7 @@ sleep 8
 echo "[5/7] запуск ns-3 (delay=${CTRL_DELAY_MS}ms, loss=${CTRL_LOSS}, outage='${CTRL_OUTAGE}')"
 NS3_ARGS="--runId=${RUN_ID} --duration=${NS3_DURATION} --ctrlDelayMs=${CTRL_DELAY_MS} --ctrlLoss=${CTRL_LOSS} --ploadDelayMs=200 --ploadLoss=0.0"
 [ -n "${CTRL_OUTAGE}" ] && NS3_ARGS="${NS3_ARGS} --ctrlOutage=${CTRL_OUTAGE}"
+sg docker -c "docker rm -f bas-ns3-stage15 2>/dev/null" >/dev/null 2>&1 || true
 sg docker -c "docker run -d --name bas-ns3-stage15 --network host --cap-add NET_ADMIN --privileged \
     -e NS3_ARGS='${NS3_ARGS}' \
     -v ${REPO_ROOT}/ns3:/work/ns3:ro \
@@ -103,14 +113,26 @@ sg docker -c "docker run -d --name bas-ns3-stage15 --network host --cap-add NET_
     --entrypoint bash bas/ns3:dev -c '\
         cp /work/ns3/scenarios/two_channel.cc /work/ns3-src/scratch/ \
         && cd /work/ns3-src \
-        && ./ns3 build > /tmp/build.log 2>&1 \
-        && ${NS3_BIN} \$NS3_ARGS'" > /dev/null
+	    && ./ns3 build > /tmp/build.log 2>&1 \
+	    && ${NS3_BIN} \$NS3_ARGS'" > /dev/null
 NS3_LOG="${LOG_DIR}/ns3_events.jsonl"
-for i in $(seq 1 60); do
+for i in $(seq 1 $((NS3_START_TIMEOUT_SECONDS / 2))); do
     [ -s "$NS3_LOG" ] && break
+    if ! sg docker -c "docker inspect -f '{{.State.Running}}' bas-ns3-stage15 2>/dev/null" | grep -q true; then
+        echo "ns-3 контейнер завершился до старта" >&2
+        sg docker -c "docker logs --tail 80 bas-ns3-stage15 2>&1" >&2 || true
+        exit 3
+    fi
     sleep 2
 done
-[ -s "$NS3_LOG" ] || { echo "ns-3 не стартовал" >&2; sg docker -c "docker logs --tail 30 bas-ns3-stage15"; exit 3; }
+[ -s "$NS3_LOG" ] || {
+    echo "ns-3 не стартовал за ${NS3_START_TIMEOUT_SECONDS}s" >&2
+    echo "--- /tmp/build.log tail ---" >&2
+    sg docker -c "docker exec bas-ns3-stage15 tail -80 /tmp/build.log 2>&1" >&2 || true
+    echo "--- docker logs tail ---" >&2
+    sg docker -c "docker logs --tail 80 bas-ns3-stage15 2>&1" >&2 || true
+    exit 3
+}
 echo "  ns-3 готов"
 
 # Дать ns-3 пару секунд на завершение настройки TapBridge внутри обоих TAP'ов.
@@ -132,12 +154,12 @@ for ns in bas-ctrl-far bas-uav; do
 done
 
 echo "[6/7] прогон миссии через ns-3 канал (orchestrator в bas-ctrl-far netns)"
-echo "  endpoint=tcp:10.10.0.2:5760 (через ns-3)"
+echo "  endpoint=udpout:10.10.0.2:14550 (через ns-3 → mavbridge → SITL TCP)"
 
 set +e
 ip netns exec bas-ctrl-far "${REPO_ROOT}/.venv/bin/bas-orchestrator" "${SCENARIO}" \
     --real --external-compose \
-    --mavlink-endpoint tcp:10.10.0.2:5760 \
+    --mavlink-endpoint udpout:10.10.0.2:14550 \
     --run-dir "${LOG_DIR}" \
     --project-root "${REPO_ROOT}" 2>&1 | tee "${LOG_DIR}/orchestrator_stdout.log"
 RC=${PIPESTATUS[0]}

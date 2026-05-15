@@ -75,46 +75,81 @@ D. **Higher CSMA `DataRate`** — bumping channel bandwidth from 20 Mbps to e.g.
    reduce the simulated transmission delay component. But this affects the radio model
    semantics — defeats the purpose of "LoRa-like degraded channel".
 
-## Root cause #4 (v0.6): MAVLink mission upload OPERATION_CANCELLED в degraded_lora
+## Root cause #4 (v0.6→v0.7): MAVLink mission upload OPERATION_CANCELLED в degraded_lora — FIXED
 
-После реализации AUTO-режима (mission upload + AUTO mode + MISSION_START — Codex'овский
-вариант для устойчивости к live-control потерям) проблема сместилась с TAKEOFF на сам
-mission upload. ArduPilot отвечает MISSION_ACK type=15 (OPERATION_CANCELLED) во время
-upload. Причина: TCP head-of-line blocking настолько серьёзный что между SITL'овым
-MISSION_REQUEST(seq=N) и нашим MISSION_ITEM(seq=N) проходит >ArduPilot's internal
-mission timeout (~5s), и ArduPilot отменяет upload.
+После реализации AUTO-режима (mission upload + AUTO mode + MISSION_START) проблема сместилась
+с TAKEOFF на сам mission upload. ArduPilot отвечал MISSION_ACK type=15 (OPERATION_CANCELLED)
+во время upload. Причина: TCP head-of-line blocking настолько серьёзный что между SITL'овым
+MISSION_REQUEST(seq=N) и нашим MISSION_ITEM(seq=N) проходит >ArduPilot's internal mission
+timeout (~5s), и ArduPilot отменял upload.
 
-AUTO режим verified working на wifi_good: 1824 flight events, max alt 30.04m, mission
-landed at +195s. degraded_lora — OPERATION_CANCELLED посреди upload (item seq=0
-переотправлен 4 раза, потом cancel).
+### Fix (v0.7): гипотеза A применена + протокол укреплён
 
-### Hypotheses for #4
+**1. UDP MAVLink через socat sidecar (`mavbridge` в `docker-compose.shared-netns.yml`)**
 
-A. **UDP MAVLink через socat sidecar в bas-uav netns** — обходит TCP HoL blocking.
-   `socat TCP4:127.0.0.1:5760 UDP4-LISTEN:14550,reuseaddr` запускается рядом с SITL,
-   orchestrator подключается по `udp:10.10.0.2:14550`. UDP пакеты не queue-ятся,
-   каждый MAVLink-message отправляется независимо. Mission upload protocol сам
-   retransmits лост-айтемы. Самый чистый путь.
+```yaml
+mavbridge:
+  image: alpine/socat:latest
+  network_mode: "container:bas-uav-net"   # тот же netns что и SITL
+  command:
+    - -d
+    - UDP4-LISTEN:14550,reuseaddr
+    - TCP4:127.0.0.1:5760,retry=30,interval=2
+```
 
-B. **MAVProxy между SITL и ns-3** — MAVProxy known-good в lossy MAVLink сценариях
-   (используется в реальных дронах с радио). Запустить mavproxy в SITL netns,
-   bridge TCP-SITL ↔ UDP-out:14550.
+Orchestrator подключается по `udpout:10.10.0.2:14550`. UDP пакеты не queue-ятся в радиоканал —
+каждый MAVLink-message отправляется независимо. TCP остаётся ТОЛЬКО локально между socat и SITL
+в shared netns где он стабилен. Это устраняет HoL blocking из радиочасти.
 
-C. **TCP_NODELAY + increased buffer** в pymavlink — паллиатив, не решает root cause.
+**2. Mission upload протокол укреплён (`real_components.py`)**
 
-D. **"Less degraded" профиль** — уменьшить delay до 100ms или loss до 0.5% где
-   MAVLink mission upload успевает в SITL timeout. Это "characterization" подход.
+- **COUNT burst (5×)** вместо одиночного: потерянный MISSION_COUNT в lossy канале больше не
+  подвешивает протокол на старте.
+- **Adaptive silence_limit**: 15s до первого request (быстрый retry потерянного COUNT) и 60s
+  после первого request (не cancel'им активный upload).
+- **Anti-stale filter**: `req_seq < highest_request_seq_seen` → ignore (защита от дублированных
+  TCP-retransmits SITL'а при 250ms RTT).
+- **Anti-duplicate filter**: cooldown 5s на повторную отправку одного и того же item.
+- **GCS heartbeat для UDP** при `udpout:` endpoint и burst 3× heartbeat+REQUEST_DATA_STREAM
+  для регистрации peer'а в socat.
+- **Telemetry rate снижен 10Hz → 2Hz**: не забиваем lossy канал во время upload, 2Hz хватает
+  для контроля флайта.
+- `_wait_for_home`: 30s one-shot → 90s с periodic re-request каждые 3s.
 
-### State per stage (post-v0.6)
+**3. Robustness в run-скрипте**
+
+- `NS3_DURATION=600` для degraded_lora (длинный upload не упирается в окно ns-3).
+- `NS3_START_TIMEOUT_SECONDS=300` + dump `build.log` и `docker logs` при фейле.
+- `timeout 30/60` обёртки в cleanup — защита от зависания при docker stop.
+
+**4. Analyzer (`metrics.py`)**
+
+- `scenario.success/mission_landed` и `component.mission_complete.final_state=landed` ставят
+  `flight.landed=True`.
+- `MISSION_ITEM_REACHED` events инкрементируют `waypoints_reached` корректно.
+
+### Verified results (v0.7)
+
+| Сценарий | Status | Landed | WP | Max alt | Дистанция | PDR control | Outage |
+|---|---|---|---|---|---|---|---|
+| `wifi_good` через ns-3 | success | True | 7/7 | 30.0 м | 252.9 м | 1.000 | 0 |
+| `degraded_lora` через ns-3 | success | True | 7/7 | 30.0 м | 252.4 м | 1.000 | 20 пкт |
+
+В degraded_lora mission upload 7 items занимает 12 секунд (34→46s wall_dt), затем AUTO flight
+до посадки за +218s. Регрессии на wifi_good нет.
+
+### State per stage (post-v0.7)
 
 | Stage | Status |
 |---|---|
 | 1.4 (host network mission) | ✅ works |
 | 1.5.0 (shadow GCS in netns through ns-3) | ✅ works |
 | 1.5.1 wifi_good via ns-3 (GUIDED) | ✅ works |
-| 1.5.1 wifi_good via ns-3 (AUTO, v0.6) | ✅ works (mission upload + autonomous flight) |
+| 1.5.1 wifi_good via ns-3 (AUTO, v0.6) | ✅ works |
+| 1.5.1 wifi_good via ns-3 (AUTO + UDP bridge, v0.7) | ✅ works (no regression) |
 | 1.5.1 degraded_lora via ns-3 (GUIDED) | ❌ TCP HoL → TAKEOFF не доходит |
 | 1.5.1 degraded_lora via ns-3 (AUTO, v0.6) | ❌ MAVLink mission upload OPERATION_CANCELLED |
+| **1.5.1 degraded_lora via ns-3 (AUTO + UDP bridge, v0.7)** | **✅ works** (mission upload + autonomous flight + landed) |
 
 ## Root cause #3: MAVLink TCP backlog in lossy channel (v0.5 partial — ARM works, TAKEOFF
 still fails)

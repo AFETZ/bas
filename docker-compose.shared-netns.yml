@@ -5,8 +5,8 @@
 #               В этот netns инжектируется veth-eth0 → br-ctrl-near (host-side).
 #   gazebo    - использует netns от uav-net (network_mode: container:bas-uav-net).
 #               FDM 9002/9003 ходит через loopback в этом netns.
-#   sitl      - использует тот же netns. MAVLink 5760 биндится на 0.0.0.0,
-#               внешне доступен только через eth0 → ns-3.
+#   sitl      - использует тот же netns. MAVLink 5760 биндится на loopback.
+#   mavbridge - переводит UDP 14550 на стороне БАС в локальный TCP SITL 5760.
 #
 # Использование:
 #   docker compose -f docker-compose.shared-netns.yml up -d uav-net
@@ -65,4 +65,19 @@ services:
       - /home/ardupilot/ardupilot/Tools/autotest/default_params/gazebo-iris.parm
     depends_on:
       gazebo:
+        condition: service_started
+
+  # MAVLink bridge: TCP 127.0.0.1:5760 (SITL) <-> UDP 0.0.0.0:14550 (для GCS через ns-3).
+  # UDP убирает TCP head-of-line blocking из радиоканала; TCP остаётся только локально
+  # внутри shared netns между bridge и SITL.
+  mavbridge:
+    image: alpine/socat:latest
+    container_name: bas-mavbridge
+    network_mode: "container:bas-uav-net"
+    command:
+      - -d
+      - UDP4-LISTEN:14550,reuseaddr
+      - TCP4:127.0.0.1:5760,retry=30,interval=2
+    depends_on:
+      sitl:
         condition: service_started
