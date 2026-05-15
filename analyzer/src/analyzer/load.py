@@ -32,6 +32,20 @@ def load_run_events(run_dir: Path) -> list[dict[str, Any]]:
     return events
 
 
+def load_video_events(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Читает video_tx.jsonl и video_rx.jsonl (если есть) из каталога прогона.
+
+    Возвращает (tx_events, rx_events). Если файлов нет — возвращает ([], []).
+    Это позволяет analyzer'у работать совместимо с прогонами 1.4 / 1.5.1
+    (без видео) и с 1.5.2+ (с видео).
+    """
+    tx_path = run_dir / "video_tx.jsonl"
+    rx_path = run_dir / "video_rx.jsonl"
+    tx_events = load_events(tx_path) if tx_path.exists() else []
+    rx_events = load_events(rx_path) if rx_path.exists() else []
+    return tx_events, rx_events
+
+
 def group_by_event_type(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for ev in events:

@@ -5,8 +5,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .load import find_run_dir, load_run_events
-from .metrics import compute
+from .load import find_run_dir, load_run_events, load_video_events
+from .metrics import compute, compute_video
 from .report import to_markdown
 
 
@@ -35,6 +35,13 @@ def main(argv: list[str] | None = None) -> int:
 
     events = load_run_events(run_dir)
     report = compute(events)
+
+    # Видео-канал 1.5.2.a: если video_tx.jsonl / video_rx.jsonl лежат
+    # рядом с events.jsonl, посчитаем VideoMetrics и пришьём к report.
+    tx_events, rx_events = load_video_events(run_dir)
+    if tx_events or rx_events:
+        report.video = compute_video(tx_events, rx_events)
+
     md = to_markdown(report)
 
     out_path = args.out or (run_dir / "report.md")

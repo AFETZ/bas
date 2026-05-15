@@ -47,6 +47,54 @@ def to_markdown(report: RunReport) -> str:
             f"{fm.mean_delay_ms:.1f} | {fm.p95_delay_ms:.1f} | {fm.mean_jitter_ms:.1f} | {fm.goodput_bps:,.0f} |"
         )
     lines.append("")
+
+    # Секция «Видеопоток» появляется только если найден хотя бы один
+    # video_tx или video_rx event (этап 1.5.2.a-metrics).
+    v = report.video
+    if v.enabled:
+        lines.append("## Видеопоток")
+        lines.append("")
+        lines.append(f"- TX уникальных RTP-пакетов (appsink): {v.tx_packets}")
+        lines.append(f"- RX уникальных RTP-пакетов: {v.rx_packets}")
+        lines.append(f"- Frame loss (gap-detection в RX, wraparound-aware): {100.0 * v.frame_loss_ratio:.2f}%")
+        lines.append(
+            f"- Самый длинный пропуск: {v.longest_gap_packets} пакетов / "
+            f"{v.longest_gap_ms:.1f} мс"
+        )
+        lines.append(f"- Jitter RFC 3550 (rx-only): {v.jitter_ms_rfc3550:.2f} мс")
+        lines.append(f"- FPS принято: {v.fps_received:.1f}")
+        lines.append(f"- Длительность RX-потока: {v.duration_s:.1f} с")
+        lines.append(f"- Bitrate RX (goodput): {v.bitrate_rx_goodput_bps:,.0f} бит/с")
+        lines.append(
+            f"- Bitrate TX (appsink, справочно): {v.bitrate_tx_appsink_bps:,.0f} бит/с"
+        )
+        lines.append("")
+        lines.append(
+            f"E2E latency (по {v.synchronous_pairs} из {v.matched_packets} matched-пар "
+            f"с d ∈ [0, 1] s): "
+            f"p50={v.e2e_latency_ms_p50:.1f} мс, "
+            f"p95={v.e2e_latency_ms_p95:.1f} мс, "
+            f"max={v.e2e_latency_ms_max:.1f} мс"
+        )
+        lines.append("")
+        lines.append(
+            "_Примечания:_"
+        )
+        lines.append(
+            "- _TX-счёт из appsink-таппинга video/sender.py содержит больше "
+            "RTP-пакетов чем реально уходит на сеть: queue leaky=downstream "
+            "перед udpsink дропает buffers под CPU-лимитом. Авторитетный TX-счёт "
+            "видеопотока — `payload` row в «Сетевых потоках»._"
+        )
+        lines.append(
+            "- _E2E latency — приблизительная: tx-таппинг через `tee → appsink` "
+            "асинхронен с pipeline-clock'ом, поэтому tx_wall может отставать "
+            "от реального ухода в udpsink. Берётся подмножество «синхронных» "
+            "пар (где tx_wall и rx_wall укладываются в 1 секунду друг от друга). "
+            "Frame loss и jitter авторитетны — считаются только по rx-side._"
+        )
+        lines.append("")
+
     lines.append("## Синхронизация")
     lines.append("")
     lines.append(f"- Sync-ивентов: {report.sync.samples}")
