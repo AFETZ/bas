@@ -200,6 +200,67 @@ Acceptance check 1.5.2.b: то же что 1.5.2.a, но при детально
 
 Расширить report.md секцией с раздельной статистикой «вне outage» / «в outage» — чтобы видно было ровно сколько пакетов потеряно из-за outage и сколько из-за loss-ratio. ns-3 уже отмечает в network events поле `outage_state`; receiver кладёт wall_time, analyzer матчит по window.
 
+## Известная регрессия 1.5.2.a — INVALID_SEQUENCE на degraded_lora с видео
+
+После реализации smoke инфраструктуры обнаружено, что включение `video-sender`
++ `video-receiver` параллельно с mission upload на профиле `degraded_lora`
+ломает mission upload: ArduPilot отвечает `MISSION_ACK type=13`
+(`MAV_MISSION_INVALID_SEQUENCE`).
+
+### Картина из events.jsonl (cooldown=5s, оригинальный v0.7)
+
+```
++30.6s mission_count_sent (n=7, repeats=5)
++37.6s mission_item_sent seq=0
++38.5..+42.6s  8× mission_request_duplicate_ignored seq=0 (cooldown blocking)
++42.6s mission_item_sent seq=0  (second time after cooldown elapsed)
++43.5s mission_item_sent seq=1
++44.1..+46.5s  3× mission_request_duplicate_ignored seq=1
++46.8s MISSION_ACK type=13 INVALID_SEQUENCE  ← FAIL
+```
+
+При cooldown=0.5s (пробовал — не помогло): orchestrator отправляет 5 копий
+MISSION_ITEM seq=0 подряд, потом seq=1, потом тот же INVALID_SEQUENCE. То есть
+наши MISSION_ITEM не доходят до SITL **систематически** (или ACK от SITL
+теряется).
+
+### Гипотеза root cause
+
+CPU contention. `video-sender` (gstreamer x264enc) делит `bas-uav` netns
+с orchestrator-ом и mavbridge socat. На WSL2 с 4 vCPU encoder x264 при
+2000 kbps / 30 fps занимает ~40-60% одного ядра. Под этой нагрузкой Python
+`_listener_loop` в `DockerComposeFlightStack` (`recv_match` на blocking) читает
+MAVLink с задержкой — `last_mission_request` обновляется не сразу при приходе
+пакета. SITL retry-цикл (~600ms) опережает наш ответ → нарастает burst
+дубликатов → один из них в момент несоответствия позиции автомата → INVALID_SEQUENCE.
+
+На `wifi_good` (ctrl 5ms / 0 loss) regression не проявляется: SITL получает
+наш единственный ответ за один RTT и не делает retransmit.
+
+На `1.5.1 degraded_lora без видео` это ТО ЖЕ cooldown=5s работает — потому
+что без CPU contention listener успевает обрабатывать MAVLink в реальном
+времени.
+
+### План на следующую сессию (debug)
+
+1. **Profile CPU**: `docker stats` во время mission upload, проверить
+   `bas-orchestrator`-процесс ли в bottleneck'е (нужно перенести orchestrator
+   в свой контейнер с CPU-limit на video-sender).
+2. **Async MAVLink reader**: переписать `_listener_loop` на selector-based,
+   чтобы не зависеть от GIL и был быстрее.
+3. **video-sender CPU limit**: `cpus: "0.5"` на video-sender в compose,
+   проверить помогает ли.
+4. **MAVProxy posredник**: вместо socat поднять `mavproxy.py` в bas-uav netns
+   как буфер. MAVProxy known-good для lossy MAVLink (используется в реальных
+   FPV-дронах). Альтернатива: возможно более robust mission upload реализация.
+5. **Уменьшить video bitrate / framerate** для degraded_lora профиля
+   (`BAS_VIDEO_BITRATE_KBPS=500`) — может облегчить CPU и пройти.
+
+### Acceptance criteria после фикса
+
+`sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora` — mission landed
++ видео flow ≥ 5 минут без crash.
+
 ## Open questions
 
 1. **Camera plugin path 1.5.2.b**: будет ли `gz-sim-camera-system` встроенно пушить H.264 RTP без extra-кода, или придётся писать кастомный плагин? — проверить документацию gz-sim Harmonic и ardupilot_gazebo readme. Если плагин не умеет «из коробки», 1.5.2.b удлинится; план B — gz topic → fdsrc через protobuf-парсер.

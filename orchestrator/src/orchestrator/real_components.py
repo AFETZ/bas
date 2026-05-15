@@ -528,6 +528,14 @@ class MissionRunner:
                         continue
                     highest_request_seq_seen = max(highest_request_seq_seen, req_seq)
 
+                    # Cooldown 5s: блокирует burst-дубликаты MISSION_REQUEST когда
+                    # SITL retry-цикл аккумулировал запросы пока наш предыдущий
+                    # ответ ещё в полёте по медленному каналу. Подтверждено
+                    # на degraded_lora v0.7 (без видео) — 5s работает.
+                    # Известное regression: при concurrent видео-канале в 1.5.2
+                    # пятая копия MISSION_ITEM seq=0 всё равно вылетает (CPU
+                    # contention тормозит listener_loop'у обновление
+                    # last_mission_request) — см. docs/stage_1_5_2_plan.md.
                     now = time.time()
                     last_sent = last_item_sent_at.get(req_seq, 0.0)
                     if now - last_sent < 5.0:
