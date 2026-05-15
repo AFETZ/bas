@@ -61,22 +61,45 @@ python -m analyzer logs/<run_id>
 | Компонент | Этап 1 | Статус |
 |---|---|---|
 | Оркестратор + единый JSONL-журнал | да | **работает** (stub + --real) |
-| Анализатор метрик | да | **работает** (поддерживает оба формата позиции) |
+| Анализатор метрик | да | **работает** (PDR/delay/jitter/outage/landed/waypoints) |
 | Конфиги (YAML) | да | сценарии + сетевые профили + миссии |
 | ArduPilot SITL контейнер | да | **собран** (bas/ardupilot-sitl:dev) |
 | Gazebo Harmonic контейнер | да | **собран** (bas/gazebo-harmonic:dev) |
 | ns-3 + TapBridge + 2 канала | да | **работает** (TapBridge UseLocal, RateErrorModel, outage, JSONL) |
-| Host bridges + TAP/veth/netns | да | **готов** (scripts/setup_radio_net.sh) |
-| Реальный полёт через MAVLink | да | **работает** (DockerComposeFlightStack + MissionRunner) |
-| ns-3 в радио-петле с SITL | нет | проверено через ping в netns, интеграция с SITL — этап 1.5 |
+| Host bridges + TAP/veth/netns | да | **готов** (`scripts/setup_radio_net.sh`) |
+| Реальный полёт через MAVLink (host network) | да | **работает** (этап 1.4) |
+| Shadow GCS в bas-ctrl-far netns через ns-3 | да | **работает** (этап 1.5.0) |
+| Mission через ns-3, profile `wifi_good` | да | **работает** v0.7 (AUTO + UDP bridge) |
+| Mission через ns-3, profile `degraded_lora` | да | **работает** v0.7 (250ms delay + 2% loss + outage) |
+| Видеопоток камеры Gazebo через payload-канал | нет | этап 1.5.2 (следующий) |
+| Сравнительный отчёт WiFi vs LoRa | нет | этап 1.6 |
 | Sionna RT (офлайн радиокарты) | нет | этап 2 |
 | AirSim / Cosys-AirSim | нет | этап 2 |
 | Несколько БАС / рой | нет | этап 2 |
 
+## Этап 1.5: радио-петля SITL ↔ ns-3 (v0.7)
+
+Реализован полный mission run из netns `bas-ctrl-far` через ns-3 канал в SITL+Gazebo,
+размещённые в shared netns `bas-uav` (Kubernetes pause-container pattern).
+
+Транспорт: MAVLink UDP через `mavbridge` (socat-sidecar в shared netns) обходит TCP
+head-of-line blocking; mission upload протокол укреплён COUNT-burst'ом и adaptive
+silence-limit'ом для устойчивости к 250ms+2% loss каналу.
+
+```bash
+# baseline wifi (~5ms delay)
+sudo bash scripts/run_stage_1_5_1_mission.sh wifi_good
+
+# degraded LoRa-подобный (250ms delay, 2% loss, 2× outage по 3s)
+sudo bash scripts/run_stage_1_5_1_mission.sh degraded_lora
+```
+
+Отчёт по прогону — `logs/<run_id>/report.md`. Подробности про root causes и решения —
+[docs/stage_1_5_1_known_issues.md](docs/stage_1_5_1_known_issues.md).
+
 ## Дальнейшие шаги
 
-1. Установить Docker в WSL (`scripts/install_docker.sh`)
-2. Собрать ArduPilot SITL образ (`docker compose build sitl`) - реальная сборка займёт ~30 минут
-3. Собрать ns-3 образ с TapBridge - ~20 минут
-4. Прогнать baseline сценарий
-5. Сверить логи и отчёт со столбцами из таблицы 5 архитектурного документа
+1. Этап 1.5.2 — реальный видеопоток камеры Gazebo через payload-канал ns-3 (RTP/UDP),
+   метрики FPS / e2e latency / frame loss
+2. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
+3. Этап 2 — Sionna RT (офлайн радиокарты), AirSim/Cosys-AirSim, рой

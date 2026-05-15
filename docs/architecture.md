@@ -65,12 +65,14 @@
 | Этап | Содержание | Состояние |
 |---|---|---|
 | 1.0 | Skeleton: оркестратор, журнал, анализатор, stub-компоненты, конфиги | **готов** |
-| 1.1 | Docker в WSL, базовые образы (ArduPilot SITL, Gazebo Harmonic, ns-3) | следующий шаг |
-| 1.2 | ArduPilot SITL ↔ Gazebo Harmonic через ardupilot_gazebo plugin | после 1.1 |
-| 1.3 | ns-3 two_channel.cc с TapBridge + два моста (control, payload) | после 1.2 |
-| 1.4 | MAVLink команды и телеметрия через TAP control | после 1.3 |
-| 1.5 | Видеопоток камеры Gazebo через TAP payload | после 1.4 |
-| 1.6 | Сценарии нагрузочного теста + сравнительный отчёт WiFi vs LoRa | после 1.5 |
+| 1.1 | Docker в WSL, базовые образы (ArduPilot SITL, Gazebo Harmonic, ns-3) | **готов** |
+| 1.2 | ArduPilot SITL ↔ Gazebo Harmonic через ardupilot_gazebo plugin | **готов** |
+| 1.3 | ns-3 `two_channel.cc` с TapBridge + два моста (control, payload) | **готов** |
+| 1.4 | MAVLink команды и телеметрия через host network (без ns-3) | **готов** (v0.1) |
+| 1.5.0 | Shadow GCS в bas-ctrl-far netns через ns-3 control TAP | **готов** (v0.2) |
+| 1.5.1 | Полная mission через ns-3 control канал, `wifi_good` + `degraded_lora` | **готов** (v0.7) |
+| 1.5.2 | Видеопоток камеры Gazebo через TAP payload (RTP/UDP, метрики FPS/e2e/loss) | следующий шаг |
+| 1.6 | Сценарии нагрузочного теста + сравнительный отчёт WiFi vs LoRa | после 1.5.2 |
 | 2.x | Sionna RT (офлайн радиокарты) | этап 2 |
 | 2.x | AirSim / Cosys-AirSim как визуально-сенсорная ветка | этап 2 |
 | 2.x | Несколько БАС, рой | этап 2 |
@@ -79,11 +81,16 @@
 
 `bas-orchestrator <scenario>` запускает в stub-режиме (без Docker). Это нужно для отладки оркестратора и анализатора. Stub детерминированно эмулирует прогон по тому же контракту событий.
 
-`bas-orchestrator <scenario> --real` (заглушка, ещё не реализована) поднимет `docker compose up` и будет ждать события от реальных компонентов.
+`bas-orchestrator <scenario> --real` поднимает `docker compose up`, дожидается SITL/Gazebo и ведёт реальный mission run. С флагом `--external-compose` оркестратор не поднимает compose сам, а подключается к уже работающему стеку (используется в `run_stage_1_5_1_mission.sh` где compose стартуется снаружи, чтобы инжектировать veth в shared netns).
+
+## Транспорт MAVLink (v0.7)
+
+Между SITL и orchestrator'ом в `bas-ctrl-far` стоит `mavbridge` (alpine/socat) в shared netns `bas-uav`: UDP 14550 ↔ TCP 5760 (SITL). Радиоканал ns-3 переносит только UDP — это устраняет TCP head-of-line blocking при больших RTT и потерях. TCP остаётся только локально между socat и SITL внутри netns, где он стабилен.
+
+Mission upload использует AUTO-mode: HOME + TAKEOFF + waypoints + LAND загружаются в ArduPilot одним пакетом, дальше автопилот летит сам. Протокол укреплён MISSION_COUNT-burst'ом (5×), adaptive silence-limit'ом (15s до первого request / 60s после) и anti-stale/anti-duplicate фильтрами на стороне orchestrator'а.
 
 ## Известные упрощения этапа 1
 
-- Flight stub не реагирует на сетевые задержки управления (в реальном прототипе ArduPilot задержит команду и реакция БАС изменится).
-- Network stub генерирует пакеты независимо от полётного контура (т.е. в LoRa-профиле БАС летит как обычно, хотя реальный ArduPilot тоже задержался бы).
-- TapBridge ещё не подключён в `two_channel.cc` - сейчас это каркас с CommandLine-аргументами и пустым `Simulator::Run()`.
-- Sionna RT и AirSim - вне scope этапа 1.
+- Видеопоток в payload-канале пока синтетический (генерится из orchestrator'а без реальной камеры) — этап 1.5.2 заменит на реальный RTP с камеры Gazebo.
+- Stub-режим оставлен для отладки оркестратора и анализатора (без Docker).
+- Sionna RT и AirSim — вне scope этапа 1.

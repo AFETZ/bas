@@ -188,5 +188,7 @@ TAKEOFF/SET_POSITION_TARGET с такой стратегией не успели
 - `scripts/_smoke_mission_setup.sh` — mission-style setup without orchestrator
 - `scripts/_dbl_pcap.sh` — three-way tcpdump (tap-near/tap-far/veth-uav-br)
 - `scripts/_compare_netns.sh` — netns state diff before/after Gazebo
-- `scripts/_test_block_mcast.sh`, `_test_no_mcast.sh`, `_test_bridge_mcast.sh`,
-  `_test_ebtables.sh` — failed mitigation attempts (kept for record)
+- Failed multicast-mitigation scripts (`_test_block_mcast.sh`, `_test_no_mcast.sh`,
+  `_test_bridge_mcast.sh`, `_test_ebtables.sh`) удалены в v0.7-housekeeping —
+  root cause #2 закрыт через `GZ_IP=127.0.0.1` в compose, эти попытки больше
+  не нужны как живой код. История остаётся в git (см. commit перед v0.7.1).
