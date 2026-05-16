@@ -25,6 +25,8 @@
 # Использование:
 #   sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
 #   sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
+#   sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_good
+#   sudo env BAS_VIDEO_SOURCE=camera BAS_GAZEBO_GUI=1 bash scripts/run_stage_1_5_2_mission.sh wifi_good
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -72,7 +74,20 @@ fi
 NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 
 # Video-параметры (передаются как env в docker-compose).
-export BAS_VIDEO_SOURCE="${BAS_VIDEO_SOURCE:-videotestsrc}"
+# BAS_VIDEO_SOURCE:
+#   videotestsrc     — synthetic ball pattern (smoke, 1.5.2.a default)
+#   camera           — real Gazebo iris_with_gimbal camera через GstCameraPlugin
+#                      (этап 1.5.2.b). Маппится в sender.py на 'udpsrc:5600'.
+#   udpsrc:<port>    — прямое указание UDP loopback source (для отладки)
+export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
+export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image/enable_streaming}"
+export BAS_VIDEO_CAMERA_WARMUP_SECONDS="${BAS_VIDEO_CAMERA_WARMUP_SECONDS:-45}"
+export BAS_VIDEO_CAMERA_STRICT="${BAS_VIDEO_CAMERA_STRICT:-1}"
+export BAS_VIDEO_SOURCE_RAW="${BAS_VIDEO_SOURCE:-videotestsrc}"
+case "$BAS_VIDEO_SOURCE_RAW" in
+    camera) export BAS_VIDEO_SOURCE="udpsrc:${BAS_CAMERA_UDP_PORT}" ;;
+    *)      export BAS_VIDEO_SOURCE="$BAS_VIDEO_SOURCE_RAW" ;;
+esac
 export BAS_VIDEO_DEST_HOST="${BAS_VIDEO_DEST_HOST:-10.20.0.3}"
 export BAS_VIDEO_DEST_PORT="${BAS_VIDEO_DEST_PORT:-5000}"
 export BAS_VIDEO_BITRATE_KBPS="${BAS_VIDEO_BITRATE_KBPS:-${DEFAULT_VIDEO_BITRATE_KBPS:-2000}}"
@@ -81,8 +96,28 @@ export BAS_VIDEO_WIDTH="${BAS_VIDEO_WIDTH:-640}"
 export BAS_VIDEO_HEIGHT="${BAS_VIDEO_HEIGHT:-480}"
 export BAS_VIDEO_TX_LOG="/work/logs/${RUN_ID}/video_tx.jsonl"
 export BAS_VIDEO_RX_LOG="/work/logs/${RUN_ID}/video_rx.jsonl"
+export BAS_VIDEO_RECORD_MP4="${BAS_VIDEO_RECORD_MP4:-/work/logs/${RUN_ID}/video_rx.mp4}"
 
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
+
+ensure_docker() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    echo "[preflight] Docker daemon не отвечает; пробую запустить service docker"
+    service docker start >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
+            echo "  Docker daemon готов"
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "Docker daemon не поднялся. Запусти: sudo service docker start" >&2
+    return 1
+}
 
 cleanup() {
     set +e
@@ -98,11 +133,96 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+discover_camera_enable_topic() {
+    local discovered
+    discovered="$(
+        sg docker -c "docker exec bas-gazebo gz topic -l 2>/dev/null" \
+            | grep '/enable_streaming$' \
+            | head -1 || true
+    )"
+    if [ -n "$discovered" ]; then
+        BAS_CAMERA_ENABLE_TOPIC="$discovered"
+        return 0
+    fi
+    return 1
+}
+
+enable_gazebo_camera_stream() {
+    [ "$BAS_VIDEO_SOURCE_RAW" = "camera" ] || return 0
+
+    echo "[camera] включаем GstCameraPlugin stream"
+    local discovered=0
+    for _ in $(seq 1 20); do
+        if discover_camera_enable_topic; then
+            discovered=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$discovered" -ne 1 ]; then
+        echo "  camera enable topic не появился в gz topic -l; пробую default"
+    fi
+    echo "  camera enable topic: ${BAS_CAMERA_ENABLE_TOPIC}"
+
+    local ok=0
+    for _ in $(seq 1 3); do
+        if sg docker -c "docker exec bas-gazebo gz topic -t '${BAS_CAMERA_ENABLE_TOPIC}' -m gz.msgs.Boolean -p 'data: true' >/tmp/bas_camera_enable.log 2>&1"; then
+            ok=1
+        fi
+        sleep 1
+    done
+    if [ "$ok" -ne 1 ]; then
+        echo "Не удалось отправить enable_streaming в Gazebo camera plugin" >&2
+        sg docker -c "docker exec bas-gazebo cat /tmp/bas_camera_enable.log 2>/dev/null" >&2 || true
+        return 1
+    fi
+    sg docker -c "docker logs --tail 80 bas-gazebo 2>&1" \
+        | grep -E 'GstCameraPlugin|CameraZoomPlugin|Ogre2|Unable to open display' \
+        | tail -20 \
+        | sed 's/^/  gz: /' || true
+}
+
+check_camera_video_flow() {
+    [ "$BAS_VIDEO_SOURCE_RAW" = "camera" ] || return 0
+
+    local tx_log="${LOG_DIR}/video_tx.jsonl"
+    local tx_lines
+    local waited=0
+    while [ "$waited" -le "$BAS_VIDEO_CAMERA_WARMUP_SECONDS" ]; do
+        if [ -f "$tx_log" ]; then
+            tx_lines=$(wc -l < "$tx_log" 2>/dev/null || echo 0)
+        else
+            tx_lines=0
+        fi
+        [ "${tx_lines:-0}" -gt 1 ] && break
+        if ! sg docker -c "docker inspect -f '{{.State.Running}}' bas-video-sender 2>/dev/null" | grep -q true; then
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    echo "  camera tx sanity: video_tx.jsonl=${tx_lines:-0} записей (${waited}s)"
+
+    if [ "${tx_lines:-0}" -le 1 ] && [ "$BAS_VIDEO_CAMERA_STRICT" = "1" ]; then
+        echo "Gazebo camera не дала RTP на 127.0.0.1:${BAS_CAMERA_UDP_PORT}; останавливаю camera smoke." >&2
+        sg docker -c "docker logs bas-gazebo 2>&1"         > "${LOG_DIR}/gazebo.log" 2>&1 || true
+        sg docker -c "docker logs bas-video-sender 2>&1"   > "${LOG_DIR}/video_sender.log" 2>&1 || true
+        sg docker -c "docker logs bas-video-receiver 2>&1" > "${LOG_DIR}/video_receiver.log" 2>&1 || true
+        echo "Подсказка: см. ${LOG_DIR}/gazebo.log и ${LOG_DIR}/video_sender.log" >&2
+        sg docker -c "docker logs --tail 120 bas-gazebo 2>&1" | sed 's/^/  gz: /' >&2 || true
+        sg docker -c "docker logs --tail 80 bas-video-sender 2>&1" | sed 's/^/  tx: /' >&2 || true
+        exit 4
+    fi
+}
+
 ensure_root
+ensure_docker
 mkdir -p "$LOG_DIR"
 echo "==> run_id=${RUN_ID}, profile=${PROFILE}, scenario=${SCENARIO}"
 echo "==> логи: $LOG_DIR"
-echo "==> video: src=${BAS_VIDEO_SOURCE} ${BAS_VIDEO_WIDTH}x${BAS_VIDEO_HEIGHT}@${BAS_VIDEO_FPS} ${BAS_VIDEO_BITRATE_KBPS}kbps → ${BAS_VIDEO_DEST_HOST}:${BAS_VIDEO_DEST_PORT}"
+echo "==> video: src=${BAS_VIDEO_SOURCE_RAW} (pipeline=${BAS_VIDEO_SOURCE}) ${BAS_VIDEO_WIDTH}x${BAS_VIDEO_HEIGHT}@${BAS_VIDEO_FPS} ${BAS_VIDEO_BITRATE_KBPS}kbps → ${BAS_VIDEO_DEST_HOST}:${BAS_VIDEO_DEST_PORT}"
+echo "==> video record: ${BAS_VIDEO_RECORD_MP4}"
+[ "${BAS_GAZEBO_GUI:-0}" = "1" ] && echo "==> gazebo GUI: enabled (WSLg/X11)"
 
 echo "[1/9] подготовка радио-сети (control + payload bridges/TAPs)"
 bash "${REPO_ROOT}/scripts/setup_radio_net.sh" down >/dev/null 2>&1 || true
@@ -223,6 +343,8 @@ echo "[8/9] запуск video-sender (источник: ${BAS_VIDEO_SOURCE})"
 sg docker -c "docker compose -f ${COMPOSE_FILE} up -d video-sender" 2>&1 | tail -3
 sleep 3
 sg docker -c "docker logs --tail 5 bas-video-sender 2>&1" | sed 's/^/  tx: /'
+enable_gazebo_camera_stream
+check_camera_video_flow
 
 echo "[9/9] прогон миссии через ns-3 control канал (orchestrator в bas-ctrl-far netns)"
 echo "  endpoint=udpout:10.10.0.2:14550 (через ns-3 → mavbridge → SITL TCP)"
@@ -253,10 +375,16 @@ echo "[анализ]"
 # Резюме видео-логов (для быстрой sanity check'и до того как analyzer выучит format).
 TX_LINES=$(wc -l < "${LOG_DIR}/video_tx.jsonl" 2>/dev/null || echo 0)
 RX_LINES=$(wc -l < "${LOG_DIR}/video_rx.jsonl" 2>/dev/null || echo 0)
+VIDEO_MP4="${LOG_DIR}/video_rx.mp4"
 echo
 echo "Видео sanity:"
 echo "  video_tx.jsonl: ${TX_LINES} записей"
 echo "  video_rx.jsonl: ${RX_LINES} записей"
+if [ -s "$VIDEO_MP4" ]; then
+    echo "  video_rx.mp4: $(du -h "$VIDEO_MP4" | awk '{print $1}')"
+else
+    echo "  video_rx.mp4: не создан или пуст"
+fi
 
 echo
 echo "Прогон завершён (RC=${RC}). Логи: ${LOG_DIR}"

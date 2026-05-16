@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Video sender — этап 1.5.2.a/b.
+"""Video sender — этап 1.5.2.a/b/d.
 
-Строит GStreamer-пайплайн (источник видео → H.264 → RTP/UDP) и параллельно
-через appsink-tee пишет JSONL-запись на каждый исходящий RTP-пакет:
+Строит GStreamer-пайплайн (источник видео → H.264 → RTP/UDP) и через
+GstPadProbe на sink-pad `udpsink` пишет JSONL-запись на каждый RTP-пакет,
+который реально уходит в UDP:
 
     {"event_type":"video_tx","wall_time":...,"rtp_seq":...,"rtp_ts_90khz":...,"size_bytes":...}
 
@@ -11,6 +12,7 @@ end-to-end latency / frame_loss.
 
 Источник видео выбирается флагом `--source`:
     * videotestsrc (default) — синтетический шар, для 1.5.2.a smoke
+    * camera — alias для udpsrc:${BAS_CAMERA_UDP_PORT:-5600}
     * udpsrc:<port> — приём готового H.264 RTP с loopback'а (если Gazebo-плагин
       уже формирует RTP), для 1.5.2.b
     * gz_image — отдельная ветка реализации, заглушка пока
@@ -24,12 +26,14 @@ ENV-параметры:
     BAS_VIDEO_HEIGHT      — default 480
     BAS_VIDEO_LOG         — default /work/logs/video_tx.jsonl
     BAS_VIDEO_SOURCE      — default videotestsrc
+    BAS_CAMERA_UDP_PORT   — default 5600 (только для BAS_VIDEO_SOURCE=camera)
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import queue
 import signal
 import struct
 import sys
@@ -61,35 +65,73 @@ def parse_rtp_header(data: bytes) -> tuple[int, int, int] | None:
 
 
 class JsonlWriter:
-    """Минимальный thread-safe writer с line-buffered flush."""
+    """Асинхронный JSONL writer.
 
-    def __init__(self, path: Path) -> None:
+    `write()` лишь кладёт запись в очередь и возвращает управление сразу.
+    Реальная сериализация и I/O идут в отдельном потоке. Это критично для
+    GstPadProbe callback'а: probe вызывается синхронно в pipeline-thread'е,
+    и блокировка на JSON-сериализации тормозит видеопоток, что отнимает
+    CPU у orchestrator-MAVLink listener'а (см. INVALID_SEQUENCE regression
+    в docs/stage_1_5_2_plan.md). Queue максимум 50k записей, при overflow
+    drop-сохраняется счётчик `dropped_records`.
+    """
+
+    _SENTINEL: object = object()
+
+    def __init__(self, path: Path, max_queue: int = 50000) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._fp = open(path, "a", buffering=1, encoding="utf-8")
-        self._lock = threading.Lock()
+        self._q: queue.Queue = queue.Queue(maxsize=max_queue)
+        self.dropped_records = 0
+        self._stop = False
+        self._thread = threading.Thread(
+            target=self._drain, name=f"jsonl-{path.name}", daemon=True
+        )
+        self._thread.start()
 
-    def write(self, record: dict) -> None:
-        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
-        with self._lock:
-            self._fp.write(line + "\n")
-
-    def close(self) -> None:
-        with self._lock:
+    def _drain(self) -> None:
+        while True:
+            item = self._q.get()
+            if item is JsonlWriter._SENTINEL:
+                break
             try:
-                self._fp.close()
+                self._fp.write(item + "\n")
             except Exception:
                 pass
+
+    def write(self, record: dict) -> None:
+        try:
+            line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            return
+        try:
+            self._q.put_nowait(line)
+        except queue.Full:
+            self.dropped_records += 1
+
+    def close(self) -> None:
+        try:
+            self._q.put(JsonlWriter._SENTINEL, timeout=5.0)
+        except queue.Full:
+            pass
+        self._thread.join(timeout=10.0)
+        try:
+            self._fp.close()
+        except Exception:
+            pass
 
 
 def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
     """Собирает GStreamer pipeline:
 
-        <source> ! videoconvert ! x264enc ! rtph264pay ! tee name=t
-            t. ! queue ! udpsink host=<dest_host> port=<dest_port>
-            t. ! queue ! appsink name=tx_tap emit-signals=true sync=false
+        <source> ! videoconvert ! x264enc ! rtph264pay !
+            udpsink name=net_sink host=<dest_host> port=<dest_port>
 
     Для smoke (`videotestsrc`) добавляем явный caps-filter с framerate/size.
     """
+    if args.source == "camera":
+        args.source = f"udpsrc:{os.environ.get('BAS_CAMERA_UDP_PORT', '5600')}"
+
     if args.source == "videotestsrc":
         source_chain = (
             f"videotestsrc pattern=ball is-live=true ! "
@@ -105,18 +147,17 @@ def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
         port = int(args.source.split(":", 1)[1])
         source_chain = (
             f"udpsrc port={port} "
-            f"caps=\"application/x-rtp,media=video,encoding-name=H264,payload=96\""
+            f"caps=\"application/x-rtp,media=video,clock-rate=90000,"
+            f"encoding-name=H264,payload=96\""
         )
     else:
         raise SystemExit(f"unknown --source: {args.source}")
 
     pipeline_str = (
         f"{source_chain} ! "
-        f"tee name=t "
-        f"t. ! queue leaky=downstream max-size-buffers=200 ! "
-        f"udpsink host={args.dest_host} port={args.dest_port} sync=false async=false "
-        f"t. ! queue leaky=downstream max-size-buffers=200 ! "
-        f"appsink name=tx_tap emit-signals=true sync=false drop=false max-buffers=200"
+        f"queue leaky=downstream max-size-buffers=200 ! "
+        f"udpsink name=net_sink host={args.dest_host} port={args.dest_port} "
+        f"sync=false async=false"
     )
 
     print(f"[video-sender] pipeline: {pipeline_str}", flush=True)
@@ -125,32 +166,37 @@ def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
     return pipeline
 
 
-def on_new_sample(appsink: Gst.Element, writer: JsonlWriter, start_wall: float) -> Gst.FlowReturn:
-    sample = appsink.emit("pull-sample")
-    if sample is None:
-        return Gst.FlowReturn.OK
-    buf = sample.get_buffer()
+def on_tx_buffer_probe(
+    _pad: Gst.Pad,
+    info: Gst.PadProbeInfo,
+    writer: JsonlWriter,
+    start_wall: float,
+) -> Gst.PadProbeReturn:
+    buf = info.get_buffer()
     if buf is None:
-        return Gst.FlowReturn.OK
+        return Gst.PadProbeReturn.OK
     ok, mapinfo = buf.map(Gst.MapFlags.READ)
     if not ok:
-        return Gst.FlowReturn.OK
+        return Gst.PadProbeReturn.OK
     try:
         header = parse_rtp_header(bytes(mapinfo.data))
         if header is None:
-            return Gst.FlowReturn.OK
+            return Gst.PadProbeReturn.OK
         seq, ts, size = header
+        wall = time.time()
         writer.write({
             "event_type": "video_tx",
-            "wall_time": time.time(),
-            "wall_dt": time.time() - start_wall,
+            "tap": "udpsink_sink_pad",
+            "timing_source": "gst_pad_probe",
+            "wall_time": wall,
+            "wall_dt": wall - start_wall,
             "rtp_seq": seq,
             "rtp_ts_90khz": ts,
             "size_bytes": size,
         })
     finally:
         buf.unmap(mapinfo)
-    return Gst.FlowReturn.OK
+    return Gst.PadProbeReturn.OK
 
 
 def main() -> int:
@@ -189,13 +235,17 @@ def main() -> int:
         "fps": args.fps,
         "resolution": f"{args.width}x{args.height}",
         "codec": "h264",
+        "tap": "udpsink_sink_pad",
+        "timing_source": "gst_pad_probe",
     })
 
     pipeline = build_pipeline(args)
 
-    appsink = pipeline.get_by_name("tx_tap")
-    assert appsink is not None, "appsink tx_tap не найден в pipeline"
-    appsink.connect("new-sample", on_new_sample, writer, start_wall)
+    net_sink = pipeline.get_by_name("net_sink")
+    assert net_sink is not None, "udpsink net_sink не найден в pipeline"
+    sink_pad = net_sink.get_static_pad("sink")
+    assert sink_pad is not None, "sink-pad udpsink net_sink не найден"
+    sink_pad.add_probe(Gst.PadProbeType.BUFFER, on_tx_buffer_probe, writer, start_wall)
 
     loop = GLib.MainLoop()
 

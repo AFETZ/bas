@@ -72,8 +72,9 @@
 | 1.5.0 | Shadow GCS в bas-ctrl-far netns через ns-3 control TAP | **готов** (v0.2) |
 | 1.5.1 | Полная mission через ns-3 control канал, `wifi_good` + `degraded_lora` | **готов** (v0.7) |
 | 1.5.2.a | RTP H.264 видео-pipeline (videotestsrc) через ns-3 payload TAP | **готов** (v0.8) |
-| 1.5.2.a-metrics | VideoMetrics в анализаторе (FPS/e2e latency/frame loss/jitter) | следующий шаг |
-| 1.5.2.b | Реальная Gazebo-камера через custom SDF + camera plugin | после метрик |
+| 1.5.2.a-metrics | VideoMetrics в анализаторе (FPS/e2e latency/frame loss/jitter) | **готов** (v0.8.1) |
+| 1.5.2.b | Реальная Gazebo-камера через GstCameraPlugin (`BAS_VIDEO_SOURCE=camera`) | **готов** |
+| 1.5.2.c | Корреляция payload outage ↔ video RX gaps в `report.md` | **готов** |
 | 1.6 | Сценарии нагрузочного теста + сравнительный отчёт WiFi vs LoRa | после 1.5.2 |
 | 2.x | Sionna RT (офлайн радиокарты) | этап 2 |
 | 2.x | AirSim / Cosys-AirSim как визуально-сенсорная ветка | этап 2 |
@@ -93,6 +94,6 @@ Mission upload использует AUTO-mode: HOME + TAKEOFF + waypoints + LAND
 
 ## Известные упрощения этапа 1
 
-- Видеопоток в payload-канале пока синтетический (генерится из orchestrator'а без реальной камеры) — этап 1.5.2 заменит на реальный RTP с камеры Gazebo.
+- Видеопоток в payload-канале по умолчанию синтетический (`videotestsrc`); режим `BAS_VIDEO_SOURCE=camera` подключает штатную камеру `iris_with_gimbal` через `GstCameraPlugin`.
 - Stub-режим оставлен для отладки оркестратора и анализатора (без Docker).
 - Sionna RT и AirSim — вне scope этапа 1.

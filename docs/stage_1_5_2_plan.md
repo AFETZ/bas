@@ -26,7 +26,9 @@
 | Анализатор: `payload | пакетов | PDR | потерь | в outage | задержка | jitter | goodput` колонки | `analyzer/src/analyzer/metrics.py` |
 
 Чего нет и придётся создать:
-- `gazebo/worlds/iris_runway_cam.sdf` (камера на iris)
+- для 1.5.2.b отдельный SDF не нужен: `iris_runway.sdf` уже включает
+  `iris_with_gimbal`, а камера с `GstCameraPlugin` живёт в модели
+  `gimbal_small_3d`
 - Sender и receiver контейнеры
 - Второй veth в `bas-uav` netns (на payload bridge)
 - Глобальный второй netns адрес и инжекция
@@ -91,7 +93,12 @@ gst-launch-1.0 -v \
 - **gz topic → fdsrc**: `gz topic -e -t /.../image` пишет protobuf в stdout, парсится Python'ом, raw RGB→gst appsrc. Прямолинейно, но требует custom-конвертера protobuf↔raw.
 - **ROS2 bridge** (gz_ros_image_bridge → ros2 topic → gstreamer): ещё один контейнер, перегруз.
 
-Решение: для 1.5.2.b пробуем **в SDF добавить sensor + ardupilot_gazebo стандартный gst-streamer плагин** (он уже есть в base-образе). Этот плагин пушит H.264 на фиксированный UDP-порт. Если работает «из коробки» — sender.py становится прозрачным retap'ером (читает с loopback:5600, ре-RTP'ит на eth1:5000 с tx-логированием). Если не работает — fallback на «gz topic → fdsrc → gst».
+Решение: для 1.5.2.b используем уже существующий `iris_with_gimbal` из
+`ardupilot_gazebo`: в нём есть camera sensor + `GstCameraPlugin`, который пушит
+H.264 RTP на `127.0.0.1:5600`. Важная деталь: плагин не стартует поток сам,
+его нужно включить Gazebo topic'ом `.../enable_streaming` (`gz.msgs.Boolean`
+`data: true`). После этого `sender.py` работает как прозрачный retap'er
+(`udpsrc:5600` → `10.20.0.3:5000`) и продолжает писать tx JSONL.
 
 ### Receiver pipeline
 
@@ -172,7 +179,7 @@ class VideoMetrics:
 | Файл | Изменение |
 |---|---|
 | `video/sender.py` (новый) | Python + Gst, videotestsrc → x264 → RTP → udpsink, лог video_tx.jsonl |
-| `video/receiver.py` (новый) | Python + Gst, udpsrc → RTP → appsink + avdec_h264/fakesink, лог video_rx.jsonl |
+| `video/receiver.py` (новый) | Python + Gst, udpsrc → RTP → appsink + avdec_h264/fakesink, лог video_rx.jsonl + `video_rx.mp4` для демо |
 | `video/__init__.py`, `pyproject.toml` (опционально пакет) | как submodule с `bas-video-sender` / `bas-video-receiver` entry points |
 | `docker-compose.shared-netns.yml` | новый сервис `video-sender` с `network_mode: container:bas-uav-net`, mount `./video:/work/video:ro`, command `python /work/video/sender.py …` |
 | `Dockerfile docker/video/` (новый, легковесный) | python3 + gstreamer1.0-tools + python3-gst-1.0 + plugins (good, bad, ugly для x264, libav для avdec) |
@@ -190,15 +197,21 @@ Acceptance check 1.5.2.a:
 
 | Файл | Изменение |
 |---|---|
-| `gazebo/worlds/iris_runway_cam.sdf` (новый) | копия iris_runway из ardupilot_gazebo image, добавлен `<sensor type="camera">` на iris с update_rate=30 и нужным плагином |
-| `docker-compose.shared-netns.yml` | gazebo service переключается на новую SDF (`gz sim -s -r -v3 iris_runway_cam.sdf`), путь добавлен в `GZ_SIM_RESOURCE_PATH` через volume |
-| `video/sender.py` | source конфигурируем флагом: `videotestsrc` (smoke) / `gz_topic` (реальная камера) / `udpsrc port=5600` (если плагин внутри Gazebo сам пушит RTP на loopback) |
+| `docker/gazebo/Dockerfile` | runtime GStreamer plugins + `libdebuginfod1`, чтобы `libGstCameraPlugin.so` грузился и мог создать `videoconvert ! x264enc ! rtph264pay ! udpsink` |
+| `scripts/run_stage_1_5_2_mission.sh` | `BAS_VIDEO_SOURCE=camera` маппится в `udpsrc:${BAS_CAMERA_UDP_PORT:-5600}`, публикует `enable_streaming`, затем проверяет что `video_tx.jsonl` не пустой; `BAS_GAZEBO_GUI=1` включает окно Gazebo через WSLg |
+| `video/sender.py` | source конфигурируем флагом: `videotestsrc` (smoke) / `udpsrc:<port>` (реальная камера через `GstCameraPlugin`) |
 
-Acceptance check 1.5.2.b: то же что 1.5.2.a, но при детальном просмотре `video_rx.jsonl` через offline-декодер видны кадры с реальной сценой Gazebo (можно decompose первые 10 секунд через `gst-launch-1.0 filesrc location=… ! rtph264depay ! avdec_h264 ! jpegenc ! multifilesink`).
+Acceptance check 1.5.2.b: то же что 1.5.2.a, но `BAS_VIDEO_SOURCE=camera`
+даёт заполненные `video_tx.jsonl` / `video_rx.jsonl`, а принятый поток
+сохраняется как `logs/<run_id>/video_rx.mp4` с реальной сценой Gazebo.
 
 ### 1.5.2.c — корреляция outage ↔ frame loss (отчёт)
 
-Расширить report.md секцией с раздельной статистикой «вне outage» / «в outage» — чтобы видно было ровно сколько пакетов потеряно из-за outage и сколько из-за loss-ratio. ns-3 уже отмечает в network events поле `outage_state`; receiver кладёт wall_time, analyzer матчит по window.
+Реализовано: `report.md` получает блок `Payload outage ↔ video gaps` с
+окнами payload outage, раздельной статистикой gap-потерь около outage / вне
+outage и таблицей top video gaps. Для старых aggregate-событий ns-3 без
+`wall_time` используется приближённая video↔ns-3 timeline:
+первый активный payload burst совмещается с первым RX RTP-пакетом.
 
 ## Регрессия 1.5.2.a — INVALID_SEQUENCE на degraded_lora с видео — FIXED
 
@@ -336,7 +349,7 @@ MAVLink с задержкой — `last_mission_request` обновляется 
 | 1 | 1.5.2.a инфра: docker/video/Dockerfile, video/sender.py + receiver.py со smoke source (videotestsrc), новый run-скрипт, инжекция второго veth, маршруты | gst-pipeline отправляет/принимает RTP через ns-3 без видео реальной сцены, JSONL заполняются |
 | 2 | 1.5.2.a метрики: расширить analyzer, добавить секцию «Видеопоток» в report.md, прогон обоих профилей | acceptance #1 wifi_good, #2 degraded_lora |
 | 3 | 1.5.2.b camera: SDF с камерой, переключить source в sender.py на gz-stream, доказать что rx-сторона видит реальный кадр | acceptance #2 для b-варианта |
-| 4 | 1.5.2.c housekeeping: README, architecture.md, tag v0.8, push | этап закрыт |
+| 4 | 1.5.2.c correlation: outage windows ↔ video RX gaps в analyzer/report | отчёт показывает попадание longest_gap в payload outage |
 
 Один заход = одна сессия. Между сессиями коммитим, чтобы не терять контекст.
 

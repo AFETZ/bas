@@ -71,7 +71,7 @@ python -m analyzer logs/<run_id>
 | Shadow GCS в bas-ctrl-far netns через ns-3 | да | **работает** (этап 1.5.0) |
 | Mission через ns-3, profile `wifi_good` | да | **работает** v0.7 (AUTO + UDP bridge) |
 | Mission через ns-3, profile `degraded_lora` | да | **работает** v0.7 (250ms delay + 2% loss + outage) |
-| Видеопоток камеры Gazebo через payload-канал | частично | этап 1.5.2.a (videotestsrc через ns-3 — works v0.8) |
+| Видеопоток камеры Gazebo через payload-канал | да | 1.5.2.a/b/c: камера, метрики, MP4, корреляция outage ↔ video gaps |
 | Сравнительный отчёт WiFi vs LoRa | нет | этап 1.6 |
 | Sionna RT (офлайн радиокарты) | нет | этап 2 |
 | AirSim / Cosys-AirSim | нет | этап 2 |
@@ -97,25 +97,43 @@ sudo bash scripts/run_stage_1_5_1_mission.sh degraded_lora
 Отчёт по прогону — `logs/<run_id>/report.md`. Подробности про root causes и решения —
 [docs/stage_1_5_1_known_issues.md](docs/stage_1_5_1_known_issues.md).
 
-## Этап 1.5.2.a (v0.8): RTP-видео через payload-канал
+## Этап 1.5.2 (v0.8.1+): RTP-видео через payload-канал
 
 Под-этап smoke реализован: H.264 RTP-поток (sender → ns-3 payload TAP → receiver)
-работает на обоих профилях. На `wifi_good` mission landed=True + видео через ns-3
-без потерь; на `degraded_lora` — mission landed=True + 12 payload-пакетов в outage
-(корреляция outage↔frame loss демонстрируется).
+работает на обоих профилях. Анализатор автоматически добавляет секцию
+«Видеопоток» в `report.md`, если в прогоне есть `video_tx.jsonl` /
+`video_rx.jsonl`: FPS, frame loss, RFC 3550 jitter, bitrate goodput,
+приблизительная e2e latency и корреляция payload outage ↔ video gaps.
 
 ```bash
 sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
 sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
 ```
 
-Источник видео сейчас — `videotestsrc` (smoke), реальная камера Gazebo — в 1.5.2.b.
-Frame-level метрики (FPS / e2e latency / frame loss / RFC 3550 jitter) появятся
-в следующей итерации; см. [docs/stage_1_5_2_plan.md](docs/stage_1_5_2_plan.md).
+По умолчанию источник видео — `videotestsrc` (smoke). Для проверки реальной
+камеры Gazebo используется режим `BAS_VIDEO_SOURCE=camera`:
+
+```bash
+sudo service docker start
+docker compose build gazebo video
+sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_good
+```
+
+Этот режим включает штатный `GstCameraPlugin` через Gazebo topic
+`.../enable_streaming`, затем retap'ит H.264 RTP с `127.0.0.1:5600` в payload
+канал ns-3.
+
+По умолчанию прогон headless: окно Gazebo не открывается, а принятый
+видеопоток сохраняется в `logs/<run_id>/video_rx.mp4`. Для визуального демо
+через WSLg можно открыть GUI:
+
+```bash
+sudo env BAS_VIDEO_SOURCE=camera BAS_GAZEBO_GUI=1 bash scripts/run_stage_1_5_2_mission.sh wifi_good
+```
 
 ## Дальнейшие шаги
 
-1. Этап 1.5.2.a метрики — VideoMetrics в анализаторе и секция «Видеопоток» в report.md
-2. Этап 1.5.2.b — заменить `videotestsrc` на реальную Gazebo-камеру через custom SDF
-3. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
+1. Этап 1.5.2.d — точная e2e latency через GstPad probe / RTCP sender reports
+2. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
+3. Стабилизация real-camera `degraded_lora` upload-флейка (`MISSION_ACK type=13`)
 4. Этап 2 — Sionna RT (офлайн радиокарты), AirSim/Cosys-AirSim, рой

@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     # рядом с events.jsonl, посчитаем VideoMetrics и пришьём к report.
     tx_events, rx_events = load_video_events(run_dir)
     if tx_events or rx_events:
-        report.video = compute_video(tx_events, rx_events)
+        report.video = compute_video(tx_events, rx_events, events)
 
     md = to_markdown(report)
 

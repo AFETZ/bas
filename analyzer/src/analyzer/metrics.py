@@ -88,36 +88,52 @@ class SyncMetrics:
 
 
 @dataclass
+class VideoGap:
+    lost_packets: int
+    duration_ms: float
+    approx_sim_start_s: float | None = None
+    approx_sim_end_s: float | None = None
+    near_payload_outage: bool = False
+    nearest_outage: str = ""
+    nearest_outage_distance_s: float | None = None
+
+
+@dataclass
+class PayloadOutageWindow:
+    start_s: float
+    end_s: float
+
+    @property
+    def label(self) -> str:
+        return f"{self.start_s:.1f}-{self.end_s:.1f}s"
+
+
+@dataclass
 class VideoMetrics:
-    """Frame-level метрики видео-канала (этап 1.5.2.a-metrics).
+    """Frame-level метрики видео-канала (этап 1.5.2.a-metrics/d).
 
-    Источники:
-        * `video_tx.jsonl` — appsink-таппинг в video/sender.py, один callback
-          на каждый GStreamer buffer (RTP-пакет). NB: содержит **больше**
-          записей, чем реально уходит в сеть (queue leaky=downstream перед
-          udpsink дропает buffers под CPU-лимитом). К тому же appsink callback
-          не синхронен с pipeline-clock: один и тот же buffer попадает в
-          udpsink сразу, а в appsink — позже (по очереди GMainLoop). Поэтому
-          `tx_wall_time` приблизительный — годится только для **синхронного
-          подмножества** пар, где разница с rx укладывается в разумные пределы
-          (< 1 секунды); такие пары используются для оценки e2e latency.
-        * `video_rx.jsonl` — appsink-таппинг в video/receiver.py.
-
-    Frame loss и jitter считаются **только по rx-side**, что
-    авторитетно (не зависит от tx-таппинга и от того, какие RTP-пакеты на
-    самом деле ушли в сеть).
+    Новые логи 1.5.2.d пишут TX/RX timestamps через GstPadProbe:
+    `udpsink:sink` на sender-side и `udpsrc:src` на receiver-side. Для старых
+    логов 1.5.2.a/b analyzer остаётся совместимым: если tap не указан, считаем
+    timing source старым `tee → appsink`, а e2e latency помечаем как
+    approximate subset.
     """
     flow_id: str = "video"
     enabled: bool = False             # ставим True если есть хоть какие-то rx/tx записи
+    tx_tap: str = ""
+    rx_tap: str = ""
+    e2e_latency_precise: bool = False
+    e2e_latency_window_s: float = 1.0
 
-    tx_packets: int = 0               # уникальных rtp_seq в video_tx.jsonl
-    rx_packets: int = 0               # уникальных rtp_seq в video_rx.jsonl
+    tx_packets: int = 0               # уникальных (rtp_seq, rtp_ts_90khz)
+    rx_packets: int = 0               # уникальных (rtp_seq, rtp_ts_90khz)
 
     frame_loss_ratio: float = 0.0     # на основе gap-detection в rx (wraparound-aware)
-    matched_packets: int = 0          # сколько rx-пакетов нашли пару в tx (по rtp_seq)
-    synchronous_pairs: int = 0        # подмножество matched с e2e ∈ [0, 1.0 s]
+    matched_packets: int = 0          # сколько rx-пакетов нашли пару в tx
+    synchronous_pairs: int = 0        # e2e-пары после sanity-window фильтра
 
-    e2e_latency_ms_p50: float = 0.0   # median по synchronous_pairs
+    e2e_latency_ms_min: float = 0.0   # минимум по synchronous_pairs — реальная transit latency
+    e2e_latency_ms_p50: float = 0.0   # median (может содержать rx-side rate-paced buffering)
     e2e_latency_ms_p95: float = 0.0
     e2e_latency_ms_max: float = 0.0
 
@@ -125,11 +141,27 @@ class VideoMetrics:
     fps_received: float = 0.0         # уникальных rtp_ts_90khz в rx / duration_s
     duration_s: float = 0.0           # длительность rx-потока
 
-    bitrate_tx_appsink_bps: float = 0.0   # справочно, см. caveat в docstring
+    bitrate_tx_appsink_bps: float = 0.0   # legacy name: фактически tx tap bitrate
     bitrate_rx_goodput_bps: float = 0.0   # авторитетно — байты дошедшие до rx
 
     longest_gap_packets: int = 0      # самый длинный пропуск rtp_seq подряд
     longest_gap_ms: float = 0.0       # его время по rx wall_time-разнице
+
+    # 1.5.2.c: корреляция payload outage ↔ video RX gaps. Так как старые
+    # ns-3 aggregate events не содержат wall_time, video timeline привязываем
+    # к ns-3 sim_time приближённо: первый активный payload burst ↔ первый
+    # принятый video RX пакет. Для realtime ns-3 этого достаточно, чтобы
+    # показать попадание больших видео-gap'ов в outage-окна.
+    payload_outage_windows: list[PayloadOutageWindow] = field(default_factory=list)
+    outage_correlation_available: bool = False
+    outage_tolerance_s: float = 2.0
+    video_timeline_origin_sim_s: float | None = None
+    video_gap_events: int = 0
+    video_gap_packets_total: int = 0
+    video_gap_events_near_outage: int = 0
+    video_gap_packets_near_outage: int = 0
+    video_gap_packets_outside_outage: int = 0
+    top_gaps: list[VideoGap] = field(default_factory=list)
 
 
 @dataclass
@@ -177,9 +209,132 @@ def _wrap_signed_diff(cur: int, prev: int, modulus: int) -> int:
     return d
 
 
+def _parse_outage_spec(spec: str) -> list[PayloadOutageWindow]:
+    windows: list[PayloadOutageWindow] = []
+    for raw in spec.split(","):
+        part = raw.strip()
+        if not part or "-" not in part:
+            continue
+        start_raw, end_raw = part.split("-", 1)
+        try:
+            start_s = float(start_raw)
+            end_s = float(end_raw)
+        except ValueError:
+            continue
+        if end_s < start_s:
+            start_s, end_s = end_s, start_s
+        windows.append(PayloadOutageWindow(start_s=start_s, end_s=end_s))
+    return windows
+
+
+def _payload_outage_windows(events: list[dict[str, Any]] | None) -> list[PayloadOutageWindow]:
+    if not events:
+        return []
+
+    for ev in events:
+        if ev.get("event_type") == "component" and ev.get("component") == "ns3":
+            pload = ev.get("pload", {})
+            spec = str(pload.get("outage", "") or "")
+            windows = _parse_outage_spec(spec)
+            if windows:
+                return windows
+
+    # Fallback for logs where only aggregate network samples have outage_state.
+    samples = sorted(
+        (
+            float(ev["sim_time"])
+            for ev in events
+            if ev.get("event_type") == "network"
+            and ev.get("flow_id") == "payload"
+            and ev.get("outage_state")
+            and ev.get("sim_time") is not None
+        )
+    )
+    if not samples:
+        return []
+
+    windows: list[PayloadOutageWindow] = []
+    start = prev = samples[0]
+    for t in samples[1:]:
+        if t <= prev + 1.5:
+            prev = t
+            continue
+        windows.append(PayloadOutageWindow(start_s=start, end_s=prev + 1.0))
+        start = prev = t
+    windows.append(PayloadOutageWindow(start_s=start, end_s=prev + 1.0))
+    return windows
+
+
+def _first_active_payload_sim_time(events: list[dict[str, Any]] | None) -> float | None:
+    if not events:
+        return None
+
+    samples = sorted(
+        (
+            ev for ev in events
+            if ev.get("event_type") == "network"
+            and ev.get("flow_id") == "payload"
+            and ev.get("sim_time") is not None
+        ),
+        key=lambda ev: float(ev.get("sim_time", 0.0)),
+    )
+    if not samples:
+        return None
+
+    fallback: float | None = None
+    prev_tx: int | None = None
+    prev_bytes: int | None = None
+    for ev in samples:
+        sim_time = float(ev.get("sim_time", 0.0))
+        tx = int(ev.get("packets_tx", 0) or 0)
+        bytes_tx = int(ev.get("bytes_tx", 0) or 0)
+        if fallback is None and tx > 0:
+            fallback = sim_time
+        if prev_tx is not None and prev_bytes is not None:
+            delta_tx = tx - prev_tx
+            delta_bytes = bytes_tx - prev_bytes
+            # Ignore small ARP/housekeeping traffic; the camera RTP stream appears
+            # as a visible payload burst in the 1 Hz ns-3 aggregate samples.
+            if delta_tx >= 10 or delta_bytes >= 10_000:
+                return sim_time
+        prev_tx = tx
+        prev_bytes = bytes_tx
+    return fallback
+
+
+def _interval_distance_s(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
+    if a_start <= b_end and a_end >= b_start:
+        return 0.0
+    if a_end < b_start:
+        return b_start - a_end
+    return a_start - b_end
+
+
+def _classify_gap_outage(
+    gap_start_s: float | None,
+    gap_end_s: float | None,
+    windows: list[PayloadOutageWindow],
+    tolerance_s: float,
+) -> tuple[bool, str, float | None]:
+    if gap_start_s is None or gap_end_s is None or not windows:
+        return False, "", None
+    if gap_end_s < gap_start_s:
+        gap_start_s, gap_end_s = gap_end_s, gap_start_s
+
+    best_window = windows[0]
+    best_distance = _interval_distance_s(gap_start_s, gap_end_s, best_window.start_s, best_window.end_s)
+    for window in windows[1:]:
+        distance = _interval_distance_s(gap_start_s, gap_end_s, window.start_s, window.end_s)
+        if distance < best_distance:
+            best_window = window
+            best_distance = distance
+    return best_distance <= tolerance_s, best_window.label, best_distance
+
+
 def compute_video(
     tx_events: list[dict[str, Any]],
     rx_events: list[dict[str, Any]],
+    network_events: list[dict[str, Any]] | None = None,
 ) -> VideoMetrics:
     """Вычисляет VideoMetrics из video_tx.jsonl / video_rx.jsonl.
 
@@ -216,6 +371,39 @@ def compute_video(
     if not rx and not tx:
         return vm
     vm.enabled = True
+
+    # ---- Detect timing source (1.5.2.d precision marker) ----
+    # Старые логи 1.5.2.a/b пишут через `tee → appsink` (асинхронный с
+    # pipeline-clock'ом → нужен широкий sanity-window). Новые 1.5.2.d пишут
+    # через GstPadProbe на udpsink:sink и udpsrc:src (синхронные с
+    # pipeline-clock'ом → можно сузить window до ~200 мс).
+    #
+    # Берём `tap` / `timing_source` из meta-event'а если есть, иначе из
+    # первого packet-event'а. Default — legacy appsink ("tee_appsink").
+    def _first_tag(events: list[dict[str, Any]], meta_type: str, key: str) -> str:
+        for ev in events:
+            if ev.get("event_type") == meta_type and key in ev:
+                return str(ev.get(key) or "")
+        for ev in events:
+            if key in ev:
+                return str(ev.get(key) or "")
+        return ""
+
+    vm.tx_tap = _first_tag(tx_events, "video_tx_meta", "tap") or "tee_appsink"
+    vm.rx_tap = _first_tag(rx_events, "video_rx_meta", "tap") or "tee_appsink"
+    tx_timing = _first_tag(tx_events, "video_tx_meta", "timing_source") or "tee_appsink"
+    rx_timing = _first_tag(rx_events, "video_rx_meta", "timing_source") or "tee_appsink"
+    vm.e2e_latency_precise = (
+        tx_timing == "gst_pad_probe" and rx_timing == "gst_pad_probe"
+    )
+    # Адаптивное окно. Для precise GstPadProbe берём 500 мс: первые пакеты
+    # реально приходят за ~30-50 мс (см. min latency ниже), но GStreamer
+    # `udpsrc → tee → queue` буферизует и под нагрузкой dispatch-thread может
+    # отставать на сотни ms (rate-paced scheduling). 500 мс ловит первые
+    # ~30% пар с реальным transit; min e2e = чистая network latency без
+    # rx-side rate-paced artifact'а.
+    # Для legacy appsink держим 1 с (там tx_wall может отставать на секунды).
+    vm.e2e_latency_window_s = 0.5 if vm.e2e_latency_precise else 1.0
 
     # ---- TX side: dedupe by rtp_seq -> earliest wall_time ----
     tx_first_wall: dict[int, float] = {}
@@ -265,7 +453,7 @@ def compute_video(
         vm.bitrate_rx_goodput_bps = 8.0 * rx_total_size / duration_s
         vm.fps_received = len(rx_ts_set) / duration_s
 
-    # ---- Frame loss + longest gap ----
+    # ---- Frame loss + longest gap + outage correlation ----
     # Sort by rtp_ts_90khz (sender-order, монотонный 32-bit clock); это даёт
     # корректный порядок отправки, по которому считаем gap'ы. uint16 rtp_seq
     # wraparound обрабатывается через _wrap_signed_diff.
@@ -273,20 +461,56 @@ def compute_video(
         rx_first_wall.items(),
         key=lambda kv: (rx_first_ts.get(kv[0], 0), kv[1]),
     )
+    outage_windows = _payload_outage_windows(network_events)
+    timeline_origin_sim = _first_active_payload_sim_time(network_events)
+    vm.payload_outage_windows = outage_windows
+    vm.outage_correlation_available = timeline_origin_sim is not None and bool(by_ts)
+    vm.video_timeline_origin_sim_s = timeline_origin_sim
+
     total_gaps = 0
     longest_gap_pkts = 0
     longest_gap_wt = 0.0
+    gap_details: list[VideoGap] = []
     prev_seq = by_ts[0][0]
     prev_wall = by_ts[0][1]
+    first_rx_wall = by_ts[0][1]
     for seq, wall in by_ts[1:]:
         signed = _wrap_signed_diff(seq, prev_seq, 65536)
         if signed > 0:
             gap = signed - 1   # 0 если соседние
             if gap > 0:
                 total_gaps += gap
+                gap_wall_start = min(prev_wall, wall)
+                gap_wall_end = max(prev_wall, wall)
+                gap_duration_s = gap_wall_end - gap_wall_start
+                approx_start_s: float | None = None
+                approx_end_s: float | None = None
+                if timeline_origin_sim is not None:
+                    approx_start_s = timeline_origin_sim + (gap_wall_start - first_rx_wall)
+                    approx_end_s = timeline_origin_sim + (gap_wall_end - first_rx_wall)
+                near_outage, nearest_label, nearest_distance = _classify_gap_outage(
+                    approx_start_s,
+                    approx_end_s,
+                    outage_windows,
+                    vm.outage_tolerance_s,
+                )
+                if near_outage:
+                    vm.video_gap_events_near_outage += 1
+                    vm.video_gap_packets_near_outage += gap
+                else:
+                    vm.video_gap_packets_outside_outage += gap
+                gap_details.append(VideoGap(
+                    lost_packets=gap,
+                    duration_ms=1000.0 * gap_duration_s,
+                    approx_sim_start_s=approx_start_s,
+                    approx_sim_end_s=approx_end_s,
+                    near_payload_outage=near_outage,
+                    nearest_outage=nearest_label,
+                    nearest_outage_distance_s=nearest_distance,
+                ))
                 if gap > longest_gap_pkts:
                     longest_gap_pkts = gap
-                    longest_gap_wt = wall - prev_wall
+                    longest_gap_wt = gap_duration_s
             prev_seq = seq
             prev_wall = wall
         elif signed < 0:
@@ -297,12 +521,23 @@ def compute_video(
     vm.frame_loss_ratio = total_gaps / denom if denom > 0 else 0.0
     vm.longest_gap_packets = longest_gap_pkts
     vm.longest_gap_ms = 1000.0 * longest_gap_wt
+    vm.video_gap_events = len(gap_details)
+    vm.video_gap_packets_total = total_gaps
+    vm.top_gaps = sorted(
+        gap_details,
+        key=lambda gap: (gap.lost_packets, gap.duration_ms),
+        reverse=True,
+    )[:5]
 
-    # ---- E2E latency: только по «синхронным» парам ----
-    # tx_wall может ОТСТАВАТЬ от реального ухода в udpsink на много секунд
-    # из-за асинхронности appsink в tee branch'е. Берём только пары где
-    # d укладывается в [0, 1 s] — это значит buffer прошёл tx_tap и rx_tap
-    # достаточно близко друг к другу.
+    # ---- E2E latency: pad-probe → precise, иначе approximate ----
+    # Для precise (GstPadProbe и на tx, и на rx) tx_wall ≈ момент ухода буфера
+    # на UDP, rx_wall ≈ момент прихода → latency честная. Sanity-window
+    # `vm.e2e_latency_window_s` (200 мс) служит только защитой от часовых
+    # дёрганий — реальный канал даёт <50 мс.
+    #
+    # Для legacy appsink tx_wall может отставать на секунды (асинхронный
+    # callback), поэтому window=1 s и пары вне его отбрасываются как мусор.
+    window_s = vm.e2e_latency_window_s
     e2e_all: list[float] = []
     e2e_sync: list[float] = []
     for seq, rx_wall in rx_first_wall.items():
@@ -311,12 +546,13 @@ def compute_video(
             continue
         d = rx_wall - tx_wall
         e2e_all.append(d)
-        if 0.0 <= d <= 1.0:
+        if 0.0 <= d <= window_s:
             e2e_sync.append(d)
     vm.matched_packets = len(e2e_all)
     vm.synchronous_pairs = len(e2e_sync)
     if e2e_sync:
         e2e_sorted = sorted(e2e_sync)
+        vm.e2e_latency_ms_min = 1000.0 * e2e_sorted[0]
         vm.e2e_latency_ms_p50 = 1000.0 * _percentile(e2e_sorted, 0.50)
         vm.e2e_latency_ms_p95 = 1000.0 * _percentile(e2e_sorted, 0.95)
         vm.e2e_latency_ms_max = 1000.0 * e2e_sorted[-1]
