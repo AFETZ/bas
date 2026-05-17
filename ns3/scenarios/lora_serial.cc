@@ -18,7 +18,16 @@
 #include "ns3/network-module.h"
 #include "ns3/mobility-helper.h"
 #include "ns3/lorawan-module.h"
+#include "ns3/applications-module.h"
 
+// POSIX для PTY (1.7.c).
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>     // posix_openpt, grantpt, unlockpt, ptsname
+#include <sys/stat.h>   // symlink
+
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -99,6 +108,137 @@ on_interfered(std::string side, Ptr<const Packet>, uint32_t) {
 }
 
 // -----------------------------------------------------------------------------
+// 1.7.c -- PtyApp: ns-3 Application которая bridges PTY <-> LoRa MAC.
+//
+// Создаёт master-side PTY (posix_openpt + grantpt + unlockpt),
+// symlink'ит pts на указанный path (/tmp/ptyUAV_lora либо /tmp/ptyGCS_lora).
+// Внешний процесс (mavlink-router / orchestrator) подключается к этому
+// symlink как к обычному serial device.
+//
+// UAV-side: каждые 10 мс читает байты с master_fd, инжектит как пакет
+// в lora MAC через node->Get(0)->Send().
+// GCS-side: получает Packet от phy trace, пишет байты обратно в master_fd.
+// -----------------------------------------------------------------------------
+static std::string g_pty_uav_path = "";
+static std::string g_pty_gcs_path = "";
+
+class PtyApp : public Application {
+public:
+    static TypeId GetTypeId() {
+        static TypeId tid = TypeId("PtyApp")
+            .SetParent<Application>()
+            .AddConstructor<PtyApp>();
+        return tid;
+    }
+
+    PtyApp() : m_master_fd(-1) {}
+    ~PtyApp() override {
+        if (m_master_fd >= 0) close(m_master_fd);
+    }
+
+    void Configure(const std::string& pty_symlink_path,
+                   const std::string& side,
+                   Ptr<LoraNetDevice> dev) {
+        m_pty_symlink = pty_symlink_path;
+        m_side = side;
+        m_dev = dev;
+    }
+
+    // GCS-side callback от LoraPhy::ReceivedPacket -- пишем bytes обратно в PTY.
+    void OnGwReceive(Ptr<const Packet> p, uint32_t /*nodeId*/) {
+        if (m_master_fd < 0) return;
+        std::vector<uint8_t> buf(p->GetSize());
+        p->CopyData(buf.data(), buf.size());
+        ssize_t w = write(m_master_fd, buf.data(), buf.size());
+        std::ostringstream o;
+        o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
+          << "\"phase\":\"pty_write\",\"side\":\"" << m_side << "\","
+          << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
+          << "\"bytes\":" << w << ",\"run_id\":\"" << g_run_id << "\"}";
+        emit_event(o.str());
+    }
+
+private:
+    void StartApplication() override {
+        m_master_fd = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (m_master_fd < 0) {
+            NS_LOG_UNCOND("[pty] posix_openpt failed: " << strerror(errno));
+            return;
+        }
+        if (grantpt(m_master_fd) < 0 || unlockpt(m_master_fd) < 0) {
+            NS_LOG_UNCOND("[pty] grantpt/unlockpt failed: " << strerror(errno));
+            return;
+        }
+        const char* pts = ptsname(m_master_fd);
+        if (!pts) {
+            NS_LOG_UNCOND("[pty] ptsname failed");
+            return;
+        }
+        // symlink (overwrite если уже есть).
+        unlink(m_pty_symlink.c_str());
+        if (symlink(pts, m_pty_symlink.c_str()) < 0) {
+            NS_LOG_UNCOND("[pty] symlink " << m_pty_symlink << " -> " << pts
+                          << " failed: " << strerror(errno));
+            return;
+        }
+        // chmod 666 на pts чтобы любой user мог читать/писать через symlink.
+        chmod(pts, 0666);
+
+        NS_LOG_UNCOND("[pty " << m_side << "] master_fd=" << m_master_fd
+                      << " pts=" << pts << " symlink=" << m_pty_symlink);
+
+        std::ostringstream o;
+        o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
+          << "\"phase\":\"pty_open\",\"side\":\"" << m_side << "\","
+          << "\"symlink\":\"" << m_pty_symlink << "\",\"pts\":\"" << pts
+          << "\",\"sim_time\":" << Simulator::Now().GetSeconds()
+          << ",\"run_id\":\"" << g_run_id << "\"}";
+        emit_event(o.str());
+
+        // UAV-side: запускаем polling loop -- читаем байты из PTY и отдаём в LoRa.
+        if (m_side == "uav") {
+            Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
+        }
+    }
+
+    void StopApplication() override {
+        if (m_master_fd >= 0) {
+            close(m_master_fd);
+            m_master_fd = -1;
+        }
+        unlink(m_pty_symlink.c_str());
+    }
+
+    void PollAndSend() {
+        if (m_master_fd < 0) return;
+        uint8_t buf[256];   // LoRa MAC frame size limit
+        ssize_t n = read(m_master_fd, buf, sizeof(buf));
+        if (n > 0) {
+            Ptr<Packet> packet = Create<Packet>(buf, n);
+            if (m_dev) {
+                // LoraNetDevice::Send(packet, dst, protocolNumber)
+                // dst = "ff" broadcast, protocol = 0 ignored.
+                m_dev->Send(packet, Address(), 0);
+            }
+            std::ostringstream o;
+            o << "{\"event_type\":\"component\","
+              << "\"component\":\"ns3:lorawan\","
+              << "\"phase\":\"pty_read\",\"side\":\"" << m_side << "\","
+              << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
+              << "\"bytes\":" << n << ",\"run_id\":\"" << g_run_id << "\"}";
+            emit_event(o.str());
+        }
+        // Перезапланируем polling.
+        Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
+    }
+
+    int m_master_fd;
+    std::string m_pty_symlink;
+    std::string m_side;
+    Ptr<LoraNetDevice> m_dev;
+};
+
+// -----------------------------------------------------------------------------
 // Периодический stats dump (1 Hz).
 // -----------------------------------------------------------------------------
 static void
@@ -138,6 +278,8 @@ main(int argc, char* argv[]) {
     cmd.AddValue("bandwidth",   "Bandwidth Hz",              bandwidth_hz);
     cmd.AddValue("txPower",     "TX power dBm",              tx_power_dbm);
     cmd.AddValue("distance",    "UAV-GCS distance, м",       distance_m);
+    cmd.AddValue("ptyUavPath",  "symlink path для UAV PTY (1.7.c)",  g_pty_uav_path);
+    cmd.AddValue("ptyGcsPath",  "symlink path для GCS PTY (1.7.c)",  g_pty_gcs_path);
     cmd.Parse(argc, argv);
 
     g_run_id = runId;
@@ -223,12 +365,45 @@ main(int argc, char* argv[]) {
     }
 
     // ---- Sender application: один пакет каждую секунду от UAV ----
-    PeriodicSenderHelper sender;
-    sender.SetPeriod(Seconds(1.0));
-    sender.SetPacketSize(50);   // ~MAVLink heartbeat
-    ApplicationContainer sender_apps = sender.Install(uav);
-    sender_apps.Start(Seconds(2.0));
-    sender_apps.Stop(Seconds(duration_s - 1.0));
+    // 1.7.b smoke path -- если PTY не запрошен, шлём synthetic трафик.
+    // В 1.7.c при `--ptyUavPath/--ptyGcsPath` ставим PtyApp вместо.
+    bool use_pty = !g_pty_uav_path.empty() && !g_pty_gcs_path.empty();
+    Ptr<PtyApp> uav_app, gcs_app;
+    if (use_pty) {
+        // UAV-side PTY: orchestrator/mavlink-router пишет MAVLink байты сюда,
+        // PtyApp читает и инжектит как LoRa MAC payload вверх по каналу.
+        uav_app = CreateObject<PtyApp>();
+        uav_app->Configure(g_pty_uav_path, "uav",
+                           DynamicCast<LoraNetDevice>(uav_nd.Get(0)));
+        uav.Get(0)->AddApplication(uav_app);
+        uav_app->SetStartTime(Seconds(1.5));
+        uav_app->SetStopTime(Seconds(duration_s - 0.5));
+
+        // GCS-side: PtyApp принимает байты из LoRa Phy через trace и пишет
+        // в свой PTY (orchestrator читает оттуда).
+        gcs_app = CreateObject<PtyApp>();
+        gcs_app->Configure(g_pty_gcs_path, "gcs",
+                           DynamicCast<LoraNetDevice>(gcs_nd.Get(0)));
+        gcs.Get(0)->AddApplication(gcs_app);
+        gcs_app->SetStartTime(Seconds(1.5));
+        gcs_app->SetStopTime(Seconds(duration_s - 0.5));
+
+        // Привязываем gcs PHY trace ReceivedPacket к gcs_app->ForwardToPty
+        if (gcs_lora) {
+            gcs_lora->GetPhy()->TraceConnectWithoutContext(
+                "ReceivedPacket",
+                MakeCallback(&PtyApp::OnGwReceive, gcs_app));
+        }
+        NS_LOG_UNCOND("[pty] UAV " << g_pty_uav_path
+                      << " <-> LoRa <-> GCS " << g_pty_gcs_path);
+    } else {
+        PeriodicSenderHelper sender;
+        sender.SetPeriod(Seconds(1.0));
+        sender.SetPacketSize(50);   // ~MAVLink heartbeat
+        ApplicationContainer sender_apps = sender.Install(uav);
+        sender_apps.Start(Seconds(2.0));
+        sender_apps.Stop(Seconds(duration_s - 1.0));
+    }
 
     // ---- Stats dump ----
     Simulator::Schedule(Seconds(1.0), &emit_stats);
