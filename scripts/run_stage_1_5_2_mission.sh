@@ -95,6 +95,18 @@ case "$BAS_VIDEO_SOURCE_RAW" in
     camera) export BAS_VIDEO_SOURCE="udpsrc:${BAS_CAMERA_UDP_PORT}" ;;
     *)      export BAS_VIDEO_SOURCE="$BAS_VIDEO_SOURCE_RAW" ;;
 esac
+if [ -z "${BAS_GAZEBO_WORLD:-}" ]; then
+    # The gimbal/camera model currently stalls Gazebo before state updates on
+    # this stack. Use the camera-free ArduPilot iris unless camera RTP is asked
+    # for explicitly.
+    if [ "$BAS_VIDEO_SOURCE_RAW" = "camera" ]; then
+        export BAS_GAZEBO_WORLD="iris_runway.sdf"
+    else
+        export BAS_GAZEBO_WORLD="iris_runway_ardupilot.sdf"
+    fi
+else
+    export BAS_GAZEBO_WORLD
+fi
 export BAS_VIDEO_DEST_HOST="${BAS_VIDEO_DEST_HOST:-10.20.0.3}"
 export BAS_VIDEO_DEST_PORT="${BAS_VIDEO_DEST_PORT:-5000}"
 export BAS_VIDEO_BITRATE_KBPS="${BAS_VIDEO_BITRATE_KBPS:-${DEFAULT_VIDEO_BITRATE_KBPS:-2000}}"
@@ -229,6 +241,7 @@ echo "==> run_id=${RUN_ID}, profile=${PROFILE}, scenario=${SCENARIO}"
 echo "==> логи: $LOG_DIR"
 echo "==> video: src=${BAS_VIDEO_SOURCE_RAW} (pipeline=${BAS_VIDEO_SOURCE}) ${BAS_VIDEO_WIDTH}x${BAS_VIDEO_HEIGHT}@${BAS_VIDEO_FPS} ${BAS_VIDEO_BITRATE_KBPS}kbps → ${BAS_VIDEO_DEST_HOST}:${BAS_VIDEO_DEST_PORT}"
 echo "==> video record: ${BAS_VIDEO_RECORD_MP4}"
+echo "==> gazebo world: ${BAS_GAZEBO_WORLD}"
 [ "${BAS_GAZEBO_GUI:-0}" = "1" ] && echo "==> gazebo GUI: enabled (WSLg/X11)"
 
 echo "[1/9] подготовка радио-сети (control + payload bridges/TAPs)"

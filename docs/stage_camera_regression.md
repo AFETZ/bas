@@ -1,126 +1,129 @@
-# Регрессия камеры/mission AUTO после v0.9 — open issue
+# Регрессия Gazebo camera/gimbal — текущий статус
 
-**Status:** BLOCKED. После rebuild gazebo image (apt update протащил
-`gz-harmonic 1.0.0-1~jammy` / `libgz-sim8 8.11.0-1~jammy`) SITL+Gazebo
-FDM связь сломалась. Mission AUTO не стартует.
+**Статус:** рабочий demo path восстановлен. SITL + Gazebo + ns-3 миссии снова
+проходят, если Gazebo использует модель без камеры: `iris_with_ardupilot`.
+Мир с `iris_with_gimbal` остаётся known-bad режимом и включается только явно
+для отладки настоящей Gazebo-камеры.
 
-## Симптомы
+## Что ломалось
 
-`sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh`:
-
-- Gazebo Sim Server v8.11.0 стартует.
-- ArduPilotPlugin **загружается** (видно с `-v 4`, в production -v3 не пишет):
-  ```
-  [Dbg] Loaded system [ArduPilotPlugin] for entity [15]
-  [Dbg] Computed IMU topic to be: world/iris_runway/.../imu
-  ```
-- В bas-uav netns plugin bind'ит `127.0.0.1:9002` (виден в
-  `ip netns exec bas-uav ss -unlp` как `users:(("ruby",pid=...))`,
-  ruby это gz sim launcher).
-- SITL стартует, открывает `JSON control interface set to 127.0.0.1:9002`,
-  ждёт connection on serial 5760.
-- mavbridge socat подключается, SITL `Connection on serial port 5760`.
-- SITL шлёт servos на UDP 9002 → **Plugin не отвечает sensors на 9003**:
-  ```
-  sitl.log:  No JSON sensor message received, resending servos
-             No JSON sensor message received, resending servos  (x200)
-  ```
-- orchestrator: HEARTBEAT timeout (120/300с), mission не стартует.
-- video_rx.mp4 = 587 байт (только MP4 header), video_tx.jsonl = 1 запись (meta).
-- report.md статус=unknown, landed=False.
-
-## Что работало раньше (v0.9, eb93999, 16 May 2026)
-
-Тот же docker-compose, тот же scripts/run_stage_1_5_2_mission.sh,
-camera mode давала video_rx.mp4 ~16 MB и mission landed. См. commit
-`eb93999` ("v0.9 stage 1.5.2.b: real Gazebo camera").
-
-## Что изменилось между v0.9 и now
-
-| Артефакт | v0.9 (16 May) | Сейчас (17 May) |
-|---|---|---|
-| `ardupilot_gazebo` HEAD | `082a0fe Iris: improve collisions` (April 2026) | **тот же `082a0fe`** — не менялся |
-| `docker/gazebo/Dockerfile` | минимальный | добавлены `gstreamer1.0-plugins-{base,good,bad,ugly}`, `gstreamer1.0-libav`, `gstreamer1.0-tools`, `libdebuginfod1` (для GstCameraPlugin streaming) |
-| `gz-harmonic` apt пакет | ~`8.10.x` (предположительно) | `8.11.0-1~jammy` |
-| `libgz-sim8` apt пакет | старая версия | `8.11.0-1~jammy` |
-| OSRF apt репо | тот же `packages.osrfoundation.org/gazebo/ubuntu-stable` | тот же |
-
-Итог: между билдами вышел `gz-sim 8.11.0` который **не совместим** с
-текущим master ardupilot_gazebo по FDM пути.
-
-## Что попробовано (не помогло)
-
-1. **`BAS_VIDEO_CAMERA_STRICT=0`** (commit `e4576db`) — позволил mission стартовать
-   даже если camera RTP не сразу. Mission всё равно падает на HEARTBEAT.
-2. **`gz-sim --no-cache rebuild`** ardupilot_gazebo (попытка ABI rebuild) — без эффекта.
-3. **`sed lock_step=1 → 0`** в iris_with_gimbal SDF (попытка обойти deadlock в
-   gz-sim 8.11) — без эффекта.
-
-## Hypothesis (не verified)
-
-`gz-sim 8.11.0` изменил semantics `Simulator::Update` callback или
-`SystemPostUpdate` interface, и `ArduPilotPlugin::PostUpdate` либо никогда
-не вызывается, либо вызывается без physics-step state. Plugin получает
-servos на UDP 9002, но не имеет valid IMU/GPS snapshot для отправки.
-
-В changelog gz-sim 8.11 могут быть breaking changes (см. `gazebosim/gz-sim`
-GitHub releases). Это **upstream regression**, не наш код.
-
-## Что предлагаю как путь вперёд (для Codex / следующей сессии)
-
-### Вариант A: pin gz-harmonic apt version
-
-Найти последний known-working `libgz-sim8` (вероятно 8.10.x) в OSRF apt
-репозитории, и pin в Dockerfile:
-```dockerfile
-RUN apt-get install -y \
-    libgz-sim8=8.10.0-1~jammy \
-    gz-harmonic=...   # точная version
-```
-
-Сложность: OSRF apt репозитории обычно держат только latest. Возможно
-нужен `archive.osrfoundation.org` или Wayback download.
-
-### Вариант B: tcpdump debug
-
-Запустить tcpdump в bas-uav netns на lo, увидеть actual UDP трафик:
-```bash
-ip netns exec bas-uav tcpdump -i lo -nn -X udp port 9002 or udp port 9003
-```
-
-Если SITL шлёт но Plugin не отвечает — confirm hypothesis #1.
-Если Plugin отвечает но SITL не получает — другая проблема.
-
-### Вариант C: альтернативный ArduPilot SITL frame
-
-Попробовать `--frame=gazebo-iris` или `--frame=quad` или `--frame=copter`,
-с другими FDM портами. См. ArduPilot SITL command-line.
-
-### Вариант D: запустить через `gazebo classic` (Gazebo 11)
-
-Старая Gazebo 11 имела стабильный ardupilot_gazebo plugin path. Это
-архитектурный пересмотр — `bas/gazebo-classic:dev` image.
-
-## Что у нас УЖЕ работает несмотря на эту регрессию
-
-- **Sionna RT synthetic** (`scripts/run_stage_2_1_synthetic.sh`) — НЕ зависит
-  от SITL/Gazebo. Полный proof of concept ray-traced radio chain.
-  Артефакт: `logs/stage_2_1_synthetic_20260517T151013Z/sionna_overview.png`.
-- **LoRa serial PTY bridge** (этап 1.7.a-1.7.f). Полный stack: ns-3 lorawan
-  + dual-socat + orchestrator serial endpoint + analyzer LoraSerialMetrics.
-  Не зависит от Gazebo физики.
-- **ns-3 lorawan PHY+MAC simulation** работает изолированно.
-
-## Команда для текущего демо (камера / mission НЕ работает)
+Проблемный режим:
 
 ```bash
-# Sionna synthetic (работает гарантированно, ~1 минута):
-sionna_env/bin/python scripts/demo_sionna_pipeline.py --save-plot
-xdg-open logs/sionna_demo/trajectory_loss.png
-
-# Mission AUTO через ns-3 в stub-режиме (без Gazebo):
-bas-orchestrator baseline_wifi
+sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh
 ```
 
-Mission через SITL+Gazebo+ns-3+camera **сейчас не работает** до решения
-gz-sim 8.11 regression.
+Симптомы:
+
+- Gazebo загружает `ArduPilotPlugin`.
+- Plugin bind'ит UDP `127.0.0.1:9002` внутри `bas-uav` netns.
+- SITL подключается к serial `5760` и шлёт servo-пакеты на UDP `9002`.
+- Plugin не отправляет JSON sensor-пакеты обратно в SITL.
+- SITL бесконечно пишет `No JSON sensor message received, resending servos`.
+- MAVLink HEARTBEAT не доходит до orchestrator, поэтому AUTO mission не
+  стартует.
+
+Та же ошибка воспроизводилась после rebuild `ardupilot_gazebo`, после попытки
+`lock_step=0`, и после pin Gazebo Sim пакетов обратно на `gz-sim 8.10.0`.
+То есть старая гипотеза "только gz-sim 8.11 regression" оказалась неполной.
+
+## Доказательство
+
+`tcpdump` в loopback namespace `bas-uav` показал точную форму FDM-сбоя:
+
+- С `iris_with_gimbal`: SITL шлёт UDP на `127.0.0.1:9002`, но ответов
+  `9002 -> SITL` с JSON sensors нет.
+- С `iris_with_ardupilot`: UDP сразу становится двусторонним; SITL пишет
+  `JSON received`, затем mission нормально идёт дальше.
+
+Probe-прогоны:
+
+- Падающий camera/gimbal probe:
+  `logs/fdm_probe_bridge_20260517T211650Z`
+- Успешный camera-free probe:
+  `logs/fdm_probe_no_camera_20260517T212134Z`
+
+Главное различие — модель/мир Gazebo, а не ns-3, mavbridge или orchestrator.
+
+## Реализованный workaround
+
+Добавлен локальный мир:
+
+- `gazebo/worlds/iris_runway_ardupilot.sdf`
+- Это тот же runway setup, но вместо `model://iris_with_gimbal` используется
+  `model://iris_with_ardupilot`.
+
+Поведение по умолчанию:
+
+- `BAS_VIDEO_SOURCE=camera` оставляет `iris_runway.sdf`, чтобы режим настоящей
+  Gazebo-камеры можно было отлаживать явно.
+- Любой non-camera video source по умолчанию использует
+  `iris_runway_ardupilot.sdf`.
+- `BAS_GAZEBO_WORLD=...` по-прежнему может переопределить мир руками.
+
+Это возвращает demo path с настоящей SITL/Gazebo динамикой полёта, MAVLink
+mission control, ns-3 control/payload сетью, analyzer metrics и synthetic
+GStreamer-видео.
+
+## Проверенные успешные прогоны
+
+Stage 1.5.2 synthetic video:
+
+```text
+logs/stage_1_5_2_mission_wifi_good_20260517T212349Z
+RC=0
+video_rx.mp4=2.5M
+landed=True
+waypoints=7/7
+```
+
+Stage 2.1 Sionna dynamic channel + synthetic video:
+
+```text
+logs/stage_2_1_sionna_wifi_good_20260517T212800Z
+RC=0
+video_rx.mp4=2.4M
+landed=True
+waypoints=7/7
+max altitude=30.0 m
+control PDR=1.000
+payload PDR=1.000
+sync events=19
+mean real_time_factor=1.000
+max position desync=0.00 m
+```
+
+## Команды для демо
+
+Рекомендуемый текущий демо-прогон:
+
+```bash
+sudo env BAS_VIDEO_SOURCE=videotestsrc BAS_VIDEO_CAMERA_STRICT=0 \
+  bash scripts/run_stage_2_1_sionna.sh
+```
+
+Артефакты будут в `logs/stage_2_1_sionna_*`:
+
+- `report.md` — summary по полёту, сети и видео.
+- `events.jsonl` — timeline mission/telemetry.
+- `ns3_events.jsonl` — события control/payload сети.
+- `video_rx.mp4` — записанный received video.
+
+Stage 1.5.2 без Sionna:
+
+```bash
+sudo env BAS_VIDEO_SOURCE=videotestsrc BAS_VIDEO_CAMERA_STRICT=0 \
+  bash scripts/run_stage_1_5_2_mission.sh wifi_good
+```
+
+## Что ещё открыто
+
+Настоящий Gazebo camera path всё ещё сломан:
+
+```bash
+sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh
+```
+
+Следующий полезный debug step — внутри `iris_with_gimbal` / rendering path:
+сравнить Gazebo update/sensor callbacks с `iris_with_ardupilot`, затем
+убирать или изолировать gimbal camera части, пока FDM ответы не вернутся.
