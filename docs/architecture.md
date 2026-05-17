@@ -44,21 +44,48 @@
 
 ## Карта файлов под зону ответственности Физулина А.В.
 
-В рамках проекта группы Физулин А.В. отвечает за:
-- **Два канала связи** (управление + видеопоток), эмуляция WiFi (TCP/IP) и LoRa/LoRaWAN (Serial):
-  → `configs/network_profiles/wifi_good.yaml`, `configs/network_profiles/lora_narrowband.yaml`
-  → `orchestrator/src/orchestrator/components.py:StubNs3Channel`
-  → `ns3/scenarios/two_channel.cc` (реальная реализация)
+Точные формулировки из ТЗ (см. также `docs/tz_compliance.md` для матрицы
+соответствия). Физулин А.В. отвечает за:
 
-- **ns-3 / Sionna RT** (error rate, распределение ошибок, пропускная способность):
-  → метрики считаются в `analyzer/src/analyzer/metrics.py`
-  → Sionna RT не входит в этап 1; в этапе 2 - офлайн-расчёт радиокарт, результат подаётся как параметр профиля в ns-3.
+1. **Два канала связи по стандартным протоколам (управление + видеопоток):**
+   - **WiFi (TCP/IP)** — закрыт в этапе 1 (v0.7 mission + v0.9 video).
+     → `configs/network_profiles/wifi_good.yaml`
+     → `ns3/scenarios/two_channel.cc` (UDP MAVLink + RTP H.264 через TapBridge)
+   - **LoRa через Serial Port / LoRaWAN** — намечено в этапе **1.7**.
+     Требуется **буквальная** реализация: virtual PTY (pseudo-terminal),
+     MAVLink-байтстрим через ns-3 SerialChannel, frame size ≤256B, baud-rate
+     pacing (9600-115200), без IP-stack.
+     → `ns3/scenarios/lora_serial.cc` (новый)
+     → `scripts/run_stage_1_7_lora_serial.sh` (новый)
+   Stub-режим: `orchestrator.components.StubNs3Channel`.
 
-- **Карта тестового сценария в ns-3/Sionna RT** для 3D-препятствий:
-  → `gazebo/worlds/basic.sdf` определяет геометрию, ns-3 читает позиции через TapBridge-моделирование. Sionna - этап 2.
+2. **MAVROS / ROS2 интерфейс к ArduPilot SITL (обязательный по ТЗ):**
+   Намечено в этапе **1.8**. Runtime-переключение между backend'ами:
+   `--mavlink-backend pymavlink` (текущий) и `--mavlink-backend mavros`.
+   MAVROS-нода в `bas-ctrl-far` netns, rosbag-логи как дополнение к JSONL.
+   Текущая `pymavlink`-реализация **не ломается** — оба пути остаются доступны.
 
-- **Совместно с Андрончевым и Карповым** - ручное управление одним БАС:
-  → этап 2, подключение GCS (QGroundControl / MAVProxy) на порт 5760.
+3. **ns-3 / Sionna RT (error rate, распределение ошибок, пропускная способность):**
+   - **ns-3** — закрыт в этапе 1 (TapBridge + RateErrorModel + outage + delay/jitter
+     measurements в `analyzer/src/analyzer/metrics.py`).
+   - **Sionna RT (обязательный по ТЗ)** — намечено в этапе **2.1**.
+     Офлайн-расчёт радиокарт по 3D-сцене Gazebo → таблица
+     `path_loss(x,y,z)`, `delay(x,y,z)` → подаётся как dynamic parameter
+     в новый `SionnaErrorModel` в ns-3 (table-lookup по позиции UAV из
+     Gazebo). Заменяет статичный `RateErrorModel` на physically-justified.
+
+4. **Карта тестового сценария в ns-3/Sionna RT для 3D-препятствий
+   (обязательный по ТЗ):**
+   В составе 2.1: экспорт `iris_runway` SDF → glTF/PLY для Sionna scene
+   (iris + runway + здания/деревья как препятствия).
+   → `gazebo/worlds/basic.sdf`, `iris_runway.sdf` уже определяют геометрию;
+     2.1.b добавит экспорт-скрипт `scripts/export_scene_to_sionna.py`.
+
+5. **Совместно с Андрончевым и Карповым — моделирование + ручное
+   управление одним БАС:**
+   - Автоматическое mission AUTO — закрыто в этапе 1 (v0.7).
+   - Ручное управление через GCS — намечено в этапе **2.4** (QGroundControl
+     /MAVProxy через mavbridge + ns-3 control канал).
 
 ## Этапы
 
@@ -77,9 +104,12 @@
 | 1.5.2.c | Корреляция payload outage ↔ video RX gaps в `report.md` | **готов** |
 | 1.5.2.d | Точная e2e latency через GstPadProbe на `udpsink:sink` / `udpsrc:src` + min-latency метрика | **готов** (v0.9) |
 | 1.6 | Сравнительный отчёт WiFi vs LoRa (`bas-analyzer-compare`, side-by-side markdown + CSV) | **готов** (v1.0) |
-| 2.x | Sionna RT (офлайн радиокарты) | этап 2 |
-| 2.x | AirSim / Cosys-AirSim как визуально-сенсорная ветка | этап 2 |
-| 2.x | Несколько БАС, рой | этап 2 |
+| **1.7** | **LoRa через Serial Port (virtual PTY + ns-3 SerialChannel)** — буквальная реализация требования ТЗ Физулина | намечено |
+| **1.8** | **ROS2/MAVROS bridge** с runtime-переключением `--mavlink-backend pymavlink\|mavros` | намечено |
+| 2.1 | **Sionna RT** — обязательный пункт ТЗ; физически обоснованная радиокарта вместо RateErrorModel | намечено |
+| 2.2 | AirSim/Cosys-AirSim **как overlay над Gazebo физикой** (Gazebo→AirSim bridge для realism, не замена) | намечено |
+| 2.3 | Несколько БАС / рой (multi-UAV в одной ns-3 сети) | намечено |
+| 2.4 | Ручное управление через QGroundControl/MAVProxy (совместная задача с Андрончевым/Карповым) | намечено |
 
 ## Stub vs Real
 

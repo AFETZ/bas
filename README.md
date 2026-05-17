@@ -165,8 +165,17 @@ sudo env STAGE16_SKIP_RUNS=1 bash scripts/run_stage_1_6_compare.sh
     --out-dir logs/stage_1_6_manual/
 ```
 
-## Дальнейшие шаги
+## Дальнейшие шаги (после сверки с ТЗ от 17.05.2026)
 
-1. Этап 2.x — Sionna RT (офлайн радиокарты)
-2. Этап 2.x — AirSim/Cosys-AirSim, рой нескольких БАС
-3. Стабилизация real-camera `degraded_lora` upload-флейка (`MISSION_ACK type=13`)
+См. полный roadmap в [docs/roadmap.md](docs/roadmap.md) и матрицу
+соответствия ТЗ в [docs/tz_compliance.md](docs/tz_compliance.md).
+
+1. **1.7 LoRa Serial Bridge** — буквальная реализация LoRa через Serial Port
+   (virtual PTY + ns-3 SerialChannel), не функциональный IP-эквивалент
+2. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
+   текущий pymavlink-код остаётся
+3. **2.1 Sionna RT** — обязательный пункт ТЗ; физически обоснованная радиокарта
+   из ray-tracing'а вместо `RateErrorModel`
+4. **2.4 Ручное управление через QGroundControl/MAVProxy**
+5. **2.3 Multi-UAV / рой**
+6. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)

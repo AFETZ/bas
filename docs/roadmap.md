@@ -1,194 +1,226 @@
-# Roadmap проекта (по состоянию на v1.0, май 2026)
+# Roadmap проекта (после сверки с ТЗ от 17.05.2026, v1.0)
 
-Полная картина: что готово, что намечено в исходном архитектурном документе,
-и что я предлагаю как логичное продолжение. Каждый блок — с обоснованием и
-разбивкой на под-этапы (как делалось внутри 1.5).
+Сводный план оставшихся работ с учётом полного ТЗ группы.
 
-## Этап 1 — закрыт ✅ (v0.1 → v1.0, ~6 месяцев)
+См. также:
+- `docs/architecture.md` — общая архитектура и таблица этапов
+- `docs/tz_compliance.md` — матрица «пункт ТЗ → этап → состояние» (табель для гранта)
 
-| Под-этап | Состояние | Tag |
+## Этап 1 — закрыт ✅ (v0.1 → v1.0)
+
+| Этап | Tag | Содержание |
 |---|---|---|
-| 1.0 Skeleton (orchestrator + journal + analyzer + stub) | готов | — |
-| 1.1 Docker + 4 базовых образа (SITL / Gazebo / ns-3 / orch) | готов | — |
-| 1.2 ArduPilot SITL ↔ Gazebo через ardupilot_gazebo plugin | готов | — |
-| 1.3 ns-3 `two_channel.cc` с TapBridge (control + payload) | готов | — |
-| 1.4 MAVLink через host network (без ns-3) | готов | v0.1 |
-| 1.5.0 Shadow GCS в bas-ctrl-far netns через ns-3 | готов | v0.2 |
-| 1.5.1 Полная mission через ns-3 control, оба профиля | готов | v0.7 |
-| 1.5.2.a RTP H.264 видео через ns-3 payload | готов | v0.8 |
-| 1.5.2.a-metrics VideoMetrics в анализаторе | готов | v0.8.1 |
-| 1.5.2.b Real Gazebo камера через GstCameraPlugin | готов | v0.9 |
-| 1.5.2.c Корреляция payload outage ↔ video gaps | готов | v0.9 |
-| 1.5.2.d Точная e2e latency через GstPadProbe | готов | v0.9 |
-| 1.6 Сравнительный отчёт WiFi vs LoRa (markdown+CSV) | готов | **v1.0** |
-
-**Итог этапа 1**: воспроизводимая среда моделирования БАС с двумя радио-каналами
-(control + payload) через ns-3 в реальном времени, реальная Gazebo-камера,
-полноценная mission AUTO в ArduPilot, all wrapped в один скрипт сравнения
-WiFi vs LoRa с side-by-side отчётом для диплома/гранта.
+| 1.0–1.4 | — / v0.1 | skeleton, Docker, SITL+Gazebo, ns-3 TapBridge, MAVLink через host |
+| 1.5.0–1.5.1 | v0.7 | shadow GCS + полная mission через ns-3, оба профиля |
+| 1.5.2.a–d | v0.8 → v0.9 | RTP video, VideoMetrics, Gazebo камера, outage correlation, precise e2e |
+| 1.6 | **v1.0** | сравнительный отчёт WiFi vs LoRa |
 
 ---
 
-## Этап 2 — намечено в исходном ТЗ Физулина А.В.
+## Этап 1.7 — LoRa через Serial Port (буквальная реализация ТЗ)
 
-Из карты файлов в архитектурном документе (`docs/architecture.md`):
+**Основание:** ТЗ требует «LoRa (через Serial Port) / LoRaWAN, WiFi (TCP/IP)».
+Подтверждено руководителем: нужна **буквальная** реализация, не функциональный
+эквивалент (текущий `degraded_lora` через IP-канал).
 
-> **ns-3 / Sionna RT** (error rate, распределение ошибок, пропускная способность):
-> Sionna RT не входит в этап 1; в этапе 2 — офлайн-расчёт радиокарт, результат
-> подаётся как параметр профиля в ns-3.
+### Архитектура
 
-> **Карта тестового сценария в ns-3/Sionna RT** для 3D-препятствий:
-> Sionna — этап 2.
+```
+SITL → /dev/ptySITL  ──┐
+                       │  PTY ↔ PTY pipe через ns-3 SerialChannel
+                       │  (баудрейт-pacing, frame ≤256B, FSK BER)
+GCS  → /dev/ptyGCS   ──┘
+```
 
-> Этап 2 включает также: AirSim/Cosys-AirSim как визуально-сенсорную ветку,
-> несколько БАС / рой, ручное управление одним БАС через GCS.
+В отличие от текущей TapBridge-схемы (L2 ethernet frames):
+- никакого IP-stack'а — байтстрим MAVLink
+- baud-rate ограничивает throughput (типичный LoRa 9600-115200 baud)
+- frame size ≤256 байт (LoRa physical layer limit)
+- FSK BER (bit error rate) вместо packet loss ratio — потери на уровне отдельных бит
 
-### 2.1 — Sionna RT (приоритет 1 по ТЗ)
-
-Цель: заменить искусственный `RateErrorModel` в `ns-3` (текущая модель: «N% потерь
-случайно, M мс delay, outage windows вручную») на физически обоснованную модель
-из ray-tracing'а. Это и есть «карта тестового сценария в ns-3/Sionna RT»
-из ТЗ Физулина.
-
-| Под-этап | Содержание |
-|---|---|
-| 2.1.a — установка | Sionna 0.18 в WSL (Python + TensorFlow + Mitsuba renderer); smoke на готовом примере с двумя antennas |
-| 2.1.b — geometry export | Экспорт `iris_runway` SDF → glTF/PLY для Sionna scene. Iris + runway + опционально здания/деревья как препятствия |
-| 2.1.c — radio map | Sionna RT для пары точек (tx у GCS, rx у БАС): получить path-loss / delay-spread / Doppler как функцию позиции UAV |
-| 2.1.d — ns-3 integration | Sionna выдаёт CSV/JSONL «при позиции (x,y,z) → loss prob = P, delay = D». Новый `SionnaErrorModel` в ns-3 читает таблицу по координатам UAV |
-| 2.1.e — real-time lookup | Gazebo шлёт текущую позицию UAV → orchestrator → ns-3 пересчитывает loss/delay из Sionna map за каждый sim-tick |
-| 2.1.f — verification | сравнить wifi_good (manual) и wifi_good_sionna (физически обоснованный) на тех же траекториях; должна появиться зависимость канала от позиции |
-
-Под-этап **2.1.d** и **2.1.e** требуют расширения `two_channel.cc` — нужен новый
-`ErrorModel` с table-lookup'ом. Это middle-complexity работа, ~1-2 недели.
-
-**Польза для диплома**: «не просто RateErrorModel с потолка, а physically-justified
-radio propagation» — сильный аргумент для защиты.
-
-### 2.2 — AirSim / Cosys-AirSim (приоритет 2)
-
-Цель: визуально-сенсорная ветка (LiDAR, depth-camera, фотореалистичные текстуры).
-В ТЗ упоминается как параллельная Gazebo'у визуальная среда.
-
-**Cosys-AirSim** — это активно поддерживаемый Linux-friendly fork оригинального
-Microsoft AirSim (который заброшен с 2022). Использует Unreal Engine 5 или
-headless rendering.
+### Под-этапы
 
 | Под-этап | Содержание |
 |---|---|
-| 2.2.a — установка | Cosys-AirSim в WSL2 + Unreal headless или Colosseum/Stage env |
-| 2.2.b — sensors | подключить depth-camera + LiDAR как новые payload-flows; протолкнуть через ns-3 payload TAP |
-| 2.2.c — sync с ArduPilot | AirSim как FDM-bridge для SITL (вместо Gazebo) — параллельная ветка которую можно сравнивать |
-| 2.2.d — comparison | report Gazebo vs AirSim на тех же сценариях: разница в визуальном realism vs скорости моделирования |
+| 1.7.a | Smoke: pty-pair через socat, MAVLink между orchestrator и SITL без ns-3 (proof of concept serial) |
+| 1.7.b | `ns3/scenarios/lora_serial.cc` — новый сценарий с `SerialDevice` и `LoRaErrorModel` (BER + baud rate timing) |
+| 1.7.c | Bridge pty → ns-3 SerialChannel (через netdev TapBridge в режиме UseLocal для байтстрима, либо отдельный pty-to-ns3 helper) |
+| 1.7.d | `--mavlink-endpoint serial:/dev/ptySITL,baud=115200` в orchestrator (pymavlink уже поддерживает serial source) |
+| 1.7.e | Новый профиль `configs/network_profiles/lora_serial.yaml` (SF=7-12, BW=125kHz, baud=9600-115200) |
+| 1.7.f | Метрики serial: byte_loss_rate, frame_drop_rate, throughput_bps в FlowMetrics |
+| 1.7.g | Run-скрипт `scripts/run_stage_1_7_lora_serial.sh` (профиль control = LoRa serial; payload остаётся WiFi или отключается) |
+| 1.7.h | Acceptance: mission AUTO landed=True через LoRa serial канал с реалистичным baud=57600 + BER 1e-4 |
 
-**Сложность**: AirSim тяжелее Gazebo (UE5 ≈ 8-16 GB RAM). На WSL2 без GPU
-будет slow. Возможно вариант — отдельная Linux VM с GPU passthrough.
-
-**Польза для диплома**: показать что архитектура prototype'а не привязана к одному
-симулятору — взаимозаменяемые FDM-бэкенды.
-
-### 2.3 — Multi-UAV (рой)
-
-Цель: расширить с n=1 до n=2-4 БАС в одной симуляции. ТЗ упоминает «несколько БАС».
-
-| Под-этап | Содержание |
-|---|---|
-| 2.3.a — multi-instance SITL | 2-4 SITL'а в разных bas-uav-N netns'ах, каждый со своим ArduPilot instance |
-| 2.3.b — ns-3 multi-node | расширение `two_channel.cc` до N MAVLink-каналов; все БАС shared один control-bridge |
-| 2.3.c — MANET routing | если БАС-к-БАС связь нужна — добавить AODV/OLSR в ns-3 |
-| 2.3.d — orchestrator multi | оркестратор управляет несколькими mission_runner'ами, агрегирует логи |
-| 2.3.e — analyzer multi | report сравнивает PDR / e2e для каждого БАС, видно интерференцию |
-
-**Сложность**: ns-3 multi-node не сложно (там это родная модель), но Gazebo
-с несколькими iris моделями в одном world нагружает CPU. Можно начать с n=2.
-
-**Польза для диплома**: «масштабируемость архитектуры» — следующий уровень
-после single-UAV доказательства.
-
-### 2.4 — Ручное управление (GCS)
-
-Цель: подключить QGroundControl или MAVProxy на host'е, оператор реально летает
-через ns-3 канал. Из ТЗ: «совместно с Андрончевым и Карповым — ручное
-управление одним БАС».
-
-| Под-этап | Содержание |
-|---|---|
-| 2.4.a — port forward | UDP 14550 в `bas-ctrl-far` netns пробросить на host'овый интерфейс или вторую TCP-bridge |
-| 2.4.b — QGC smoke | QGroundControl на Windows host'е через WSLg или socat-relay; передача команд через ns-3 |
-| 2.4.c — joystick mode | manual mode (GUIDED stick input) — тестировать как degraded канал влияет на латентность управления |
-| 2.4.d — UX-метрики | в логи: время от joystick input до фактического движения UAV |
-
-**Сложность**: малая (топологически — тот же mavbridge socat плюс external port).
-Полезно для демо «человек реально управляет дроном через эмулированный LoRa-канал».
+Размер: ~1.5-2 недели. Tag: `v1.1-stage17` или `v1.1-lora-serial`.
 
 ---
 
-## Этап 3 — мои предложения (не в ТЗ, но логично)
+## Этап 1.8 — ROS2/MAVROS bridge (обязательный с runtime-переключением)
 
-Это уже не Физулинская часть, а либо общая инфра, либо новые исследовательские
-ветки. Можно делать выборочно.
+**Основание:** ТЗ упоминает MAVROS несколько раз. Подтверждено руководителем:
+обязательная интеграция, при этом текущая pymavlink-реализация должна
+остаться доступной как альтернативный режим (быстрое переключение перед
+прогоном).
 
-### 3.1 — Hardware-in-the-loop (HIL)
+### Архитектура
 
-Подключить **реальный radio modem** (например SiK Radio или LoRa SX1276) между
-host и ns-3, чтобы ns-3 заменялся на физический канал. Это позволяет
-валидировать «насколько похоже ns-3 на реальный radio».
+Новый CLI-флаг:
+```
+bas-orchestrator <scenario> --real --mavlink-backend pymavlink   # текущий
+bas-orchestrator <scenario> --real --mavlink-backend mavros      # новый
+```
 
-### 3.2 — Web dashboard
+`mavros`-backend:
+- MAVROS-нода (ROS2 Humble) в отдельном контейнере, network_mode `bas-ctrl-far-net`
+- Принимает MAVLink через mavbridge, экспортирует ROS2 топики (`/mavros/state`, `/mavros/setpoint_position/local`, ...)
+- Orchestrator подписывается на ROS2 топики вместо прямой `pymavlink.recv_match`
+- rosbag2 пишет параллельно с JSONL для верификации
 
-Live-веб-морда на FastAPI/React: real-time графики PDR, video FPS, БАС
-position на карте. Не имеет научной ценности, но кардинально улучшает demo.
+### Под-этапы
 
-### 3.3 — Optimization sweep
+| Под-этап | Содержание |
+|---|---|
+| 1.8.a | ROS2 Humble base image (`bas/ros2-mavros:dev`), Dockerfile с `ros-humble-mavros` пакетом |
+| 1.8.b | MAVROS-нода в `bas-ctrl-far` netns подключается к `udp://10.10.0.2:14550` через ns-3 control |
+| 1.8.c | Новый `orchestrator/src/orchestrator/mavros_backend.py` — реализует тот же контракт что pymavlink-backend (interface `MavlinkBackend` с методами `connect`, `recv_match`, `send_*`) |
+| 1.8.d | CLI-флаг `--mavlink-backend` + factory выбора реализации |
+| 1.8.e | rosbag2 → JSONL bridge или параллельное логирование (опционально) |
+| 1.8.f | Smoke оба режима: `pymavlink` и `mavros` на wifi_good, mission landed=True в обоих |
+| 1.8.g | Документация runtime-переключения в README |
 
-Скрипт `run_sweep.sh` варьирует параметры (delay 10/50/100/250/500 мс,
-loss 0/1/2/5%, bitrate 500/1000/2000 kbps) и строит surface-plot
-«где граница successful mission». Готовый ответ на вопрос «при каких
-условиях канал ещё допустим».
+Размер: ~1.5-2 недели. Tag: `v1.2-stage18` или `v1.2-mavros`.
 
-### 3.4 — Mavlink router / реальная maNET
-
-Заменить mavbridge socat на **mavlink-router** (полноценный mavlink demuxer).
-Это позволит подключать одновременно автопилот + GCS + companion computer +
-analytics — как реальная авионика дрона.
-
-### 3.5 — Real-flight validation
-
-С реальным дроном (CubeOrange + ArduPilot) сделать тот же mission, записать
-лог, и проверить что симуляционный отчёт совпадает в пределах ±5%. Это
-«золотая стандартная» валидация любого симулятора.
-
----
-
-## Рекомендация по последовательности
-
-С точки зрения «дать максимум для диплома/гранта за минимум усилий»,
-я бы шёл так:
-
-1. **2.1 Sionna RT** — главный пункт ТЗ Физулина, физически обоснованный
-   канал. ~3-4 недели работы. Сильно усиливает defensibility.
-2. **2.4 Ручное управление через GCS** — короткий шаг (~неделя), но даёт
-   яркое demo: «человек реально летает через эмулированный LoRa».
-3. **2.3 Multi-UAV** — масштабируемость, важная для swarm-grant'ов.
-   ~2 недели для n=2.
-4. **2.2 AirSim** — большой по объёму (~3 недели + GPU доступ), но
-   менее научно значим если Sionna уже сделан.
-5. **3.x** — по запросу руководителя.
-
-С точки зрения «изучить что-то новое и интересное» — Sionna RT очевидный
-выбор: пересечение симуляции, ray-tracing'а и сетевого моделирования,
-горячая тема в академии 2024-2026.
+**Важно:** текущий pymavlink-код **НЕ удаляется**. Получаем два альтернативных
+backend'а, переключаемых одним флагом.
 
 ---
 
-## Какие архитектурные документы уже есть
+## Этап 2.1 — Sionna RT (обязательный по ТЗ)
 
-- `docs/architecture.md` — общая архитектура + таблица этапов
-- `docs/stage_1_5_2_plan.md` — детальный план 1.5.2 (полезен как шаблон
-  для будущих 2.x-планов)
-- `docs/stage_1_5_1_known_issues.md` — журнал debug'а 1.5.1
-- `README.md` — пользовательская точка входа
+**Основание:** ТЗ Физулина прямо требует «интеграция возможностей моделирования
+затухания и отражения передаваемых между БАС радиосигналов … с помощью ns-3/Sionna RT».
+Подтверждено: обязательно.
 
-Для следующего выбранного этапа (например 2.1) сделаю аналогичный
-`docs/stage_2_1_sionna_plan.md` с DoD, под-этапами, файл-by-файл изменениями
-и acceptance critera — как был для 1.5.2.
+### Архитектура
+
+```
+1. iris_runway.sdf  →  scripts/export_scene_to_sionna.py  →  scene.ply (3D mesh)
+2. Sionna RT  +  scene.ply  +  TX/RX positions  →  ray_traced_radio_map.npz
+   (table: (x,y,z) → path_loss, delay_spread, doppler)
+3. ns3/scenarios/two_channel_sionna.cc:
+   - читает radio_map.npz при старте
+   - на каждом MAVLink-пакете запрашивает текущую позицию UAV из Gazebo
+   - lookup в таблице → текущие loss/delay/jitter
+   - применяет к каналу через custom SionnaErrorModel
+```
+
+### Под-этапы
+
+| Под-этап | Содержание |
+|---|---|
+| 2.1.a | Sionna 0.18 в WSL: Python venv, TensorFlow CPU/GPU, Mitsuba renderer, smoke на готовом примере |
+| 2.1.b | Экспорт `iris_runway` SDF → glTF/PLY (`scripts/export_scene_to_sionna.py`); включить geometry runway + iris model + опциональные препятствия (здания/деревья) |
+| 2.1.c | Sionna RT расчёт radio map для пары TX/RX (GCS позиция фиксирована, UAV пробегает grid 10x10x5 точек над runway): path_loss, delay, doppler |
+| 2.1.d | `ns3/scenarios/sionna_error_model.cc` — `SionnaErrorModel : public ErrorModel` с table-lookup |
+| 2.1.e | Real-time integration: Gazebo шлёт текущую UAV позицию → orchestrator → ns-3 пересчитывает params каждые N мс |
+| 2.1.f | Новый профиль `configs/network_profiles/sionna_urban.yaml` ссылается на конкретную radio map |
+| 2.1.g | Verification: comparison `wifi_good` (manual RateErrorModel) vs `wifi_sionna` (physically-justified) на той же траектории — channel deg должен коррелировать с препятствиями |
+| 2.1.h | Доп. секция в report.md / comparison.md: «Sionna radio map» с heatmap-graphic'ом |
+
+Размер: ~3-4 недели. Tag: `v2.0-sionna`.
+
+---
+
+## Этап 2.2 — AirSim как overlay над Gazebo физикой
+
+**Уточнение из ТЗ:** «Gazebo должен использоваться в качестве симулятора
+физики полёта, результат моделирования которой должен быть передан в AirSim,
+который используется для высокореалистичного моделирования окружающей
+обстановки и сенсоров БАС». То есть **связка**, не замена.
+
+**Исполнитель:** Федотенков А.А. (interface с MAVLink), Андрончев+Карпов
+(карта в AirSim). Моя зона — подготовить bridge-интерфейс Gazebo → AirSim.
+
+### Под-этапы
+
+| Под-этап | Содержание | Кто |
+|---|---|---|
+| 2.2.a | Cosys-AirSim в WSL2 (UE5 headless или Stage env) | Андрончев |
+| 2.2.b | Gazebo → AirSim position bridge: orchestrator извлекает UAV positions из Gazebo и шлёт в AirSim как actor pose | Физулин (bridge) |
+| 2.2.c | AirSim depth-camera + LiDAR sensors → ns-3 payload TAP (новые flows) | Федотенков + Физулин |
+| 2.2.d | Сравнение Gazebo-only vs Gazebo+AirSim overlay: real-time-factor, FPS, payload throughput | Все трое |
+
+Размер: ~3-4 недели в общей сложности. Tag: `v2.1-airsim-overlay`.
+
+---
+
+## Этап 2.3 — Multi-UAV (рой)
+
+**Основание:** ТЗ — «несколько БАС в одной сцене» (в общих задачах).
+
+### Под-этапы
+
+| Под-этап | Содержание |
+|---|---|
+| 2.3.a | N экземпляров `bas-uav-1..N` netns'ов, каждый со своим SITL + Gazebo model |
+| 2.3.b | `two_channel.cc` расширен до N MAVLink-каналов (shared control bridge или star topology с GCS) |
+| 2.3.c | MANET routing (AODV/OLSR) если нужна БАС↔БАС связь |
+| 2.3.d | Multi-instance mission_runner + агрегация логов в `events.jsonl` |
+| 2.3.e | analyzer multi-UAV report: PDR/e2e на каждый БАС, видна интерференция в одной радио-сети |
+
+Размер: ~2 недели для n=2-4. Tag: `v2.2-swarm`.
+
+---
+
+## Этап 2.4 — Ручное управление через GCS
+
+**Основание:** ТЗ — совместная с Андрончевым/Карповым, ручное управление
+как минимум одним БАС.
+
+### Под-этапы
+
+| Под-этап | Содержание |
+|---|---|
+| 2.4.a | UDP 14550 в `bas-ctrl-far` netns пробросить на host'овый интерфейс (port-forward) |
+| 2.4.b | QGroundControl на Windows host'е через WSLg или socat-relay; видим heartbeat от SITL через ns-3 |
+| 2.4.c | Joystick mode (GUIDED stick input через MANUAL_CONTROL MAVLink-пакеты) |
+| 2.4.d | UX-метрика: задержка от joystick → реальное движение UAV; деградация на degraded_lora |
+
+Размер: ~1 неделя. Tag: `v2.3-manual-gcs`.
+
+---
+
+## Этап 3 — мои предложения (не в ТЗ, опционально)
+
+Сохраняются как backlog для отдельных запросов:
+
+- **3.1 HIL** — реальный SiK/LoRa modem вместо ns-3
+- **3.2 Web dashboard** — FastAPI + React (хорошо стыкуется с веб-интерфейсом
+  Федотенкова)
+- **3.3 Optimization sweep** — surface-plot «граница успешной mission»
+- **3.4 mavlink-router** — полноценный demuxer вместо socat
+- **3.5 Real-flight validation** — CubeOrange + сверка лога с симулятором
+
+---
+
+## Рекомендация по последовательности (с учётом ТЗ)
+
+После сверки с ТЗ и подтверждения от руководителя приоритет такой:
+
+| # | Этап | Обоснование |
+|---|---|---|
+| 1 | **2.1 Sionna RT** | Самый трудоёмкий + научно сильный + обязательный пункт ТЗ. Начать первым, дать долгий tail |
+| 2 | **1.7 LoRa Serial** | Параллельно с 2.1 (можно делегировать Codex'у). Закрывает буквальное расхождение по LoRa |
+| 3 | **1.8 ROS2/MAVROS** | После 1.7. Обязательный пункт ТЗ, не ломает текущий код (runtime-переключение) |
+| 4 | **2.4 Ручное управление** | Короткий и яркий шаг для demo |
+| 5 | **2.3 Multi-UAV** | Масштабируемость, swarm |
+| 6 | **2.2 AirSim** | Самое тяжёлое, делать после остальных или параллельно через Федотенкова |
+
+После закрытия 1.7 + 1.8 + 2.1 + 2.4 — **100% моих пунктов по ТЗ**.
+Запасные этапы 3.x — по запросу.
+
+## Какой выбираем сейчас
+
+Жду решения по первому этапу из списка. Если **2.1 Sionna RT** — сделаю
+детальный `docs/stage_2_1_sionna_plan.md` как был для 1.5.2.
+Если **1.7 LoRa Serial** или **1.8 MAVROS** — то соответствующий план.
