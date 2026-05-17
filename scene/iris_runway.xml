@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<scene version="2.1.0">
+
+<!-- Integrator -->
+  <integrator type="path">
+    <integer name="max_depth" value="-1"/>
+  </integrator>
+
+<!-- ITU-R radio materials -->
+  <bsdf type="itu-radio-material" id="concrete">
+    <string name="type" value="concrete"/>
+    <float name="thickness" value="0.3"/>
+  </bsdf>
+  <bsdf type="itu-radio-material" id="metal">
+    <string name="type" value="metal"/>
+    <float name="thickness" value="0.3"/>
+  </bsdf>
+  <bsdf type="itu-radio-material" id="brick">
+    <string name="type" value="brick"/>
+    <float name="thickness" value="0.3"/>
+  </bsdf>
+  <bsdf type="itu-radio-material" id="glass">
+    <string name="type" value="glass"/>
+    <float name="thickness" value="0.3"/>
+  </bsdf>
+
+<!-- Runway: бетонная плита 1500x200 м -->
+<shape type="cube" id="mesh-runway">
+  <transform name="to_world">
+    <scale x="750.0" y="100.0" z="0.25"/>
+    <translate x="0.0" y="0.0" z="-0.25"/>
+  </transform>
+  <ref id="concrete" name="bsdf"/>
+</shape>
+
+<!-- Препятствия (occlusion для off-runway позиций UAV) -->
+<shape type="cube" id="mesh-hangar">
+  <transform name="to_world">
+    <scale x="15.0" y="10.0" z="7.5"/>
+    <translate x="-200.0" y="-60.0" z="7.5"/>
+  </transform>
+  <ref id="metal" name="bsdf"/>
+</shape>
+<shape type="cube" id="mesh-tower_a">
+  <transform name="to_world">
+    <scale x="5.0" y="5.0" z="15.0"/>
+    <translate x="100.0" y="70.0" z="15.0"/>
+  </transform>
+  <ref id="concrete" name="bsdf"/>
+</shape>
+<shape type="cube" id="mesh-tower_b">
+  <transform name="to_world">
+    <scale x="5.0" y="5.0" z="12.5"/>
+    <translate x="300.0" y="-70.0" z="12.5"/>
+  </transform>
+  <ref id="concrete" name="bsdf"/>
+</shape>
+<shape type="cube" id="mesh-building">
+  <transform name="to_world">
+    <scale x="20.0" y="15.0" z="6.0"/>
+    <translate x="500.0" y="60.0" z="6.0"/>
+  </transform>
+  <ref id="brick" name="bsdf"/>
+</shape>
+
+</scene>
