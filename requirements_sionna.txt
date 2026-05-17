@@ -1,0 +1,19 @@
+# Sionna RT environment (этап 2.1).
+# Изолировано от orchestrator/.venv — у Sionna жёсткие требования к версиям
+# TF/numpy/mitsuba, не нужно мешать с pymavlink.
+#
+# Установка:
+#   python3 -m venv ~/bas-prototype/sionna_env
+#   ~/bas-prototype/sionna_env/bin/pip install -r requirements_sionna.txt
+#
+# GPU/CUDA на хосте — RTX 5070 Ti / CUDA 13.x. TensorFlow 2.18 автоматически
+# подтягивает совместимые CUDA wheels; если на конкретной машине CUDA нет,
+# Sionna fallback'нется на CPU (медленнее ~5-10x, но работает).
+
+sionna>=0.18
+tensorflow>=2.15,<2.20
+mitsuba>=3.5
+numpy<2.0
+matplotlib>=3.7
+scipy>=1.10
+drjit>=0.4
