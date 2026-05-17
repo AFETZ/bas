@@ -105,12 +105,28 @@ class DockerComposeFlightStack:
         last_error: Optional[Exception] = None
         while time.time() < hb_deadline:
             try:
-                self.mav = mavutil.mavlink_connection(self.mavlink_endpoint, source_system=254)
+                # 1.7.d: parser endpoint -- `serial:/tmp/ptyGCS_lora:57600`
+                # → mavlink_connection(path, baud=57600). pymavlink сам
+                # обнаружит что это UART (через `pyserial`).
+                if self.mavlink_endpoint.startswith("serial:"):
+                    body = self.mavlink_endpoint[len("serial:"):]
+                    if ":" in body:
+                        ser_path, baud_str = body.rsplit(":", 1)
+                        baud = int(baud_str)
+                    else:
+                        ser_path, baud = body, 57600
+                    self.mav = mavutil.mavlink_connection(
+                        ser_path, baud=baud, source_system=254)
+                else:
+                    self.mav = mavutil.mavlink_connection(
+                        self.mavlink_endpoint, source_system=254)
+
                 self.logger.emit("component", component=self.name, phase="mavlink_connecting",
                                  endpoint=self.mavlink_endpoint)
-                # Для udpout endpoint'ов: посылаем GCS heartbeat, чтобы peer
-                # узнал наш адрес. Для udpin сначала ждём heartbeat от SITL.
-                if self.mavlink_endpoint.startswith("udpout:"):
+                # Для udpout и serial endpoint'ов: посылаем GCS heartbeat, чтобы
+                # peer (mavlink-router / SITL) узнал нас.
+                if (self.mavlink_endpoint.startswith("udpout:")
+                        or self.mavlink_endpoint.startswith("serial:")):
                     try:
                         self.mav.mav.heartbeat_send(
                             mavutil.mavlink.MAV_TYPE_GCS,
