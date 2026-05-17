@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgsl-dev libxml2-dev libsqlite3-dev \
         libssl-dev libpcap-dev tcpdump \
         bridge-utils uml-utilities iproute2 \
+        socat \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work

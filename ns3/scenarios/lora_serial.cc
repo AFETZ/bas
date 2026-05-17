@@ -110,14 +110,29 @@ on_interfered(std::string side, Ptr<const Packet>, uint32_t) {
 // -----------------------------------------------------------------------------
 // 1.7.c -- PtyApp: ns-3 Application которая bridges PTY <-> LoRa MAC.
 //
-// Создаёт master-side PTY (posix_openpt + grantpt + unlockpt),
-// symlink'ит pts на указанный path (/tmp/ptyUAV_lora либо /tmp/ptyGCS_lora).
-// Внешний процесс (mavlink-router / orchestrator) подключается к этому
-// symlink как к обычному serial device.
+// АРХИТЕКТУРА (community-validated pattern, см. ArduPilot Discourse
+// "Simulating a serial device with SITL" + mavlink-router examples/config.sample):
 //
-// UAV-side: каждые 10 мс читает байты с master_fd, инжектит как пакет
-// в lora MAC через node->Get(0)->Send().
-// GCS-side: получает Packet от phy trace, пишет байты обратно в master_fd.
+//   HOST:
+//     socat PTY,link=/tmp/ptyUAV_lora UNIX-LISTEN:/tmp/bas-bridge/lora.sock
+//        ^                                ^
+//        |                                |-- mavlink-router/orchestrator
+//        |                                |   подключаются ЗДЕСЬ
+//        ^-- внешний host-side PTY
+//
+//   CONTAINER (bind-mount /tmp/bas-bridge:/bridge):
+//     socat PTY,link=/work/pty/ptyUAV_lora UNIX-CONNECT:/bridge/lora.sock
+//        ^
+//        |-- container-side PTY, ns-3 PtyApp подключается ЗДЕСЬ
+//
+// PtyApp САМ НЕ СОЗДАЁТ PTY (это делает socat). Application просто
+// `open(path)` -- посимвольно читает байты и инжектит в LoRa MAC.
+//
+// Это решает проблему pts namespace docker (validated в docker/for-linux#77).
+//
+// UAV-side: каждые 10 мс читает байты с m_master_fd, инжектит как пакет
+// в lora MAC через dev->Send().
+// GCS-side: получает Packet от phy trace, пишет байты обратно в m_master_fd.
 // -----------------------------------------------------------------------------
 static std::string g_pty_uav_path = "";
 static std::string g_pty_gcs_path = "";
@@ -136,10 +151,12 @@ public:
         if (m_master_fd >= 0) close(m_master_fd);
     }
 
-    void Configure(const std::string& pty_symlink_path,
+    /// `pty_path` -- container-side PTY (созданный socat'ом ДО запуска
+    /// ns-3), который PtyApp просто open'ит. Например `/work/pty/ptyUAV_lora`.
+    void Configure(const std::string& pty_path,
                    const std::string& side,
                    Ptr<LoraNetDevice> dev) {
-        m_pty_symlink = pty_symlink_path;
+        m_pty_path = pty_path;
         m_side = side;
         m_dev = dev;
     }
@@ -160,38 +177,26 @@ public:
 
 private:
     void StartApplication() override {
-        m_master_fd = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+        // Открываем уже существующий PTY (создан socat'ом перед запуском
+        // ns-3). Это socat'овский slave-side PTY: чтение/запись идут на
+        // байт-стрим, который socat зеркалит через UNIX socket на host.
+        // O_NOCTTY -- не делать этот PTY controlling tty процесса.
+        // O_NONBLOCK -- read() возвращает -1/EAGAIN если данных нет.
+        m_master_fd = open(m_pty_path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
         if (m_master_fd < 0) {
-            NS_LOG_UNCOND("[pty] posix_openpt failed: " << strerror(errno));
+            NS_LOG_UNCOND("[pty] open(" << m_pty_path << ") failed: "
+                          << strerror(errno) << " (запустил ли ты socat ДО ns-3?)");
             return;
         }
-        if (grantpt(m_master_fd) < 0 || unlockpt(m_master_fd) < 0) {
-            NS_LOG_UNCOND("[pty] grantpt/unlockpt failed: " << strerror(errno));
-            return;
-        }
-        const char* pts = ptsname(m_master_fd);
-        if (!pts) {
-            NS_LOG_UNCOND("[pty] ptsname failed");
-            return;
-        }
-        // symlink (overwrite если уже есть).
-        unlink(m_pty_symlink.c_str());
-        if (symlink(pts, m_pty_symlink.c_str()) < 0) {
-            NS_LOG_UNCOND("[pty] symlink " << m_pty_symlink << " -> " << pts
-                          << " failed: " << strerror(errno));
-            return;
-        }
-        // chmod 666 на pts чтобы любой user мог читать/писать через symlink.
-        chmod(pts, 0666);
 
-        NS_LOG_UNCOND("[pty " << m_side << "] master_fd=" << m_master_fd
-                      << " pts=" << pts << " symlink=" << m_pty_symlink);
+        NS_LOG_UNCOND("[pty " << m_side << "] opened " << m_pty_path
+                      << " fd=" << m_master_fd);
 
         std::ostringstream o;
         o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
           << "\"phase\":\"pty_open\",\"side\":\"" << m_side << "\","
-          << "\"symlink\":\"" << m_pty_symlink << "\",\"pts\":\"" << pts
-          << "\",\"sim_time\":" << Simulator::Now().GetSeconds()
+          << "\"pty_path\":\"" << m_pty_path << "\","
+          << "\"sim_time\":" << Simulator::Now().GetSeconds()
           << ",\"run_id\":\"" << g_run_id << "\"}";
         emit_event(o.str());
 
@@ -206,7 +211,7 @@ private:
             close(m_master_fd);
             m_master_fd = -1;
         }
-        unlink(m_pty_symlink.c_str());
+        // НЕ unlink m_pty_path -- его создаёт socat, не мы.
     }
 
     void PollAndSend() {
@@ -233,7 +238,7 @@ private:
     }
 
     int m_master_fd;
-    std::string m_pty_symlink;
+    std::string m_pty_path;
     std::string m_side;
     Ptr<LoraNetDevice> m_dev;
 };
@@ -262,6 +267,12 @@ emit_stats() {
 // -----------------------------------------------------------------------------
 int
 main(int argc, char* argv[]) {
+    // Realtime simulator — необходим для PTY bridge (1.7.c): без него
+    // 20с симуляции проходит за <1 сек wall-clock и Poll cycle ns-3 PtyApp
+    // не успевает прочитать host-side байты.
+    GlobalValue::Bind("SimulatorImplementationType",
+                      StringValue("ns3::RealtimeSimulatorImpl"));
+
     std::string runId        = "lora_serial_smoke";
     std::string logDir       = "/work/logs";
     double duration_s        = 20.0;
