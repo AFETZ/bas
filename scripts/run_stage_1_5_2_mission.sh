@@ -293,13 +293,25 @@ NS3_ARGS="${NS3_ARGS} --ploadDelayMs=${PLOAD_DELAY_MS} --ploadLoss=${PLOAD_LOSS}
 [ -n "${CTRL_OUTAGE}" ]  && NS3_ARGS="${NS3_ARGS} --ctrlOutage=${CTRL_OUTAGE}"
 [ -n "${PLOAD_OUTAGE}" ] && NS3_ARGS="${NS3_ARGS} --ploadOutage=${PLOAD_OUTAGE}"
 
+# Этап 2.1.d: если задан BAS_SIONNA_CHANNEL_PATH, ns-3 будет каждые 100 мс
+# читать его и обновлять payload-канал RateErrorModel (dynamic Sionna RT).
+if [ -n "${BAS_SIONNA_CHANNEL_PATH:-}" ]; then
+    NS3_ARGS="${NS3_ARGS} --sionnaChannelPath=${BAS_SIONNA_CHANNEL_PATH}"
+    echo "[sionna] ns-3 будет читать ${BAS_SIONNA_CHANNEL_PATH} каждые 100 мс"
+fi
+
 sg docker -c "docker rm -f bas-ns3-stage15 2>/dev/null" >/dev/null 2>&1 || true
+# Bind-mount /tmp host -> /tmp container, чтобы ns-3 читал /tmp/sionna_channel.json
+# который пишет publisher из host'а (2.1.d-e). Безопасно: контейнер уже
+# privileged + network host, /tmp ничего не добавляет.
 sg docker -c "docker run -d --name bas-ns3-stage15 --network host --cap-add NET_ADMIN --privileged \
     -e NS3_ARGS='${NS3_ARGS}' \
     -v ${REPO_ROOT}/ns3:/work/ns3:ro \
     -v ${REPO_ROOT}/logs:/work/logs \
+    -v /tmp:/host_tmp \
     --entrypoint bash bas/ns3:dev -c '\
-        cp /work/ns3/scenarios/two_channel.cc /work/ns3-src/scratch/ \
+        ln -sf /host_tmp/sionna_channel.json /tmp/sionna_channel.json \
+        && cp /work/ns3/scenarios/two_channel.cc /work/ns3-src/scratch/ \
         && cd /work/ns3-src \
         && ./ns3 build > /tmp/build.log 2>&1 \
         && ${NS3_BIN} \$NS3_ARGS'" > /dev/null

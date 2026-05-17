@@ -20,8 +20,11 @@
 #include "ns3/point-to-point-module.h"
 #include "ns3/tap-bridge-module.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -102,6 +105,65 @@ on_csma_rx(std::string ch, Ptr<const Packet> p) {
 static void
 on_csma_phy_drop(std::string ch, Ptr<const Packet>) {
     g_stats[ch].packets_dropped_phy += 1;
+}
+
+// -----------------------------------------------------------------------------
+// Sionna RT dynamic loss update (этап 2.1.d).
+// Читает /tmp/sionna_channel.json (или указанный путь), парсит "loss_ratio"
+// (простой regex, не нужен JSON-парсер), и обновляет RateErrorModel для
+// канала payload (приложение Sionna — к видео-каналу, control остаётся
+// с outage-расписанием). Polling раз в 100 мс через Simulator::Schedule.
+// -----------------------------------------------------------------------------
+static std::string g_sionna_path = "";
+static double g_sionna_last_loss = -1.0;   // для логов: эмитить event только при изменении
+
+static double
+parse_sionna_loss(const std::string& body) {
+    // Файл маленький, ищем `"loss_ratio":<float>` подстроку.
+    static const std::string key = "\"loss_ratio\":";
+    auto pos = body.find(key);
+    if (pos == std::string::npos) return -1.0;
+    pos += key.size();
+    char* endp = nullptr;
+    double val = std::strtod(body.c_str() + pos, &endp);
+    if (endp == body.c_str() + pos) return -1.0;
+    return val;
+}
+
+static void
+sionna_poll_tick(std::string runId) {
+    if (!g_sionna_path.empty()) {
+        std::ifstream f(g_sionna_path);
+        if (f.is_open()) {
+            std::string body((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+            double loss = parse_sionna_loss(body);
+            if (loss >= 0.0 && loss <= 1.0) {
+                auto it = g_error_models.find("payload");
+                if (it != g_error_models.end() && it->second) {
+                    // Не перетираем outage-блокировку: outage кладёт ErrorRate=1.0.
+                    if (!g_stats["payload"].in_outage) {
+                        it->second->SetAttribute(
+                            "ErrorRate", DoubleValue(loss));
+                    }
+                }
+                // Эмитим JSONL только при существенном изменении (Δ>0.01).
+                if (std::abs(loss - g_sionna_last_loss) > 0.01) {
+                    g_sionna_last_loss = loss;
+                    std::ostringstream o;
+                    o << "{\"event_type\":\"component\","
+                      << "\"component\":\"ns3:sionna_poll\","
+                      << "\"phase\":\"loss_updated\","
+                      << "\"sim_time\":" << Simulator::Now().GetSeconds()
+                      << ",\"flow_id\":\"payload\""
+                      << ",\"loss_ratio\":" << loss
+                      << ",\"run_id\":\"" << runId << "\"}";
+                    emit_event(o.str());
+                }
+            }
+        }
+    }
+    Simulator::Schedule(MilliSeconds(100), &sionna_poll_tick, runId);
 }
 
 // -----------------------------------------------------------------------------
@@ -289,6 +351,12 @@ int main(int argc, char* argv[]) {
     cmd.AddValue("ploadLoss",         "payload канал: доля потерь [0..1]", pload_loss);
     cmd.AddValue("ploadOutage",       "payload канал: окна разрыва, \"a-b,c-d\"", pload_outage);
 
+    // Этап 2.1.d: путь к /tmp/sionna_channel.json (динамический loss_ratio
+    // от sionna_channel_publisher.py). Пусто = не использовать.
+    cmd.AddValue("sionnaChannelPath",
+                 "путь к JSON-файлу с актуальным Sionna loss_ratio (poll 10 Hz)",
+                 g_sionna_path);
+
     cmd.Parse(argc, argv);
 
     // Открыть JSONL-журнал.
@@ -340,6 +408,13 @@ int main(int argc, char* argv[]) {
 
     // Периодический emit stats (раз в секунду).
     Simulator::Schedule(Seconds(1.0), &emit_stats, runId);
+
+    // Sionna RT poll (если задан --sionnaChannelPath).
+    if (!g_sionna_path.empty()) {
+        NS_LOG_UNCOND("[sionna] poll path=" << g_sionna_path
+                      << " interval=100ms target=payload");
+        Simulator::Schedule(MilliSeconds(100), &sionna_poll_tick, runId);
+    }
 
     Simulator::Stop(Seconds(duration_s));
     NS_LOG_UNCOND("ns-3 starting (duration=" << duration_s << "s)");
