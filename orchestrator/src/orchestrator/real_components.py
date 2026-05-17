@@ -42,7 +42,7 @@ class DockerComposeFlightStack:
         compose_file: Path,
         logger: EventLogger,
         mavlink_endpoint: str = "tcp:127.0.0.1:5760",
-        startup_timeout_s: float = 120.0,
+        startup_timeout_s: float = 300.0,
         external_compose: bool = False,
     ) -> None:
         """external_compose=True: контейнеры подняты внешним скриптом, оркестратор

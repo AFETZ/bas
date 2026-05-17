@@ -86,7 +86,9 @@ escape_json(const std::string& s) {
 // -----------------------------------------------------------------------------
 static std::map<std::string, ChannelStats> g_stats;
 static std::map<std::string, Ptr<RateErrorModel>> g_error_models;
+static std::map<std::string, Ptr<CsmaChannel>> g_csma_channels;   // 2.1.d: для dynamic delay
 static std::map<std::string, double> g_base_loss;
+static std::map<std::string, double> g_base_delay_ms;             // 2.1.d: base delay из CLI
 
 static void
 on_csma_tx(std::string ch, Ptr<const Packet> p) {
@@ -115,12 +117,13 @@ on_csma_phy_drop(std::string ch, Ptr<const Packet>) {
 // с outage-расписанием). Polling раз в 100 мс через Simulator::Schedule.
 // -----------------------------------------------------------------------------
 static std::string g_sionna_path = "";
-static double g_sionna_last_loss = -1.0;   // для логов: эмитить event только при изменении
+static double g_sionna_last_loss = -1.0;       // для логов: эмитить event только при изменении
+static double g_sionna_last_delay_ms = -1.0;   // 2.1.d: то же для delay
 
 static double
-parse_sionna_loss(const std::string& body) {
-    // Файл маленький, ищем `"loss_ratio":<float>` подстроку.
-    static const std::string key = "\"loss_ratio\":";
+parse_sionna_field(const std::string& body, const std::string& key_name) {
+    // Файл маленький, ищем `"<key>":<float>` подстроку.
+    std::string key = "\"" + key_name + "\":";
     auto pos = body.find(key);
     if (pos == std::string::npos) return -1.0;
     pos += key.size();
@@ -137,7 +140,10 @@ sionna_poll_tick(std::string runId) {
         if (f.is_open()) {
             std::string body((std::istreambuf_iterator<char>(f)),
                              std::istreambuf_iterator<char>());
-            double loss = parse_sionna_loss(body);
+
+            // ---- loss_ratio ----
+            double loss = parse_sionna_field(body, "loss_ratio");
+            bool loss_changed = false;
             if (loss >= 0.0 && loss <= 1.0) {
                 auto it = g_error_models.find("payload");
                 if (it != g_error_models.end() && it->second) {
@@ -147,19 +153,45 @@ sionna_poll_tick(std::string runId) {
                             "ErrorRate", DoubleValue(loss));
                     }
                 }
-                // Эмитим JSONL только при существенном изменении (Δ>0.01).
                 if (std::abs(loss - g_sionna_last_loss) > 0.01) {
                     g_sionna_last_loss = loss;
-                    std::ostringstream o;
-                    o << "{\"event_type\":\"component\","
-                      << "\"component\":\"ns3:sionna_poll\","
-                      << "\"phase\":\"loss_updated\","
-                      << "\"sim_time\":" << Simulator::Now().GetSeconds()
-                      << ",\"flow_id\":\"payload\""
-                      << ",\"loss_ratio\":" << loss
-                      << ",\"run_id\":\"" << runId << "\"}";
-                    emit_event(o.str());
+                    loss_changed = true;
                 }
+            }
+
+            // ---- extra_delay_ms (Sionna multi-path/scattering propagation delay) ----
+            // Применяется как `base_delay + extra_delay` к channel delay payload.
+            double extra_delay_ms = parse_sionna_field(body, "extra_delay_ms");
+            bool delay_changed = false;
+            double total_delay_ms = 0.0;
+            if (extra_delay_ms >= 0.0 && extra_delay_ms <= 5000.0) {
+                auto ch_it = g_csma_channels.find("payload");
+                auto base_it = g_base_delay_ms.find("payload");
+                if (ch_it != g_csma_channels.end() && ch_it->second
+                    && base_it != g_base_delay_ms.end()) {
+                    total_delay_ms = base_it->second + extra_delay_ms;
+                    ch_it->second->SetAttribute(
+                        "Delay", TimeValue(MilliSeconds(total_delay_ms)));
+                }
+                if (std::abs(extra_delay_ms - g_sionna_last_delay_ms) > 0.5) {
+                    g_sionna_last_delay_ms = extra_delay_ms;
+                    delay_changed = true;
+                }
+            }
+
+            // Один JSONL event если хоть что-то изменилось.
+            if (loss_changed || delay_changed) {
+                std::ostringstream o;
+                o << "{\"event_type\":\"component\","
+                  << "\"component\":\"ns3:sionna_poll\","
+                  << "\"phase\":\"channel_updated\","
+                  << "\"sim_time\":" << Simulator::Now().GetSeconds()
+                  << ",\"flow_id\":\"payload\""
+                  << ",\"loss_ratio\":" << g_sionna_last_loss
+                  << ",\"extra_delay_ms\":" << g_sionna_last_delay_ms
+                  << ",\"channel_delay_ms\":" << total_delay_ms
+                  << ",\"run_id\":\"" << runId << "\"}";
+                emit_event(o.str());
             }
         }
     }
@@ -261,6 +293,13 @@ build_channel(const ChannelParams& p) {
     devs.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em));
     g_error_models[p.name] = em;
     g_base_loss[p.name] = p.packet_loss_ratio;
+
+    // 2.1.d: сохраняем pointer к CsmaChannel для динамического обновления
+    // delay (Sionna RT extra_delay_ms). devs.Get(0)->GetChannel() возвращает
+    // Ptr<Channel>; cast'им в CsmaChannel чтобы менять `Delay` attribute.
+    Ptr<CsmaChannel> csma_ch = devs.Get(0)->GetChannel()->GetObject<CsmaChannel>();
+    g_csma_channels[p.name] = csma_ch;
+    g_base_delay_ms[p.name] = p.delay_ms;
 
     // TapBridge для каждой стороны: подключаем к существующим TAP'ам на host'е.
     TapBridgeHelper tap_helper;

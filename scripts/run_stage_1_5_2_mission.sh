@@ -31,7 +31,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${1:-wifi_good}"
-RUN_ID="stage_1_5_2_mission_${PROFILE}_$(date -u +%Y%m%dT%H%M%SZ)"
+# BAS_RUN_ID можно передать снаружи (run_stage_2_1_sionna.sh) чтобы
+# publisher и mission run использовали один и тот же LOG_DIR без race.
+RUN_ID="${BAS_RUN_ID:-stage_1_5_2_mission_${PROFILE}_$(date -u +%Y%m%dT%H%M%SZ)}"
 LOG_DIR="${REPO_ROOT}/logs/${RUN_ID}"
 NS3_BIN="/work/ns3-src/build/scratch/ns3.40-two_channel-optimized"
 COMPOSE_FILE="${REPO_ROOT}/docker-compose.shared-netns.yml"
@@ -274,7 +276,14 @@ echo "  bas-uav: $(ip -n bas-uav -br addr 2>&1 | grep -E 'eth' | head -2 | tr '\
 echo "  bas-pload-far-pod: $(ip -n bas-pload-far-pod -br addr 2>&1 | grep eth | head -1)"
 
 echo "[4/9] gazebo + sitl + mavbridge"
-sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo sitl mavbridge" 2>&1 | tail -3
+# Gazebo стартуем ПЕРВЫМ и даём ему 6 секунд на загрузку SDF + JointForce
+# subscribers + ArduPilotGazeboPlugin. Иначе SITL спамит "No JSON sensor
+# message received" и mavbridge не получает heartbeat → orchestrator
+# timeout (известная WSL2 race).
+sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo" 2>&1 | tail -3
+echo "  ждём 6с пока Gazebo откроет FDM 9002/9003"
+sleep 6
+sg docker -c "docker compose -f ${COMPOSE_FILE} up -d sitl mavbridge" 2>&1 | tail -3
 
 echo "[5/9] ждём SITL MAVLink на :5760"
 for i in $(seq 1 60); do
