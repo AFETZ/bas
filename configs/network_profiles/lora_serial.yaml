@@ -1,0 +1,40 @@
+profile_id: lora_serial_sf7_bw125
+transport: ns3_lorawan_pty
+link_type: lora_sx1276_sf7_bw125
+description: |
+  Буквальная реализация ТЗ: LoRa через Serial Port. signetlabdei/lorawan
+  (50+ paper'ов, University of Padova) для PHY+MAC simulation + dual-socat
+  PTY bridge (host ↔ docker container) для совместимости orchestrator
+  serial endpoint с ns-3 контейнером.
+
+  Stage 1.7 (LoRa) идёт параллельно WiFi-каналу (1.5.x). Параметры
+  соответствуют типичному SX1276 modem'у в реальных дронах с RFD900 /
+  SiK radio.
+
+parameters:
+  # Совместимость со старым NetworkProfile loader'ом: transport
+  # ns3_lorawan_pty использует LoRa-поля ниже, но generic поля нужны
+  # для config_hash/reporting и старых сценариев.
+  bandwidth_mbps: 0.00547     # ~5.47 kbps effective payload at SF7/BW125
+  delay_ms: 120               # coarse LoRa airtime/reporting fallback
+  jitter_ms: 20
+  packet_loss_ratio: 0.0
+  outage_periods: []
+
+  sf: 7                       # spreading factor: 7 (fast) .. 12 (long range)
+  bandwidth_hz: 125000        # 125 kHz default LoRaWAN EU868
+  coding_rate: "4/5"          # forward error correction rate
+  tx_power_dbm: 14            # 14 dBm = 25 mW (EU868 max)
+  distance_m: 1000            # UAV-GCS distance в модели
+  host_pty_uav: "/tmp/ptyUAV_lora"
+  host_pty_gcs: "/tmp/ptyGCS_lora"
+  baud_bps: 57600             # serial speed между mavlink-router и host PTY
+  mavlink_endpoint: "serial:/tmp/ptyGCS_lora:57600"
+  effective_throughput_bps: 5470   # SX1276 SF7 BW125 теоретический
+
+log_fields:
+  - sf
+  - bandwidth_hz
+  - coding_rate
+  - tx_power_dbm
+  - distance_m

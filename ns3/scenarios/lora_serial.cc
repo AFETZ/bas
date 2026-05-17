@@ -102,9 +102,18 @@ on_phy_received(std::string side, Ptr<const Packet> p, uint32_t nodeId) {
 }
 
 static void
-on_interfered(std::string side, Ptr<const Packet>, uint32_t) {
+on_interfered(std::string side, Ptr<const Packet> p, uint32_t nodeId) {
     SideStats& s = (side == "uav") ? g_uav : g_gcs;
     s.packets_lost_interference += 1;
+
+    std::ostringstream o;
+    o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
+      << "\"phase\":\"phy_lost_interference\",\"side\":\"" << side << "\","
+      << "\"node_id\":" << nodeId << ","
+      << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
+      << "\"bytes\":" << (p ? p->GetSize() : 0) << ","
+      << "\"run_id\":\"" << g_run_id << "\"}";
+    emit_event(o.str());
 }
 
 // -----------------------------------------------------------------------------
@@ -255,7 +264,7 @@ emit_stats() {
       << "\"packets_rx\":" << g_gcs.packets_received << ","
       << "\"bytes_tx\":" << g_uav.bytes_sent << ","
       << "\"bytes_rx\":" << g_gcs.bytes_received << ","
-      << "\"packets_dropped_interference\":" << g_uav.packets_lost_interference
+      << "\"packets_dropped_interference\":" << g_gcs.packets_lost_interference
       << ",\"run_id\":\"" << g_run_id << "\"}";
     emit_event(o.str());
 

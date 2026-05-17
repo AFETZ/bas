@@ -48,6 +48,34 @@ def to_markdown(report: RunReport) -> str:
         )
     lines.append("")
 
+    lora = report.lora_serial
+    if lora.enabled:
+        lines.append("## LoRa serial канал")
+        lines.append("")
+        lines.append(
+            f"- PHY: SF{lora.sf or 'n/a'}, BW={lora.bandwidth_hz:,} Гц, "
+            f"TxPower={lora.tx_power_dbm:.1f} dBm, distance={lora.distance_m:.0f} м"
+        )
+        lines.append(
+            f"- PTY UAV read: {lora.pty_uav_reads} операций / "
+            f"{lora.pty_uav_bytes_in:,} байт"
+        )
+        lines.append(
+            f"- PTY GCS write: {lora.pty_gcs_writes} операций / "
+            f"{lora.pty_gcs_bytes_out:,} байт"
+        )
+        lines.append("")
+        lines.append("| frames_total | frames_rx | frames_lost | PDR | byte_loss | air_time mean/p95, мс | throughput, бит/с |")
+        lines.append("|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append(
+            f"| {lora.frames_total} | {lora.phy_packets_received} | "
+            f"{lora.frames_lost} | {lora.delivery_ratio:.3f} | "
+            f"{100.0 * lora.byte_loss_rate:.2f}% | "
+            f"{lora.mean_air_time_ms:.1f}/{lora.p95_air_time_ms:.1f} | "
+            f"{lora.effective_throughput_bps:,.0f} |"
+        )
+        lines.append("")
+
     # Секция «Видеопоток» появляется только если найден хотя бы один
     # video_tx или video_rx event (этап 1.5.2.a-metrics).
     v = report.video

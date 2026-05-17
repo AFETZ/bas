@@ -115,6 +115,56 @@ def to_compare_markdown(a: LabeledRun, b: LabeledRun) -> str:
         lines.append(f"| Goodput, бит/с | {fa_flow.goodput_bps:,.0f} | {fb_flow.goodput_bps:,.0f} |")
         lines.append("")
 
+    # ---- LoRa serial ----
+    la, lb = ra.lora_serial, rb.lora_serial
+    if la.enabled or lb.enabled:
+        lines.append("## LoRa serial канал")
+        lines.append("")
+        lines.append("| метрика | " + a.label + " | " + b.label + " |")
+        lines.append("|---|---:|---:|")
+
+        def lora_value(metric: str, lora) -> str:
+            if not lora.enabled:
+                return "—"
+            if metric == "profile":
+                bw = f"{lora.bandwidth_hz:,}" if lora.bandwidth_hz else "n/a"
+                sf = lora.sf or "n/a"
+                return f"SF{sf} / {bw} Hz"
+            if metric == "frames_total":
+                return str(lora.frames_total)
+            if metric == "frames_rx":
+                return str(lora.phy_packets_received)
+            if metric == "frames_lost":
+                return str(lora.frames_lost)
+            if metric == "pdr":
+                return f"{lora.delivery_ratio:.3f}"
+            if metric == "byte_loss":
+                return f"{100.0 * lora.byte_loss_rate:.2f}%"
+            if metric == "air_time":
+                return f"{lora.mean_air_time_ms:.1f}/{lora.p95_air_time_ms:.1f}"
+            if metric == "throughput":
+                return f"{lora.effective_throughput_bps:,.0f}"
+            if metric == "pty_in":
+                return f"{lora.pty_uav_bytes_in:,}"
+            if metric == "pty_out":
+                return f"{lora.pty_gcs_bytes_out:,}"
+            return "—"
+
+        for metric, label in [
+            ("profile", "PHY profile"),
+            ("frames_total", "Frames TX"),
+            ("frames_rx", "Frames RX"),
+            ("frames_lost", "Frames lost"),
+            ("pdr", "PDR"),
+            ("byte_loss", "Byte loss"),
+            ("air_time", "Air time mean/p95, мс"),
+            ("throughput", "Effective throughput, бит/с"),
+            ("pty_in", "PTY UAV bytes in"),
+            ("pty_out", "PTY GCS bytes out"),
+        ]:
+            lines.append(f"| {label} | {lora_value(metric, la)} | {lora_value(metric, lb)} |")
+        lines.append("")
+
     # ---- Видеопоток ----
     va, vb = ra.video, rb.video
     if va.enabled or vb.enabled:
@@ -261,6 +311,26 @@ def to_compare_csv(a: LabeledRun, b: LabeledRun) -> str:
         row(f"{flow_id}_p95_delay_ms", round(fa.p95_delay_ms, 1), round(fb.p95_delay_ms, 1))
         row(f"{flow_id}_mean_jitter_ms", round(fa.mean_jitter_ms, 2), round(fb.mean_jitter_ms, 2))
         row(f"{flow_id}_goodput_bps", round(fa.goodput_bps, 0), round(fb.goodput_bps, 0))
+
+    la, lb = ra.lora_serial, rb.lora_serial
+    if la.enabled or lb.enabled:
+        row("lora_enabled", int(la.enabled), int(lb.enabled))
+        row("lora_sf", la.sf, lb.sf)
+        row("lora_bandwidth_hz", la.bandwidth_hz, lb.bandwidth_hz)
+        row("lora_frames_total", la.frames_total, lb.frames_total)
+        row("lora_frames_rx", la.phy_packets_received, lb.phy_packets_received)
+        row("lora_frames_lost", la.frames_lost, lb.frames_lost)
+        row("lora_pdr", round(la.delivery_ratio, 4), round(lb.delivery_ratio, 4))
+        row("lora_byte_loss_rate", round(la.byte_loss_rate, 4), round(lb.byte_loss_rate, 4))
+        row("lora_mean_air_time_ms", round(la.mean_air_time_ms, 1), round(lb.mean_air_time_ms, 1))
+        row("lora_p95_air_time_ms", round(la.p95_air_time_ms, 1), round(lb.p95_air_time_ms, 1))
+        row(
+            "lora_effective_throughput_bps",
+            round(la.effective_throughput_bps, 0),
+            round(lb.effective_throughput_bps, 0),
+        )
+        row("lora_pty_uav_bytes_in", la.pty_uav_bytes_in, lb.pty_uav_bytes_in)
+        row("lora_pty_gcs_bytes_out", la.pty_gcs_bytes_out, lb.pty_gcs_bytes_out)
 
     va, vb = ra.video, rb.video
     if va.enabled or vb.enabled:

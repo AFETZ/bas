@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -165,6 +166,91 @@ class VideoMetrics:
 
 
 @dataclass
+class LoraSerialMetrics:
+    """Метрики для канала LoRa Serial (этап 1.7).
+
+    Источники: events из `ns3/scenarios/lora_serial.cc` с
+    `component=ns3:lorawan` и phases: pty_open / pty_read / pty_write /
+    phy_send / phy_received / phy_lost_interference.
+    """
+    enabled: bool = False
+    sf: int = 0
+    bandwidth_hz: int = 0
+    tx_power_dbm: float = 0.0
+    distance_m: float = 0.0
+
+    # PTY layer: bytes orchestrator/mavlink-router → ns-3 PtyApp → LoRa MAC
+    pty_uav_reads: int = 0
+    pty_uav_bytes_in: int = 0
+    pty_gcs_writes: int = 0
+    pty_gcs_bytes_out: int = 0
+
+    # LoRa PHY layer
+    phy_packets_sent: int = 0
+    phy_bytes_sent: int = 0
+    phy_packets_received: int = 0
+    phy_bytes_received: int = 0
+    phy_packets_lost_interference: int = 0
+    air_times_ms: list[float] = field(default_factory=list)
+
+    _first_phy_send_s: float | None = None
+    _last_phy_receive_s: float | None = None
+
+    @property
+    def frames_total(self) -> int:
+        return self.phy_packets_sent
+
+    @property
+    def frames_lost(self) -> int:
+        derived = max(0, self.phy_packets_sent - self.phy_packets_received)
+        return max(self.phy_packets_lost_interference, derived)
+
+    @property
+    def delivery_ratio(self) -> float:
+        if self.phy_packets_sent == 0:
+            return 0.0
+        return self.phy_packets_received / self.phy_packets_sent
+
+    @property
+    def frame_drop_rate(self) -> float:
+        if self.frames_total == 0:
+            return 0.0
+        return self.frames_lost / self.frames_total
+
+    @property
+    def byte_loss_rate(self) -> float:
+        if self.phy_bytes_sent == 0:
+            return 0.0
+        lost = max(0, self.phy_bytes_sent - self.phy_bytes_received)
+        return lost / self.phy_bytes_sent
+
+    @property
+    def effective_throughput_bps(self) -> float:
+        if self._first_phy_send_s is None or self._last_phy_receive_s is None:
+            return 0.0
+        duration_s = self._last_phy_receive_s - self._first_phy_send_s
+        if duration_s <= 0:
+            return 0.0
+        return 8.0 * self.phy_bytes_received / duration_s
+
+    @property
+    def mean_air_time_ms(self) -> float:
+        return statistics.mean(self.air_times_ms) if self.air_times_ms else 0.0
+
+    @property
+    def p95_air_time_ms(self) -> float:
+        return _percentile(sorted(self.air_times_ms), 0.95) if self.air_times_ms else 0.0
+
+    @property
+    def first_air_time_ms(self) -> float:
+        return self.air_times_ms[0] if self.air_times_ms else 0.0
+
+    @property
+    def mean_sf_used(self) -> float:
+        return float(self.sf)
+
+
+@dataclass
 class RunReport:
     run_id: str
     scenario_id: str
@@ -176,6 +262,7 @@ class RunReport:
     scenario_status: str
     versions: dict[str, str]
     video: VideoMetrics = field(default_factory=VideoMetrics)
+    lora_serial: LoraSerialMetrics = field(default_factory=LoraSerialMetrics)
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -581,6 +668,7 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
     flows: dict[str, FlowMetrics] = {}
     flight = FlightMetrics()
     sync = SyncMetrics()
+    report_lora_serial = LoraSerialMetrics()
     rtf_samples: list[float] = []
     desync_samples: list[float] = []
 
@@ -599,6 +687,7 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
     # для подсчёта траектории по двум форматам позиции
     prev_pos_xyz: tuple[float, float, float] | None = None
     prev_pos_geo: tuple[float, float, float] | None = None
+    lora_pending_tx_sim_s: deque[float] = deque()
 
     for ev in events:
         et = ev.get("event_type")
@@ -623,6 +712,49 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
                     configured_delays_s["control"] = float(ctrl["delay_ms"]) / 1000.0
                 if "delay_ms" in pload:
                     configured_delays_s["payload"] = float(pload["delay_ms"]) / 1000.0
+                # 1.7: ns-3 lora_serial scenario пишет sf/bandwidth/distance/tx_power
+                # в свой start event.
+                if "sf" in ev:
+                    lm = report_lora_serial
+                    lm.enabled = True
+                    lm.sf = int(ev.get("sf", 0))
+                    lm.bandwidth_hz = int(float(ev.get("bandwidth_hz", 0)))
+                    lm.tx_power_dbm = float(ev.get("tx_power_dbm", 0.0))
+                    lm.distance_m = float(ev.get("distance_m", 0.0))
+
+            # 1.7: ns3:lorawan events от lora_serial.cc PtyApp + LoRa PHY.
+            if ev.get("component") == "ns3:lorawan":
+                lm = report_lora_serial
+                phase = ev.get("phase")
+                size_bytes = max(0, int(ev.get("bytes", 0) or 0))
+                side = ev.get("side", "")
+                if phase == "pty_read" and side == "uav":
+                    lm.pty_uav_reads += 1
+                    lm.pty_uav_bytes_in += size_bytes
+                elif phase == "pty_write" and side == "gcs":
+                    lm.pty_gcs_writes += 1
+                    lm.pty_gcs_bytes_out += size_bytes
+                elif phase == "phy_send":
+                    lm.phy_packets_sent += 1
+                    lm.phy_bytes_sent += size_bytes
+                    if "sim_time" in ev:
+                        sim_time = float(ev.get("sim_time", 0.0))
+                        lora_pending_tx_sim_s.append(sim_time)
+                        if lm._first_phy_send_s is None:
+                            lm._first_phy_send_s = sim_time
+                elif phase == "phy_received":
+                    lm.phy_packets_received += 1
+                    lm.phy_bytes_received += size_bytes
+                    if "sim_time" in ev:
+                        sim_time = float(ev.get("sim_time", 0.0))
+                        lm._last_phy_receive_s = sim_time
+                        if lora_pending_tx_sim_s:
+                            tx_sim_time = lora_pending_tx_sim_s.popleft()
+                            if sim_time >= tx_sim_time:
+                                lm.air_times_ms.append(1000.0 * (sim_time - tx_sim_time))
+                elif phase == "phy_lost_interference":
+                    lm.phy_packets_lost_interference += 1
+                lm.enabled = True
             # Реальный режим: mission-runner emits waypoint_start/_done/mission_started с n_waypoints.
             if ev.get("component", "").startswith("mission-runner"):
                 phase = ev.get("phase")
@@ -709,6 +841,31 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
                 fm.bytes_sent = max(fm.bytes_sent, bytes_tx)
                 fm.bytes_delivered = max(fm.bytes_delivered, bytes_rx)
 
+                if flow_id.startswith("lora_"):
+                    report_lora_serial.enabled = True
+                    report_lora_serial.phy_packets_sent = max(
+                        report_lora_serial.phy_packets_sent, tx
+                    )
+                    report_lora_serial.phy_packets_received = max(
+                        report_lora_serial.phy_packets_received, rx
+                    )
+                    report_lora_serial.phy_bytes_sent = max(
+                        report_lora_serial.phy_bytes_sent, bytes_tx
+                    )
+                    report_lora_serial.phy_bytes_received = max(
+                        report_lora_serial.phy_bytes_received, bytes_rx
+                    )
+                    report_lora_serial.phy_packets_lost_interference = max(
+                        report_lora_serial.phy_packets_lost_interference,
+                        int(ev.get("packets_dropped_interference", 0) or 0),
+                    )
+                    if "sim_time" in ev and not report_lora_serial.air_times_ms:
+                        sim_time = float(ev.get("sim_time", 0.0))
+                        if tx > 0 and report_lora_serial._first_phy_send_s is None:
+                            report_lora_serial._first_phy_send_s = sim_time
+                        if rx > 0:
+                            report_lora_serial._last_phy_receive_s = sim_time
+
                 t = ev.get("sim_time")
                 if t is not None:
                     first_pkt_time.setdefault(flow_id, t)
@@ -760,4 +917,5 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
         sync=sync,
         scenario_status=scenario_status,
         versions=versions,
+        lora_serial=report_lora_serial,
     )
