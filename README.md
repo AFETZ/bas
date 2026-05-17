@@ -165,6 +165,29 @@ sudo env STAGE16_SKIP_RUNS=1 bash scripts/run_stage_1_6_compare.sh
     --out-dir logs/stage_1_6_manual/
 ```
 
+## Этап 2.1 (v2.0): Sionna RT — physically-justified radio model
+
+Закрыты пункты ТЗ Физулина: «ns-3/Sionna RT интеграция» + «карта тестового
+сценария для 3D-препятствий».
+
+```bash
+# 1. Setup Sionna в WSL (один раз, ~3.5 GB)
+bash scripts/setup_sionna.sh
+
+# 2. Сгенерировать Mitsuba scene + radio map (один раз)
+sionna_env/bin/python scripts/export_scene_to_sionna.py
+sionna_env/bin/python scripts/compute_radio_map.py --save-png
+
+# 3. Запустить mission с динамическим Sionna-каналом
+sudo bash scripts/run_stage_2_1_sionna.sh
+
+# Visual demo без mission (synthetic UAV trajectory):
+sionna_env/bin/python scripts/demo_sionna_pipeline.py --save-plot
+# → logs/sionna_demo/trajectory_loss.png
+```
+
+См. [docs/stage_2_1_sionna_plan.md](docs/stage_2_1_sionna_plan.md) для деталей.
+
 ## Дальнейшие шаги (после сверки с ТЗ от 17.05.2026)
 
 См. полный roadmap в [docs/roadmap.md](docs/roadmap.md) и матрицу
@@ -174,8 +197,6 @@ sudo env STAGE16_SKIP_RUNS=1 bash scripts/run_stage_1_6_compare.sh
    (virtual PTY + ns-3 SerialChannel), не функциональный IP-эквивалент
 2. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
    текущий pymavlink-код остаётся
-3. **2.1 Sionna RT** — обязательный пункт ТЗ; физически обоснованная радиокарта
-   из ray-tracing'а вместо `RateErrorModel`
-4. **2.4 Ручное управление через QGroundControl/MAVProxy**
-5. **2.3 Multi-UAV / рой**
-6. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)
+3. **2.4 Ручное управление через QGroundControl/MAVProxy**
+4. **2.3 Multi-UAV / рой**
+5. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)

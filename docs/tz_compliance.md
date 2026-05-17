@@ -47,14 +47,14 @@
 | Метрика: error rate | ✅ | 1.5.1 | `FlowMetrics.loss_ratio`, `payload_pdr`, в report.md + comparison.csv |
 | Метрика: распределение ошибок | ✅ | 1.5.2.c | `VideoMetrics.video_gap_*` (gap-detection + outage correlation) |
 | Метрика: пропускная способность | ✅ | 1.5.1+1.5.2.a | `FlowMetrics.goodput_bps`, `VideoMetrics.bitrate_rx_goodput_bps` |
-| **Sionna RT — физически обоснованные радиокарты** | ⏳ | **2.1** | Намечено: офлайн ray-tracing по 3D-сцене Gazebo → table `(x,y,z) → loss/delay` → `SionnaErrorModel` в ns-3. Подтверждено руководителем: **обязательно** |
+| **Sionna RT — физически обоснованные радиокарты** | ✅ | **2.1 (v2.0)** | Реализовано: Mitsuba scene `scene/iris_runway.xml` + Sionna RT `RadioMapSolver` → `radio_maps/iris_runway.npz` (heatmap 80×30 cells, 65% coverage). Publisher `sionna_channel_publisher.py` следует за UAV-позицией и обновляет `/tmp/sionna_channel.json`. ns-3 `two_channel.cc` поллит JSON каждые 100 мс и обновляет `RateErrorModel.ErrorRate` для payload-канала. Isolated test PASSED (4 loss_updated events). Demo `demo_sionna_pipeline.py` визуально показывает position-dependent loss |
 
 ### Раздел: карта тестового сценария — РАЗДЕЛ Физулина «ns-3/Sionna для 3D»
 
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
 | Геометрия сцены в Gazebo | ✅ | 1.2 | `iris_runway.sdf` + iris_with_gimbal модель |
-| **Детализированный учёт 3D препятствий для ns-3/Sionna** | ⏳ | **2.1.b** | Namechено: экспорт SDF → glTF/PLY для Sionna scene loader. Подтверждено руководителем: **обязательно** |
+| **Детализированный учёт 3D препятствий для ns-3/Sionna** | ✅ | **2.1.b (v2.0)** | `scripts/export_scene_to_sionna.py` — программный builder Mitsuba 3 XML: runway 1500×200 м (concrete), hangar (metal), 2 tower'а (concrete), building (brick) с правильными ITU-R материалами. Sionna RT видит препятствия в ray-tracing'е: 35% сцены в радио-тени, демонстрация в `logs/sionna_demo/trajectory_loss.png` |
 
 ### Раздел: моделирование + ручное управление БАС (совместно с Андрончевым, Карповым)
 
@@ -85,13 +85,13 @@
 | Категория | Закрыто | Намечено | Всего | % |
 |---|---:|---:|---:|---:|
 | Каналы связи (личная) | 4 | 1 (LoRa serial) | 5 | 80% |
-| ns-3 / Sionna RT (личная) | 4 | 1 (Sionna) | 5 | 80% |
-| Карта 3D (личная) | 1 | 1 (export) | 2 | 50% |
+| ns-3 / Sionna RT (личная) | 5 | 0 | 5 | **100%** |
+| Карта 3D (личная) | 2 | 0 | 2 | **100%** |
 | MAVROS интеграция (личная) | 0 | 1 | 1 | 0% |
 | Моделирование БАС (совместная) | 1 | 1 (manual GCS) | 2 | 50% |
-| **Итого по Физулинской зоне** | **10** | **5** | **15** | **67%** |
+| **Итого по Физулинской зоне** | **12** | **3** | **15** | **80%** |
 
-После закрытия 1.7 + 1.8 + 2.1 + 2.4 — **100% моих пунктов по ТЗ**.
+После закрытия 1.7 + 1.8 + 2.4 — **100% моих пунктов по ТЗ**.
 
 ## Приоритезация по grant-deadline
 

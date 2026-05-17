@@ -106,7 +106,7 @@
 | 1.6 | Сравнительный отчёт WiFi vs LoRa (`bas-analyzer-compare`, side-by-side markdown + CSV) | **готов** (v1.0) |
 | **1.7** | **LoRa через Serial Port (virtual PTY + ns-3 SerialChannel)** — буквальная реализация требования ТЗ Физулина | намечено |
 | **1.8** | **ROS2/MAVROS bridge** с runtime-переключением `--mavlink-backend pymavlink\|mavros` | намечено |
-| 2.1 | **Sionna RT** — обязательный пункт ТЗ; физически обоснованная радиокарта вместо RateErrorModel | намечено |
+| 2.1 | **Sionna RT** — обязательный пункт ТЗ; физически обоснованная радиокарта вместо RateErrorModel | **готов** (v2.0) |
 | 2.2 | AirSim/Cosys-AirSim **как overlay над Gazebo физикой** (Gazebo→AirSim bridge для realism, не замена) | намечено |
 | 2.3 | Несколько БАС / рой (multi-UAV в одной ns-3 сети) | намечено |
 | 2.4 | Ручное управление через QGroundControl/MAVProxy (совместная задача с Андрончевым/Карповым) | намечено |
