@@ -84,7 +84,12 @@ NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
 export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image/enable_streaming}"
 export BAS_VIDEO_CAMERA_WARMUP_SECONDS="${BAS_VIDEO_CAMERA_WARMUP_SECONDS:-45}"
-export BAS_VIDEO_CAMERA_STRICT="${BAS_VIDEO_CAMERA_STRICT:-1}"
+# BAS_VIDEO_CAMERA_STRICT=1 = early-exit если camera RTP не идёт за 46с.
+# Default=0 (warn-only): Gazebo Ogre2 часто начинает rendering для camera
+# sensor только когда iris в воздухе (после ARM+takeoff). При strict=1
+# скрипт убивал прогон ДО старта SITL/mission, что мешало демо.
+# Чтобы вернуть hard-exit, явно передай BAS_VIDEO_CAMERA_STRICT=1.
+export BAS_VIDEO_CAMERA_STRICT="${BAS_VIDEO_CAMERA_STRICT:-0}"
 export BAS_VIDEO_SOURCE_RAW="${BAS_VIDEO_SOURCE:-videotestsrc}"
 case "$BAS_VIDEO_SOURCE_RAW" in
     camera) export BAS_VIDEO_SOURCE="udpsrc:${BAS_CAMERA_UDP_PORT}" ;;
