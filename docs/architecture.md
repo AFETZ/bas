@@ -75,7 +75,8 @@
 | 1.5.2.a-metrics | VideoMetrics в анализаторе (FPS/e2e latency/frame loss/jitter) | **готов** (v0.8.1) |
 | 1.5.2.b | Реальная Gazebo-камера через GstCameraPlugin (`BAS_VIDEO_SOURCE=camera`) | **готов** |
 | 1.5.2.c | Корреляция payload outage ↔ video RX gaps в `report.md` | **готов** |
-| 1.6 | Сценарии нагрузочного теста + сравнительный отчёт WiFi vs LoRa | после 1.5.2 |
+| 1.5.2.d | Точная e2e latency через GstPadProbe на `udpsink:sink` / `udpsrc:src` + min-latency метрика | **готов** (v0.9) |
+| 1.6 | Сравнительный отчёт WiFi vs LoRa (`bas-analyzer-compare`, side-by-side markdown + CSV) | **готов** (v1.0) |
 | 2.x | Sionna RT (офлайн радиокарты) | этап 2 |
 | 2.x | AirSim / Cosys-AirSim как визуально-сенсорная ветка | этап 2 |
 | 2.x | Несколько БАС, рой | этап 2 |

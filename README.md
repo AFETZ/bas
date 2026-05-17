@@ -72,7 +72,7 @@ python -m analyzer logs/<run_id>
 | Mission через ns-3, profile `wifi_good` | да | **работает** v0.7 (AUTO + UDP bridge) |
 | Mission через ns-3, profile `degraded_lora` | да | **работает** v0.7 (250ms delay + 2% loss + outage) |
 | Видеопоток камеры Gazebo через payload-канал | да | 1.5.2.a/b/c: камера, метрики, MP4, корреляция outage ↔ video gaps |
-| Сравнительный отчёт WiFi vs LoRa | нет | этап 1.6 |
+| Сравнительный отчёт WiFi vs LoRa | да | этап 1.6 (`bas-analyzer-compare`, side-by-side markdown + CSV) |
 | Sionna RT (офлайн радиокарты) | нет | этап 2 |
 | AirSim / Cosys-AirSim | нет | этап 2 |
 | Несколько БАС / рой | нет | этап 2 |
@@ -131,9 +131,42 @@ sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_go
 sudo env BAS_VIDEO_SOURCE=camera BAS_GAZEBO_GUI=1 bash scripts/run_stage_1_5_2_mission.sh wifi_good
 ```
 
+## Этап 1.6 (v1.0): сравнительный отчёт WiFi vs LoRa
+
+Один скрипт прогоняет оба профиля и собирает side-by-side сравнение всех
+ключевых метрик (полётный контур, control / payload PDR и задержки, видео
+FPS / frame loss / e2e latency, outage correlation), плюс flat CSV для
+импорта в Excel/pandas:
+
+```bash
+sudo bash scripts/run_stage_1_6_compare.sh
+# Перезапустит wifi_good + degraded_lora через scripts/run_stage_1_5_2_mission.sh
+# и сложит в logs/stage_1_6_<UTC>/:
+#   comparison.md     — markdown side-by-side
+#   comparison.csv    — metric/wifi/lora/delta
+#   wifi_good/        — симлинк на исходный run-dir
+#   degraded_lora/    — симлинк на исходный run-dir
+```
+
+Если уже есть свежие прогоны и нужен только пересбор отчёта:
+
+```bash
+sudo env STAGE16_SKIP_RUNS=1 bash scripts/run_stage_1_6_compare.sh
+# Использует последние существующие logs/stage_1_5_2_mission_*
+```
+
+Прямой вызов сравнения:
+
+```bash
+.venv/bin/bas-analyzer-compare \
+    logs/stage_1_5_2_mission_wifi_good_<ts>/ \
+    logs/stage_1_5_2_mission_degraded_lora_<ts>/ \
+    --label-a wifi_good --label-b degraded_lora \
+    --out-dir logs/stage_1_6_manual/
+```
+
 ## Дальнейшие шаги
 
-1. Этап 1.5.2.d — точная e2e latency через GstPad probe / RTCP sender reports
-2. Этап 1.6 — сравнительный отчёт WiFi vs LoRa-подобный канал (markdown + CSV)
+1. Этап 2.x — Sionna RT (офлайн радиокарты)
+2. Этап 2.x — AirSim/Cosys-AirSim, рой нескольких БАС
 3. Стабилизация real-camera `degraded_lora` upload-флейка (`MISSION_ACK type=13`)
-4. Этап 2 — Sionna RT (офлайн радиокарты), AirSim/Cosys-AirSim, рой
