@@ -1,0 +1,31 @@
+profile_id: sionna_urban
+transport: ns3_sionna
+link_type: wifi_24ghz_raytraced
+description: |
+  Физически обоснованная WiFi-радиокарта 2.4 GHz из ray-tracing'а Sionna RT
+  по 3D-сцене iris_runway. Параметры loss_ratio и delay динамически
+  обновляются из radio_maps/iris_runway.npz в зависимости от текущей
+  позиции UAV (10 Hz polling из orchestrator -> /tmp/sionna_channel.json
+  -> ns-3 SionnaChannelOverride).
+
+  Заменяет статичный RateErrorModel на position-dependent radio model,
+  где затухание / тень от 3D-препятствий рассчитаны через ray-tracing.
+
+parameters:
+  # путь к pre-computed radio map (этап 2.1.c)
+  radio_map_path: "radio_maps/iris_runway.npz"
+  # carrier frequency
+  carrier_ghz: 2.4
+  # позиция GCS (TX) в метрах от origin runway
+  tx_position_m: [0.0, -30.0, 1.5]
+  # период polling /tmp/sionna_channel.json в ns-3
+  poll_interval_ms: 100
+  # fallback значения для позиций вне radio_map'а
+  default_path_loss_db: 130.0
+  default_delay_ms: 10.0
+
+log_fields:
+  - radio_map_path
+  - carrier_ghz
+  - tx_position_m
+  - poll_interval_ms
