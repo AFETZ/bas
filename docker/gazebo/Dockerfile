@@ -50,6 +50,15 @@ RUN git clone --depth 1 https://github.com/ArduPilot/ardupilot_gazebo.git \
     && cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     && make -j$(nproc)
 
+# Шаг 4b: ВАЖНО -- gz-sim 8.11.x + ardupilot_gazebo lock_step=1 даёт deadlock:
+# plugin ждёт IMU update от physics, physics ждёт первый servo от SITL,
+# SITL ждёт sensor от plugin. SITL спамит "No JSON sensor message received".
+# В gz-sim 8.10 и ниже работало; в 8.11 -- regression. Известная проблема
+# (см. ArduPilot Discourse / ardupilot_gazebo issues).
+# Fix: lock_step=0 -- physics tick'ает автономно, plugin отдаёт snapshot.
+RUN find /work/ardupilot_gazebo/models -name model.sdf \
+    | xargs sed -i 's|<lock_step>1</lock_step>|<lock_step>0</lock_step>|g'
+
 ENV GZ_SIM_SYSTEM_PLUGIN_PATH=/work/ardupilot_gazebo/build
 ENV GZ_SIM_RESOURCE_PATH=/work/ardupilot_gazebo/models:/work/ardupilot_gazebo/worlds
 
