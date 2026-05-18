@@ -61,7 +61,7 @@ services:
       IGN_PARTITION: bas-uav-local
       IGN_IP: 127.0.0.1
       GZ_TRANSPORT_TOPIC_MULTICAST_NIC: lo
-      GZ_SIM_RESOURCE_PATH: "/work/gazebo/worlds:/work/ardupilot_gazebo/models:/work/ardupilot_gazebo/worlds"
+      GZ_SIM_RESOURCE_PATH: "/work/gazebo/worlds:/work/gazebo/models:/work/ardupilot_gazebo/models:/work/ardupilot_gazebo/worlds"
       BAS_GAZEBO_WORLD: "${BAS_GAZEBO_WORLD:-iris_runway_ardupilot.sdf}"
     command:
       - bash
@@ -71,6 +71,7 @@ services:
         if [ "$${BAS_GAZEBO_GUI:-0}" = "1" ]; then
           exec gz sim -r -v3 "$${world}"
         fi
+        unset DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR PULSE_SERVER
         exec gz sim -s -r -v3 "$${world}"
     depends_on:
       uav-net:

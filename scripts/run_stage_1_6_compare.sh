@@ -9,7 +9,7 @@
 #   sudo bash scripts/run_stage_1_6_compare.sh
 #
 # Опционально:
-#   BAS_VIDEO_SOURCE=camera ...    # реальная Gazebo камера (1.5.2.b)
+#   BAS_VIDEO_SOURCE=camera ...    # реальная бортовая Gazebo POV camera (1.5.2.b)
 #   STAGE16_SKIP_RUNS=1 ...        # не запускать новые прогоны, использовать
 #                                  # последние существующие logs/stage_1_5_2_*
 #                                  # (полезно для итерации над comparator'ом)

@@ -1,16 +1,18 @@
 # Регрессия Gazebo camera/gimbal — текущий статус
 
-**Статус:** рабочий demo path восстановлен. SITL + Gazebo + ns-3 миссии снова
-проходят, если Gazebo использует модель без камеры: `iris_with_ardupilot`.
-Мир с `iris_with_gimbal` остаётся known-bad режимом и включается только явно
-для отладки настоящей Gazebo-камеры.
+**Статус:** рабочий demo path восстановлен, включая Gazebo camera video.
+SITL + Gazebo + ns-3 миссии проходят на стабильном ArduPilot FDM plugin stack,
+а видеопоток Gazebo-камеры даёт fixed onboard POV camera на модели
+`iris_with_pov_camera`. Мир с `iris_with_gimbal` остаётся known-bad режимом и
+включается только явно для отладки старой gimbal/zoom-камеры.
 
 ## Что ломалось
 
-Проблемный режим:
+Проблемный старый режим:
 
 ```bash
-sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh
+sudo env BAS_GAZEBO_WORLD=iris_runway.sdf BAS_VIDEO_SOURCE=camera \
+  bash scripts/run_stage_2_1_sionna.sh
 ```
 
 Симптомы:
@@ -45,27 +47,49 @@ Probe-прогоны:
 
 Главное различие — модель/мир Gazebo, а не ns-3, mavbridge или orchestrator.
 
-## Реализованный workaround
+## Реализованный фикс
 
-Добавлен локальный мир:
+Добавлена локальная модель и мир:
 
+- `gazebo/models/bas_iris_with_pov_camera/model.sdf`
 - `gazebo/worlds/iris_runway_ardupilot.sdf`
-- Это тот же runway setup, но вместо `model://iris_with_gimbal` используется
-  `model://iris_with_ardupilot`.
+
+`bas_iris_with_pov_camera` основана на стабильной `iris_with_ardupilot` /
+`iris_with_standoffs` схеме, но добавляет fixed link `pov_camera_link` с
+`sensor name="pov_camera"` и `GstCameraPlugin`. Камера закреплена на БАС,
+смотрит вперёд с лёгким наклоном вниз и отдаёт RTP на `127.0.0.1:5600`.
+Старые `gimbal_small_3d` и `CameraZoomPlugin` не используются.
 
 Поведение по умолчанию:
 
-- `BAS_VIDEO_SOURCE=camera` оставляет `iris_runway.sdf`, чтобы режим настоящей
-  Gazebo-камеры можно было отлаживать явно.
-- Любой non-camera video source по умолчанию использует
+- Все video source, включая `BAS_VIDEO_SOURCE=camera`, по умолчанию используют
   `iris_runway_ardupilot.sdf`.
-- `BAS_GAZEBO_WORLD=...` по-прежнему может переопределить мир руками.
+- `BAS_VIDEO_SOURCE=camera` включает onboard POV camera через
+  `/world/iris_runway/model/iris_with_pov_camera/link/pov_camera_link/sensor/pov_camera/image/enable_streaming`
+  и retap'ит H.264 RTP с `127.0.0.1:5600` в payload channel.
+- Старый `iris_with_gimbal` можно включить только руками через
+  `BAS_GAZEBO_WORLD=iris_runway.sdf`.
+- Любой другой `BAS_GAZEBO_WORLD=...` по-прежнему может переопределить мир.
 
 Это возвращает demo path с настоящей SITL/Gazebo динамикой полёта, MAVLink
-mission control, ns-3 control/payload сетью, analyzer metrics и synthetic
-GStreamer-видео.
+mission control, ns-3 control/payload сетью, analyzer metrics и Gazebo camera
+video от лица БАС без gimbal/zoom плагинов.
 
 ## Проверенные успешные прогоны
+
+Stage 1.5.2 onboard Gazebo POV camera:
+
+```text
+logs/stage_1_5_2_mission_wifi_good_20260518T094329Z
+RC=0
+video_rx.mp4=14M
+camera=iris_with_pov_camera::pov_camera_link::pov_camera
+landed=True
+waypoints=7/7
+max altitude=30.0 m
+control PDR=1.000
+payload PDR=1.000
+```
 
 Stage 1.5.2 synthetic video:
 
@@ -95,7 +119,13 @@ max position desync=0.00 m
 
 ## Команды для демо
 
-Рекомендуемый текущий демо-прогон:
+Рекомендуемый текущий демо-прогон с Gazebo camera:
+
+```bash
+sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh
+```
+
+Synthetic fallback:
 
 ```bash
 sudo env BAS_VIDEO_SOURCE=videotestsrc BAS_VIDEO_CAMERA_STRICT=0 \
@@ -112,16 +142,16 @@ sudo env BAS_VIDEO_SOURCE=videotestsrc BAS_VIDEO_CAMERA_STRICT=0 \
 Stage 1.5.2 без Sionna:
 
 ```bash
-sudo env BAS_VIDEO_SOURCE=videotestsrc BAS_VIDEO_CAMERA_STRICT=0 \
-  bash scripts/run_stage_1_5_2_mission.sh wifi_good
+sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_good
 ```
 
 ## Что ещё открыто
 
-Настоящий Gazebo camera path всё ещё сломан:
+Старый iris gimbal camera path всё ещё сломан:
 
 ```bash
-sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_2_1_sionna.sh
+sudo env BAS_GAZEBO_WORLD=iris_runway.sdf BAS_VIDEO_SOURCE=camera \
+  bash scripts/run_stage_2_1_sionna.sh
 ```
 
 Следующий полезный debug step — внутри `iris_with_gimbal` / rendering path:

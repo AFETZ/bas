@@ -125,6 +125,6 @@ Mission upload использует AUTO-mode: HOME + TAKEOFF + waypoints + LAND
 
 ## Известные упрощения этапа 1
 
-- Видеопоток в payload-канале по умолчанию синтетический (`videotestsrc`); режим `BAS_VIDEO_SOURCE=camera` подключает штатную камеру `iris_with_gimbal` через `GstCameraPlugin`.
+- Видеопоток в payload-канале по умолчанию синтетический (`videotestsrc`); режим `BAS_VIDEO_SOURCE=camera` подключает fixed onboard POV camera `pov_camera` на модели `iris_with_pov_camera` через `GstCameraPlugin`, сохраняя стабильный ArduPilot FDM plugin stack и обходя старый `iris_with_gimbal` / `CameraZoomPlugin` path.
 - Stub-режим оставлен для отладки оркестратора и анализатора (без Docker).
 - Sionna RT и AirSim — вне scope этапа 1.

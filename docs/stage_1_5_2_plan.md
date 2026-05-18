@@ -26,9 +26,10 @@
 | Анализатор: `payload | пакетов | PDR | потерь | в outage | задержка | jitter | goodput` колонки | `analyzer/src/analyzer/metrics.py` |
 
 Чего нет и придётся создать:
-- для 1.5.2.b отдельный SDF не нужен: `iris_runway.sdf` уже включает
-  `iris_with_gimbal`, а камера с `GstCameraPlugin` живёт в модели
-  `gimbal_small_3d`
+- для 1.5.2.b нужен безопасный бортовой camera path: старый
+  `iris_with_gimbal` содержит `CameraZoomPlugin` и на текущем стеке ломает
+  JSON FDM, поэтому используется локальная модель
+  `bas_iris_with_pov_camera` с fixed `pov_camera_link`
 - Sender и receiver контейнеры
 - Второй veth в `bas-uav` netns (на payload bridge)
 - Глобальный второй netns адрес и инжекция
@@ -93,12 +94,14 @@ gst-launch-1.0 -v \
 - **gz topic → fdsrc**: `gz topic -e -t /.../image` пишет protobuf в stdout, парсится Python'ом, raw RGB→gst appsrc. Прямолинейно, но требует custom-конвертера protobuf↔raw.
 - **ROS2 bridge** (gz_ros_image_bridge → ros2 topic → gstreamer): ещё один контейнер, перегруз.
 
-Решение: для 1.5.2.b используем уже существующий `iris_with_gimbal` из
-`ardupilot_gazebo`: в нём есть camera sensor + `GstCameraPlugin`, который пушит
-H.264 RTP на `127.0.0.1:5600`. Важная деталь: плагин не стартует поток сам,
-его нужно включить Gazebo topic'ом `.../enable_streaming` (`gz.msgs.Boolean`
-`data: true`). После этого `sender.py` работает как прозрачный retap'er
-(`udpsrc:5600` → `10.20.0.3:5000`) и продолжает писать tx JSONL.
+Решение: для 1.5.2.b используем локальную
+`gazebo/models/bas_iris_with_pov_camera`: это стабильный
+`iris_with_ardupilot` plugin stack плюс fixed onboard `pov_camera` с
+`GstCameraPlugin`. Он пушит H.264 RTP на `127.0.0.1:5600`. Важная деталь:
+плагин не стартует поток сам, его нужно включить Gazebo topic'ом
+`.../pov_camera/image/enable_streaming` (`gz.msgs.Boolean` `data: true`).
+После этого `sender.py` работает как прозрачный retap'er (`udpsrc:5600` →
+`10.20.0.3:5000`) и продолжает писать tx JSONL.
 
 ### Receiver pipeline
 

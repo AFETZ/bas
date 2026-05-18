@@ -111,7 +111,9 @@ sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
 ```
 
 По умолчанию источник видео — `videotestsrc` (smoke). Для проверки реальной
-камеры Gazebo используется режим `BAS_VIDEO_SOURCE=camera`:
+бортовой камеры Gazebo используется режим `BAS_VIDEO_SOURCE=camera`; он
+включает fixed POV camera на модели `iris_with_pov_camera`, без старого
+`CameraZoomPlugin` / `iris_with_gimbal` path:
 
 ```bash
 sudo service docker start
@@ -120,8 +122,8 @@ sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_go
 ```
 
 Этот режим включает штатный `GstCameraPlugin` через Gazebo topic
-`.../enable_streaming`, затем retap'ит H.264 RTP с `127.0.0.1:5600` в payload
-канал ns-3.
+`.../iris_with_pov_camera/.../pov_camera/.../enable_streaming`, затем retap'ит
+H.264 RTP с `127.0.0.1:5600` в payload канал ns-3.
 
 По умолчанию прогон headless: окно Gazebo не открывается, а принятый
 видеопоток сохраняется в `logs/<run_id>/video_rx.mp4`. Для визуального демо

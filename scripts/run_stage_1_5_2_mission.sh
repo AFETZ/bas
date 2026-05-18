@@ -78,32 +78,25 @@ NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 # Video-параметры (передаются как env в docker-compose).
 # BAS_VIDEO_SOURCE:
 #   videotestsrc     — synthetic ball pattern (smoke, 1.5.2.a default)
-#   camera           — real Gazebo iris_with_gimbal camera через GstCameraPlugin
+#   camera           — real onboard Gazebo POV camera через GstCameraPlugin
 #                      (этап 1.5.2.b). Маппится в sender.py на 'udpsrc:5600'.
 #   udpsrc:<port>    — прямое указание UDP loopback source (для отладки)
 export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
-export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image/enable_streaming}"
+export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_pov_camera/link/pov_camera_link/sensor/pov_camera/image/enable_streaming}"
 export BAS_VIDEO_CAMERA_WARMUP_SECONDS="${BAS_VIDEO_CAMERA_WARMUP_SECONDS:-45}"
 # BAS_VIDEO_CAMERA_STRICT=1 = early-exit если camera RTP не идёт за 46с.
-# Default=0 (warn-only): Gazebo Ogre2 часто начинает rendering для camera
-# sensor только когда iris в воздухе (после ARM+takeoff). При strict=1
-# скрипт убивал прогон ДО старта SITL/mission, что мешало демо.
-# Чтобы вернуть hard-exit, явно передай BAS_VIDEO_CAMERA_STRICT=1.
-export BAS_VIDEO_CAMERA_STRICT="${BAS_VIDEO_CAMERA_STRICT:-0}"
+# Default=1: onboard POV camera должна дать RTP до старта mission; если нет,
+# это уже не соответствующий ТЗ camera-demo path.
+export BAS_VIDEO_CAMERA_STRICT="${BAS_VIDEO_CAMERA_STRICT:-1}"
 export BAS_VIDEO_SOURCE_RAW="${BAS_VIDEO_SOURCE:-videotestsrc}"
 case "$BAS_VIDEO_SOURCE_RAW" in
     camera) export BAS_VIDEO_SOURCE="udpsrc:${BAS_CAMERA_UDP_PORT}" ;;
     *)      export BAS_VIDEO_SOURCE="$BAS_VIDEO_SOURCE_RAW" ;;
 esac
 if [ -z "${BAS_GAZEBO_WORLD:-}" ]; then
-    # The gimbal/camera model currently stalls Gazebo before state updates on
-    # this stack. Use the camera-free ArduPilot iris unless camera RTP is asked
-    # for explicitly.
-    if [ "$BAS_VIDEO_SOURCE_RAW" = "camera" ]; then
-        export BAS_GAZEBO_WORLD="iris_runway.sdf"
-    else
-        export BAS_GAZEBO_WORLD="iris_runway_ardupilot.sdf"
-    fi
+    # Keep FDM on the stable iris_with_ardupilot plugin stack. Camera mode uses
+    # a fixed onboard POV camera in this world instead of the known-bad gimbal.
+    export BAS_GAZEBO_WORLD="iris_runway_ardupilot.sdf"
 else
     export BAS_GAZEBO_WORLD
 fi

@@ -35,7 +35,7 @@
 
 | Артефакт | Где |
 |---|---|
-| 3D-сцена runway + iris model | `gazebo` контейнер: `/work/ardupilot_gazebo/worlds/iris_runway.sdf` + `model://iris_with_gimbal` |
+| 3D-сцена runway + iris model | `gazebo` контейнер: `gazebo/worlds/iris_runway_ardupilot.sdf` + `model://bas_iris_with_pov_camera` |
 | ns-3 base scenario | `ns3/scenarios/two_channel.cc` (control + payload TAP) |
 | Orchestrator с position events | `events.jsonl`: `event_type="flight"` с `position.{lat,lon,alt_rel_m}` |
 | Comparison analyzer | `bas-analyzer-compare` (v1.0) — сравнит wifi vs wifi_sionna |
