@@ -32,7 +32,16 @@ def main(argv: list[str] | None = None) -> int:
         "--mavlink-endpoint",
         default="tcp:127.0.0.1:5760",
         help="MAVLink endpoint для подключения к SITL (по умолчанию loopback). "
-             "Для этапа 1.5.1+ через ns-3 указать tcp:10.10.0.2:5760.",
+             "Для этапа 1.5.1+ через ns-3 указать tcp:10.10.0.2:5760. "
+             "Для --mavlink-backend=mavros формат fcu_url: udp://@:14550.",
+    )
+    parser.add_argument(
+        "--mavlink-backend",
+        choices=["pymavlink", "mavros"],
+        default="pymavlink",
+        help="Выбор MAVLink backend: pymavlink (default, текущая реализация) "
+             "или mavros (этап 1.8: ROS2 humble + MAVROS 2.14 через docker bas/mavros:dev). "
+             "Backend влияет только на --real путь; stub-режим использует свою эмуляцию.",
     )
     parser.add_argument(
         "--external-compose",
@@ -54,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         project_root=args.project_root,
         stub=not args.real,
         mavlink_endpoint=args.mavlink_endpoint,
+        mavlink_backend=args.mavlink_backend,
         external_compose=args.external_compose,
         run_dir_override=args.run_dir,
     )
