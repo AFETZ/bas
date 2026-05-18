@@ -1,0 +1,23 @@
+# Obsolete historical MAVProxy command sketch.
+#
+# Do not use this file for Stage 2.4 acceptance.
+# MAVProxy 1.8.74 has no `--script` option, and startup scripts do not wait
+# for vehicle connection. The acceptance runner is:
+#
+#   scripts/run_stage_2_4_mavproxy_gcs.sh
+#
+# Flight commands must be sent through the live MAVProxy CLI after heartbeat.
+# Safe MAVProxy startup configuration lives in:
+#
+#   configs/gcs/mavproxy_stage_2_4/mavinit.scr
+#
+# Manual reference sequence for an already connected MAVProxy CLI:
+#
+#   status
+#   mode GUIDED
+#   arm throttle
+#   takeoff 10
+#   velocity 1 0 0
+#   velocity 0 0 0
+#   mode LAND
+#   disarm

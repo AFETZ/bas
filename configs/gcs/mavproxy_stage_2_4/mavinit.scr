@@ -1,0 +1,15 @@
+# Stage 2.4 MAVProxy startup config.
+# Safe setup only: do not put flight commands in this file because MAVProxy
+# executes mavinit.scr at startup before the vehicle connection is guaranteed.
+
+set shownoise false
+set mavfwd false
+set mavfwd_disarmed false
+module load cmdlong
+
+alias add s24_status status
+alias add s24_guided mode GUIDED
+alias add s24_takeoff10 takeoff 10
+alias add s24_move velocity 1 0 0
+alias add s24_stop velocity 0 0 0
+alias add s24_land mode LAND
