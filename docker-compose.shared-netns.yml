@@ -61,13 +61,18 @@ services:
       IGN_PARTITION: bas-uav-local
       IGN_IP: 127.0.0.1
       GZ_TRANSPORT_TOPIC_MULTICAST_NIC: lo
-      GZ_SIM_RESOURCE_PATH: "/work/gazebo/worlds:/work/gazebo/models:/work/ardupilot_gazebo/models:/work/ardupilot_gazebo/worlds"
-      BAS_GAZEBO_WORLD: "${BAS_GAZEBO_WORLD:-iris_runway_ardupilot.sdf}"
+      # Resource path: container's ardupilot_gazebo первый, чтобы родной iris_runway.sdf +
+      # iris_with_gimbal модель брались оттуда. Локальные ./gazebo/worlds и ./gazebo/models
+      # доступны как fallback для кастомных миров (например stage 2.1 сценариев).
+      GZ_SIM_RESOURCE_PATH: "/work/ardupilot_gazebo/models:/work/ardupilot_gazebo/worlds:/work/gazebo/worlds:/work/gazebo/models"
+      # Default world = upstream iris_runway.sdf со встроенной iris_with_gimbal камерой
+      # (это путь "видеопоток камеры Gazebo" по букве ТЗ — POV с борта дрона, тень+лопасти).
+      BAS_GAZEBO_WORLD: "${BAS_GAZEBO_WORLD:-iris_runway.sdf}"
     command:
       - bash
       - -lc
       - |
-        world="$${BAS_GAZEBO_WORLD:-iris_runway_ardupilot.sdf}"
+        world="$${BAS_GAZEBO_WORLD:-iris_runway.sdf}"
         if [ "$${BAS_GAZEBO_GUI:-0}" = "1" ]; then
           exec gz sim -r -v3 "$${world}"
         fi

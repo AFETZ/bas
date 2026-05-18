@@ -125,6 +125,6 @@ Mission upload использует AUTO-mode: HOME + TAKEOFF + waypoints + LAND
 
 ## Известные упрощения этапа 1
 
-- Видеопоток в payload-канале по умолчанию синтетический (`videotestsrc`); режим `BAS_VIDEO_SOURCE=camera` подключает fixed onboard POV camera `pov_camera` на модели `iris_with_pov_camera` через `GstCameraPlugin`, сохраняя стабильный ArduPilot FDM plugin stack и обходя старый `iris_with_gimbal` / `CameraZoomPlugin` path.
+- Видеопоток в payload-канале по умолчанию синтетический (`videotestsrc`); режим `BAS_VIDEO_SOURCE=camera` подключает штатную onboard gimbal POV camera на модели `iris_with_gimbal` (upstream ardupilot_gazebo) через `GstCameraPlugin`. Стабильность FDM (Gazebo ↔ SITL UDP JSON) держится на pin'е gz-sim8 8.10.0 в `docker/gazebo/Dockerfile` — без него под gz-sim 8.11 plugin update loop теряет JSON sensor packets и mission не стартует.
 - Stub-режим оставлен для отладки оркестратора и анализатора (без Docker).
 - Sionna RT и AirSim — вне scope этапа 1.

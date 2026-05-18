@@ -112,8 +112,9 @@ sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
 
 По умолчанию источник видео — `videotestsrc` (smoke). Для проверки реальной
 бортовой камеры Gazebo используется режим `BAS_VIDEO_SOURCE=camera`; он
-включает fixed POV camera на модели `iris_with_pov_camera`, без старого
-`CameraZoomPlugin` / `iris_with_gimbal` path:
+включает штатную gimbal POV camera на модели `iris_with_gimbal` (upstream
+ardupilot_gazebo), снимающую сцену с борта дрона — в кадре видны лопасти
+ротора и тень БАС на runway, как и положено бортовой камере:
 
 ```bash
 sudo service docker start
@@ -122,8 +123,12 @@ sudo env BAS_VIDEO_SOURCE=camera bash scripts/run_stage_1_5_2_mission.sh wifi_go
 ```
 
 Этот режим включает штатный `GstCameraPlugin` через Gazebo topic
-`.../iris_with_pov_camera/.../pov_camera/.../enable_streaming`, затем retap'ит
-H.264 RTP с `127.0.0.1:5600` в payload канал ns-3.
+`/world/iris_runway/model/iris_with_gimbal/.../pitch_link/sensor/camera/image/enable_streaming`,
+затем retap'ит H.264 RTP с `127.0.0.1:5600` в payload канал ns-3. Стабильность
+FDM (Gazebo ↔ SITL UDP JSON FDM) обеспечивается пиннингом gz-sim8 8.10.0 в
+`docker/gazebo/Dockerfile` — без него под gz-sim 8.11 plugin update loop
+ломается. Mission AUTO + Gazebo POV camera проверены в одном прогоне
+(landed=True, video_rx.mp4 ≈16 МБ за 192 c полёта).
 
 По умолчанию прогон headless: окно Gazebo не открывается, а принятый
 видеопоток сохраняется в `logs/<run_id>/video_rx.mp4`. Для визуального демо

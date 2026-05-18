@@ -53,7 +53,7 @@
 
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
-| Геометрия сцены в Gazebo | ✅ | 1.2/1.5.2 | `iris_runway_ardupilot.sdf` + `bas_iris_with_pov_camera` модель |
+| Геометрия сцены в Gazebo | ✅ | 1.2/1.5.2 | upstream `iris_runway.sdf` + `iris_with_gimbal` модель (POV gimbal camera + ArduPilot FDM плагин в одной модели) |
 | **Детализированный учёт 3D препятствий для ns-3/Sionna** | ✅ | **2.1.b (v2.0)** | `scripts/export_scene_to_sionna.py` — программный builder Mitsuba 3 XML: runway 1500×200 м (concrete), hangar (metal), 2 tower'а (concrete), building (brick) с правильными ITU-R материалами. Sionna RT видит препятствия в ray-tracing'е: 35% сцены в радио-тени, демонстрация в `logs/sionna_demo/trajectory_loss.png` |
 
 ### Раздел: моделирование + ручное управление БАС (совместно с Андрончевым, Карповым)
