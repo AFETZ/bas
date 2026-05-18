@@ -117,6 +117,33 @@ services:
       sitl:
         condition: service_started
 
+  # Stage 1.7: LoRa Serial UAV-side bridge. ВМЕСТО mavbridge для LoRa-режима
+  # (SITL TCP 5760 single-client, оба mavbridge и lora-uav-bridge не могут жить
+  # одновременно). Соединяет host UNIX socket /tmp/bas-bridge/lora-uav.sock
+  # (другой конец — ns-3 LoRa PtyApp UAV) с SITL primary serial TCP 5760.
+  #
+  # Цепочка для LoRa варианта: orchestrator (pymavlink serial:/tmp/ptyGCS_lora)
+  # → host socat GCS → UNIX lora-gcs.sock → ns-3 container socat GCS → ns-3
+  # GCS PtyApp → LoRa channel → ns-3 UAV PtyApp → ns-3 container socat UAV
+  # → UNIX lora-uav.sock → ЭТОТ контейнер → SITL TCP 5760.
+  lora-uav-bridge:
+    image: alpine/socat:latest
+    container_name: bas-lora-uav-bridge
+    network_mode: "container:bas-uav-net"
+    volumes:
+      - /tmp/bas-bridge:/bridge
+    # ВАЖНО: каждый -d отдельным элементом списка — socat parser требует
+    # `-d` дважды как два аргумента, не один "-d -d".
+    command:
+      - -d
+      - -d
+      - UNIX-CONNECT:/bridge/lora-uav.sock,retry=30,interval=2
+      - TCP4:127.0.0.1:5760,retry=30,interval=2
+    profiles: ["lora"]
+    depends_on:
+      sitl:
+        condition: service_started
+
   # ---- Stage 1.5.2 video pipeline -----------------------------------------
   # Симметричный pause-контейнер для bas-pload-far netns. Скрипт-обвязка
   # (run_stage_1_5_2_mission.sh) инжектирует в его netns veth → br-pload-far

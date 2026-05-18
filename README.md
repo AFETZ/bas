@@ -195,13 +195,49 @@ sionna_env/bin/python scripts/demo_sionna_pipeline.py --save-plot
 
 См. [docs/stage_2_1_sionna_plan.md](docs/stage_2_1_sionna_plan.md) для деталей.
 
+## Этап 1.7 (1.7.a–1.7.g): LoRa через Serial Port — буквальная реализация ТЗ
+
+Закрыто буквально по ТЗ «LoRa через Serial Port для MAVLink», без IP-stack
+в радиопетле. Схема:
+
+```
+  host orchestrator (pymavlink serial:/tmp/ptyGCS_lora:57600)
+       ↕ host socat: /tmp/ptyGCS_lora ↔ /tmp/bas-bridge/lora-gcs.sock
+       ↕ ns-3 контейнер: container-side socat UNIX-CONNECT ↔ PTY
+       ↕ ns-3 GCS PtyApp ← OnGwReceive ← LoRa PHY
+       ↕ ns-3 LoRa channel (SF7, BW=125 kHz, distance=1000 m, ITU-R RP.452)
+       ↕ ns-3 UAV PtyApp (PollAndSend каждые 10 мс) → /tmp/ptyUAV_lora
+       ↕ ns-3 контейнер: container-side socat PTY ↔ UNIX-LISTEN
+       ↕ bas-lora-uav-bridge (alpine/socat в bas-uav netns)
+       ↕ SITL primary serial TCP 5760
+```
+
+ns-3 lorawan модуль = [signetlabdei/lorawan](https://github.com/signetlabdei/lorawan)
+(University of Padova, 50+ paper'ов), peer-reviewable academic baseline.
+
+```bash
+sudo bash scripts/run_stage_1_7_lora_serial.sh
+```
+
+Прогон поднимает SITL+Gazebo+lora-uav-bridge+ns-3 lora_serial и ловит N
+HEARTBEAT'ов через `serial:/tmp/ptyGCS_lora:57600` для подтверждения что
+MAVLink-байты идут через LoRa PHY+MAC. Артефакты в
+`logs/stage_1_7_lora_serial_*/`:
+
+- `report.md` — итоги (HB count, phy_send/received, PDR)
+- `lora_heartbeat_log.jsonl` — каждый принятый HEARTBEAT с sys_id/flight_mode/armed
+- `ns3_events.jsonl` — события `ns3:lorawan` (phy_send, phy_received, pty_read, pty_write)
+
+См. [docs/stage_1_7_lora_serial_plan.md](docs/stage_1_7_lora_serial_plan.md)
+и [docs/tz_compliance.md](docs/tz_compliance.md).
+
 ## Дальнейшие шаги (после сверки с ТЗ от 17.05.2026)
 
 См. полный roadmap в [docs/roadmap.md](docs/roadmap.md) и матрицу
 соответствия ТЗ в [docs/tz_compliance.md](docs/tz_compliance.md).
 
-1. **1.7 LoRa Serial Bridge** — буквальная реализация LoRa через Serial Port
-   (virtual PTY + ns-3 SerialChannel), не функциональный IP-эквивалент
+1. **1.7.h LoRa Class C** — ED_C для bi-directional mission upload через LoRa
+   (текущий ED_A покрывает telemetry uplink, mission upload идёт через WiFi)
 2. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
    текущий pymavlink-код остаётся
 3. **2.4 Ручное управление через QGroundControl/MAVProxy**

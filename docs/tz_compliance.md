@@ -28,7 +28,7 @@
 | Канал 1: управление | ✅ | 1.5.1 (v0.7) | `ns3/scenarios/two_channel.cc` control TAP |
 | Канал 2: видеопоток | ✅ | 1.5.2.a-d (v0.9) | `two_channel.cc` payload TAP + GstCameraPlugin + MP4 demo |
 | WiFi (TCP/IP) | ✅ | 1.5.1+1.5.2 | `wifi_good.yaml`, MAVLink через UDP/IP, RTP/UDP video |
-| **LoRa через Serial Port / LoRaWAN** | ⏳ | **1.7** | Намечено: virtual PTY + ns-3 SerialChannel, MAVLink-байтстрим без IP-stack. Подтверждено руководителем: нужна **буквальная** реализация |
+| **LoRa через Serial Port / LoRaWAN** | ✅ | **1.7 (a–g)** | Закрыто буквально: virtual PTY (`/tmp/ptyGCS_lora`) + dual-socat bridge (host ↔ docker `bas-ns3-stage17` через UNIX sockets в `/tmp/bas-bridge`) + ns-3 lorawan модуль signetlabdei (SF7/BW125, ITU-R RP.452 path loss, distance=1000 m). MAVLink-байтстрим SITL→orchestrator идёт по этому маршруту без какого-либо IP-stack в радио-петле. Smoke `run_stage_1_7_lora_serial.sh`: pymavlink-listener поймал 5/5 HEARTBEAT через `serial:/tmp/ptyGCS_lora:57600` за 59.4 с, phy_send=6, phy_received=6 (PDR=1.000), pty_read=70. Ограничение: ED Class A (uplink + RX-window downlink) — buchstabe-полный mission upload требует Class C, отдельный шаг (1.7.h) |
 
 ### Раздел: интеграция с симулятором физики (Федотенков А.А., но интерфейсы делаю я)
 
@@ -84,14 +84,14 @@
 
 | Категория | Закрыто | Намечено | Всего | % |
 |---|---:|---:|---:|---:|
-| Каналы связи (личная) | 4 | 1 (LoRa serial) | 5 | 80% |
+| Каналы связи (личная) | 5 | 0 | 5 | **100%** |
 | ns-3 / Sionna RT (личная) | 5 | 0 | 5 | **100%** |
 | Карта 3D (личная) | 2 | 0 | 2 | **100%** |
 | MAVROS интеграция (личная) | 0 | 1 | 1 | 0% |
 | Моделирование БАС (совместная) | 1 | 1 (manual GCS) | 2 | 50% |
-| **Итого по Физулинской зоне** | **12** | **3** | **15** | **80%** |
+| **Итого по Физулинской зоне** | **13** | **2** | **15** | **87%** |
 
-После закрытия 1.7 + 1.8 + 2.4 — **100% моих пунктов по ТЗ**.
+После закрытия 1.8 + 2.4 — **100% моих пунктов по ТЗ**.
 
 ## Приоритезация по grant-deadline
 

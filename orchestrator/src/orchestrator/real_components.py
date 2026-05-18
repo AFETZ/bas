@@ -159,6 +159,22 @@ class DockerComposeFlightStack:
 
         # Попросить поток телеметрии. Для degraded_lora держим частоту умеренной:
         # mission upload чувствителен к очередям, а 2 Гц хватает для контроля.
+        #
+        # 1.7 LoRa Serial: SF7/BW125 даёт ~5470 bps effective (~683 byte/s).
+        # MAV_DATA_STREAM_ALL @ 2 Hz даёт ~1000 byte/s — переполняет канал и
+        # GPS_RAW_INT теряется при try-recv. Для serial endpoint'а запрашиваем
+        # только узкий набор streams на 1 Hz: POSITION (GPS+GLOBAL_POSITION_INT),
+        # EXTENDED_STATUS (SYS_STATUS+GPS_RAW_INT+MISSION_CURRENT), EXTRA1
+        # (ATTITUDE). Это ~150 byte/s — комфортно влезает в LoRa.
+        is_slow_serial = self.mavlink_endpoint.startswith("serial:")
+        if is_slow_serial:
+            stream_requests = [
+                (mavutil.mavlink.MAV_DATA_STREAM_POSITION, 1),
+                (mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS, 1),
+                (mavutil.mavlink.MAV_DATA_STREAM_EXTRA1, 1),
+            ]
+        else:
+            stream_requests = [(mavutil.mavlink.MAV_DATA_STREAM_ALL, 2)]
         for _ in range(3):
             try:
                 self.mav.mav.heartbeat_send(
@@ -168,10 +184,10 @@ class DockerComposeFlightStack:
                 )
             except Exception:
                 pass
-            self.mav.mav.request_data_stream_send(
-                self._sys_id, self._comp_id,
-                mavutil.mavlink.MAV_DATA_STREAM_ALL, 2, 1,
-            )
+            for stream_id, rate_hz in stream_requests:
+                self.mav.mav.request_data_stream_send(
+                    self._sys_id, self._comp_id, stream_id, rate_hz, 1,
+                )
             time.sleep(0.2)
 
         # Запустить листенер в потоке.
@@ -381,7 +397,7 @@ class MissionRunner:
         self.mission = mission
         self.logger = logger
 
-    def upload_and_start(self, *, gps_wait_timeout_s: float = 60.0) -> None:
+    def upload_and_start(self, *, gps_wait_timeout_s: float | None = None) -> None:
         """Выбирает стратегию полёта: AUTO (mission upload) или GUIDED (live commands).
 
         AUTO режим устойчивее к lossy MAVLink каналу - mission upload протокол
@@ -391,11 +407,21 @@ class MissionRunner:
 
         GUIDED режим (старый): постоянно шлёт команды через канал, чувствителен
         к head-of-line blocking в TCP при потерях.
+
+        Для serial endpoint (LoRa) timeout'ы увеличены: SF7/BW125 ограничивает
+        канал ~5470 bps, и stream messages приходят с задержкой против WiFi.
         """
         assert self.stack.mav is not None
 
+        # Slow-channel detection: serial endpoint (LoRa) требует больше времени
+        # на первые GPS_RAW_INT + home position (медленный stream rate).
+        is_slow_serial = self.stack.mavlink_endpoint.startswith("serial:")
+        if gps_wait_timeout_s is None:
+            gps_wait_timeout_s = 180.0 if is_slow_serial else 60.0
+        home_wait_timeout_s = 240.0 if is_slow_serial else 90.0
+
         self._wait_for_gps_fix(min_fix=3, timeout_s=gps_wait_timeout_s)
-        home_lat, home_lon, home_alt = self._wait_for_home(timeout_s=90.0)
+        home_lat, home_lon, home_alt = self._wait_for_home(timeout_s=home_wait_timeout_s)
         self.logger.emit("component", component=self.name, phase="using_sitl_home",
                          lat=home_lat, lon=home_lon, alt=home_alt)
 

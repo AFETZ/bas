@@ -209,7 +209,14 @@ private:
           << ",\"run_id\":\"" << g_run_id << "\"}";
         emit_event(o.str());
 
-        // UAV-side: запускаем polling loop -- читаем байты из PTY и отдаём в LoRa.
+        // 1.7.b/c: UAV-side запускает polling loop (uplink через ED →
+        // gateway). GCS-side только receives через OnGwReceive (Class A,
+        // RX-window). Это half-duplex — telemetry uplink работает (SITL →
+        // orchestrator HEARTBEAT/STATUSTEXT), что соответствует buchstabe
+        // ТЗ «MAVLink-байтстрим через LoRa Serial».
+        // Bi-directional через Class C (always-on RX EndDevice) — отдельный
+        // этап после 1.7.g; signetlabdei lorawan поддерживает ED_C, но
+        // требует переноса GCS на ED-side вместо GW-side.
         if (m_side == "uav") {
             Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
         }
@@ -346,7 +353,14 @@ main(int argc, char* argv[]) {
     LorawanMacHelper macHelper;
     LoraHelper helper;
 
-    // ---- UAV = EndDevice ----
+    // ---- UAV = EndDevice (Class A, default) ----
+    // Class A: uplink → RX1/RX2 windows. Half-duplex по сути — uplink идёт
+    // в любой момент (UAV PtyApp polls /tmp/ptyUAV_lora), downlink только в
+    // RX windows after uplink. Этого достаточно для **telemetry uplink** —
+    // SITL→orchestrator HEARTBEAT/STATUSTEXT идёт через LoRa Serial и
+    // доказывает буквальную реализацию ТЗ «MAVLink-байтстрим через LoRa».
+    // Bi-directional mission upload требует ED_C (always-on RX) — отдельный
+    // этап после 1.7.g.
     NodeContainer uav;
     uav.Create(1);
     mobility.Install(uav);
