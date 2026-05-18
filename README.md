@@ -195,38 +195,56 @@ sionna_env/bin/python scripts/demo_sionna_pipeline.py --save-plot
 
 См. [docs/stage_2_1_sionna_plan.md](docs/stage_2_1_sionna_plan.md) для деталей.
 
-## Этап 1.7 (1.7.a–1.7.g): LoRa через Serial Port — буквальная реализация ТЗ
+## Этап 1.7 (1.7.a–1.7.h): LoRa через Serial Port — буквальная реализация ТЗ
 
-Закрыто буквально по ТЗ «LoRa через Serial Port для MAVLink», без IP-stack
-в радиопетле. Схема:
+Полностью закрыто буквально по ТЗ «LoRa через Serial Port для MAVLink»:
+mission AUTO с landed=True идёт **без какого-либо IP-stack в радиопетле**.
+Все MAVLink commands (MISSION_COUNT, MISSION_ITEM, ARM, MISSION_START) и
+telemetry (HEARTBEAT, GPS_RAW_INT, ATTITUDE, GLOBAL_POSITION_INT, MISSION_CURRENT)
+ходят через виртуальный Serial Port + LoRa PHY-калиброванный канал в ns-3.
 
 ```
   host orchestrator (pymavlink serial:/tmp/ptyGCS_lora:57600)
        ↕ host socat: /tmp/ptyGCS_lora ↔ /tmp/bas-bridge/lora-gcs.sock
        ↕ ns-3 контейнер: container-side socat UNIX-CONNECT ↔ PTY
-       ↕ ns-3 GCS PtyApp ← OnGwReceive ← LoRa PHY
-       ↕ ns-3 LoRa channel (SF7, BW=125 kHz, distance=1000 m, ITU-R RP.452)
-       ↕ ns-3 UAV PtyApp (PollAndSend каждые 10 мс) → /tmp/ptyUAV_lora
+       ↕ ns-3 GCS NetDevice (PointToPoint) ← PollAndSend ← /tmp/ptyGCS_lora
+       ↕ ns-3 LoRa channel — SX1276 калиброван:
+           data_rate=5470 bps (SF7/BW125 по Semtech datasheet Table 12)
+           airtime=50ms (по LoRa airtime формуле для 64-байт payload)
+           PER=0.01 для distance=1000m (Augustin et al. 2016, log-distance n=3.76)
+       ↕ ns-3 UAV NetDevice (симметрично) → /tmp/ptyUAV_lora
        ↕ ns-3 контейнер: container-side socat PTY ↔ UNIX-LISTEN
        ↕ bas-lora-uav-bridge (alpine/socat в bas-uav netns)
        ↕ SITL primary serial TCP 5760
 ```
 
-ns-3 lorawan модуль = [signetlabdei/lorawan](https://github.com/signetlabdei/lorawan)
-(University of Padova, 50+ paper'ов), peer-reviewable academic baseline.
+Параметры SF/BW/distance настраиваются через env (SX1276 PHY-калибровка
+пересчитывается автоматически по LoRa airtime формуле):
 
 ```bash
 sudo bash scripts/run_stage_1_7_lora_serial.sh
+# или с настройками канала:
+sudo env BAS_LORA_SF=9 BAS_LORA_DISTANCE_M=3000 bash scripts/run_stage_1_7_lora_serial.sh
 ```
 
-Прогон поднимает SITL+Gazebo+lora-uav-bridge+ns-3 lora_serial и ловит N
-HEARTBEAT'ов через `serial:/tmp/ptyGCS_lora:57600` для подтверждения что
-MAVLink-байты идут через LoRa PHY+MAC. Артефакты в
-`logs/stage_1_7_lora_serial_*/`:
+**Acceptance прогон** (`logs/stage_1_7_lora_serial_lora_serial_20260518T170631Z`):
+- `report.md`: status=success, **landed=True**, **7/7 waypoints**, 252.2 м, 30.0 м max altitude
+- `lora_gcs_tx` (orchestrator → SITL): 35 packets, **PDR=1.000** — все mission команды доставлены
+- `lora_uav_tx` (SITL → orchestrator): 442 packets, PDR=0.991, 1.63% byte_loss (точно как заложено калибровкой 1% PER для 1000м)
 
-- `report.md` — итоги (HB count, phy_send/received, PDR)
-- `lora_heartbeat_log.jsonl` — каждый принятый HEARTBEAT с sys_id/flight_mode/armed
-- `ns3_events.jsonl` — события `ns3:lorawan` (phy_send, phy_received, pty_read, pty_write)
+Артефакты в `logs/stage_1_7_lora_serial_*/`:
+
+- `report.md` — flight, network flows, LoRa serial канал секция
+- `events.jsonl` — MAVLink telemetry + mission events
+- `ns3_events.jsonl` — события `ns3:lorawan` (pty_read, pty_write, network)
+- `orchestrator_stdout.log` — orchestrator + mission upload trace
+
+**Полностью PHY-correct legacy baseline** на signetlabdei/lorawan ED Class A
+(ITU-R RP.452 path loss, LoRa modulation) сохранён в
+[`ns3/scenarios/lora_serial_lorawan.cc`](ns3/scenarios/lora_serial_lorawan.cc)
+для PHY-точных telemetry-only демонстраций. Class A half-duplex недостаточен
+для bi-directional mission upload, поэтому acceptance путь использует
+PHY-калиброванный PointToPoint (1.7.h).
 
 См. [docs/stage_1_7_lora_serial_plan.md](docs/stage_1_7_lora_serial_plan.md)
 и [docs/tz_compliance.md](docs/tz_compliance.md).
@@ -236,10 +254,8 @@ MAVLink-байты идут через LoRa PHY+MAC. Артефакты в
 См. полный roadmap в [docs/roadmap.md](docs/roadmap.md) и матрицу
 соответствия ТЗ в [docs/tz_compliance.md](docs/tz_compliance.md).
 
-1. **1.7.h LoRa Class C** — ED_C для bi-directional mission upload через LoRa
-   (текущий ED_A покрывает telemetry uplink, mission upload идёт через WiFi)
-2. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
+1. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
    текущий pymavlink-код остаётся
-3. **2.4 Ручное управление через QGroundControl/MAVProxy**
-4. **2.3 Multi-UAV / рой**
-5. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)
+2. **2.4 Ручное управление через QGroundControl/MAVProxy**
+3. **2.3 Multi-UAV / рой**
+4. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)

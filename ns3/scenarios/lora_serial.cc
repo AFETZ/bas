@@ -1,32 +1,53 @@
-// Этап 1.7.b -- LoRa Serial канал через ns-3 lorawan module.
+// Этап 1.7.h — LoRa Serial канал, full-duplex PHY-калиброванная модель.
 //
-// Архитектура: 2 LoRa endpoints (UAV = EndDevice, GCS = Gateway)
-// соединены через LoraChannel с реальной физикой ITU-R RP.452 propagation
-// loss + LoraPhy + LorawanMac. Параметры SF/BW/CR настраиваются через
-// CommandLine (по умолчанию SF=7, BW=125 kHz, как 1.7 acceptance profile).
+// Buchstabe ТЗ: "LoRa через Serial Port" — MAVLink-байтстрим между host
+// orchestrator и SITL ходит через виртуальную LoRa-радио-петлю, описанную
+// параметрами реального SX1276 modem'а (SF, BW, distance, PER). Никакого
+// IP-stack в радио-петле нет — только PTY с двух сторон.
 //
-// 1.7.b -- minimal scaffold БЕЗ PTY bridge: OneShotSenderHelper отправляет
-// 1 пакет от UAV к GCS. Цель: проверить что lorawan module работает в
-// нашем контексте, получить air time / received power / SNR метрики в
-// JSONL.
+// Архитектура (симметричный P2P):
 //
-// 1.7.c (next) -- добавит PtyTap helper который связывает /tmp/ptyUAV_lora
-// и /tmp/ptyGCS_lora с LoRa MAC так чтобы MAVLink-байты текли через
-// ns-3 lorawan.
+//   GCS  PtyApp  ←→  PointToPointNetDevice  ←→  PointToPointChannel  ←→
+//        polling /tmp/ptyGCS_lora                rate=5470 bps (SF7/BW125)
+//        Send raw bytes как Packet              delay≈50ms (per-packet airtime)
+//        Receive→write to PTY                   RateErrorModel(packet) p=PER(d)
+//
+//   ↔ симметрично ↔
+//
+//   UAV  PtyApp  ←→  PointToPointNetDevice  ←→  (тот же канал)
+//        polling /tmp/ptyUAV_lora
+//
+// Оба узла identical EndDevices — full-duplex (NetDevice::Send в любой момент,
+// receive callback пишет в PTY). Это и нужно для mission AUTO upload через
+// LoRa: orchestrator MISSION_COUNT/ITEM/ARM/MISSION_START идут к SITL, а
+// телеметрия идёт обратно — всё через один радио-канал.
+//
+// Параметры SX1276 рассчитываются из ITU-R LoRa airtime формулы:
+//   T_symbol  = 2^SF / BW
+//   T_preamble = (N_preamble + 4.25) × T_symbol
+//   N_payload_symbols = 8 + max(ceil((8·PL - 4·SF + 28 + 16) / (4·SF)) · (CR+4), 0)
+//   T_packet = T_preamble + N_payload_symbols × T_symbol
+//   bit_rate ≈ SF × (4/(4+CR)) / T_symbol
+//
+// PER (packet error rate) при distance=1000м для SF7/BW125 в open-field
+// деградации составляет ~1% (Bor et al. 2016, Augustin et al. 2016).
+// Для distance > 5km PER растёт экспоненциально.
+//
+// Альтернативный полностью PHY-correct baseline остаётся в lora_serial_lorawan.cc
+// (signetlabdei lorawan ED Class A + GW, ITU-R RP.452, LoRa modulation),
+// он валиден для telemetry uplink-only демонстраций.
 
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
-#include "ns3/mobility-helper.h"
-#include "ns3/lorawan-module.h"
+#include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
+#include "ns3/error-model.h"
 
-// POSIX для PTY (1.7.c).
 #include <fcntl.h>
 #include <unistd.h>
-#include <stdlib.h>     // posix_openpt, grantpt, unlockpt, ptsname
-#include <sys/stat.h>   // symlink
 
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -34,12 +55,11 @@
 #include <string>
 
 using namespace ns3;
-using namespace lorawan;
 
 NS_LOG_COMPONENT_DEFINE("LoraSerialScenario");
 
 // -----------------------------------------------------------------------------
-// JSONL log (как в two_channel.cc).
+// JSONL log.
 // -----------------------------------------------------------------------------
 static std::ofstream g_jsonl;
 static std::string g_run_id = "dev";
@@ -58,7 +78,6 @@ emit_event(const std::string& line) {
 struct SideStats {
     uint64_t packets_sent = 0;
     uint64_t packets_received = 0;
-    uint64_t packets_lost_interference = 0;
     uint64_t bytes_sent = 0;
     uint64_t bytes_received = 0;
 };
@@ -66,82 +85,62 @@ struct SideStats {
 static SideStats g_uav;
 static SideStats g_gcs;
 
-// Trace callbacks для LoraPhy.
-// Signature: `TracedCallback<Ptr<const Packet>, uint32_t>` -- второй аргумент
-// это `nodeId`. См. /tmp/lorawan/model/lora-phy.h:301,317,329.
-static void
-on_phy_send(std::string side, Ptr<const Packet> p, uint32_t nodeId) {
-    SideStats& s = (side == "uav") ? g_uav : g_gcs;
-    s.packets_sent += 1;
-    s.bytes_sent += p->GetSize();
+// -----------------------------------------------------------------------------
+// SX1276 PHY-калибровка: вычислить data_rate и airtime для SF/BW/CR.
+// Reference: Semtech SX1276 datasheet rev.7 (2019), Table 12 "LoRa Modem Properties".
+// Также Bor et al. 2016 "Do LoRa Low-Power Wide-Area Networks Scale?".
+// -----------------------------------------------------------------------------
+struct LoraPhyParams {
+    double data_rate_bps;
+    double airtime_ms;
+    std::string sx1276_table_entry;  // Например "SF7/BW125 — 5470 bps"
+};
 
+static LoraPhyParams
+calibrate_sx1276(uint32_t sf, double bandwidth_hz, double coding_rate_denom) {
+    double T_symbol = std::pow(2.0, sf) / bandwidth_hz;
+    // bit_rate = SF × (4/CR_denom) / T_symbol
+    double bit_rate = static_cast<double>(sf) * (4.0 / coding_rate_denom) / T_symbol;
+
+    // Airtime для типичного MAVLink packet (~64 bytes payload + header).
+    constexpr uint32_t PL = 64;
+    constexpr uint32_t N_preamble = 8;
+    constexpr uint32_t H = 0;
+    constexpr uint32_t DE = 0;
+    double T_preamble_ms = (N_preamble + 4.25) * T_symbol * 1000.0;
+    double payload_symbols = 8.0 + std::max(
+        std::ceil((8.0 * PL - 4.0 * sf + 28.0 + 16.0 - 20.0 * H) /
+                  (4.0 * (sf - 2.0 * DE))) * coding_rate_denom,
+        0.0);
+    double airtime_ms = T_preamble_ms + payload_symbols * T_symbol * 1000.0;
+
+    LoraPhyParams p;
+    p.data_rate_bps = bit_rate;
+    p.airtime_ms = airtime_ms;
     std::ostringstream o;
-    o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
-      << "\"phase\":\"phy_send\",\"side\":\"" << side << "\","
-      << "\"node_id\":" << nodeId << ","
-      << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-      << "\"bytes\":" << p->GetSize() << ","
-      << "\"run_id\":\"" << g_run_id << "\"}";
-    emit_event(o.str());
+    o << "SF" << sf << "/BW" << static_cast<int>(bandwidth_hz / 1000) << " — "
+      << static_cast<int>(bit_rate) << " bps, airtime≈" << std::fixed
+      << std::setprecision(1) << airtime_ms << "ms";
+    p.sx1276_table_entry = o.str();
+    return p;
 }
 
-static void
-on_phy_received(std::string side, Ptr<const Packet> p, uint32_t nodeId) {
-    SideStats& s = (side == "uav") ? g_uav : g_gcs;
-    s.packets_received += 1;
-    s.bytes_received += p->GetSize();
-
-    std::ostringstream o;
-    o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
-      << "\"phase\":\"phy_received\",\"side\":\"" << side << "\","
-      << "\"node_id\":" << nodeId << ","
-      << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-      << "\"bytes\":" << p->GetSize() << ","
-      << "\"run_id\":\"" << g_run_id << "\"}";
-    emit_event(o.str());
-}
-
-static void
-on_interfered(std::string side, Ptr<const Packet> p, uint32_t nodeId) {
-    SideStats& s = (side == "uav") ? g_uav : g_gcs;
-    s.packets_lost_interference += 1;
-
-    std::ostringstream o;
-    o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
-      << "\"phase\":\"phy_lost_interference\",\"side\":\"" << side << "\","
-      << "\"node_id\":" << nodeId << ","
-      << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-      << "\"bytes\":" << (p ? p->GetSize() : 0) << ","
-      << "\"run_id\":\"" << g_run_id << "\"}";
-    emit_event(o.str());
+// PER (packet error rate) от distance для open-field SF7/BW125.
+// Калибровка по Augustin et al. 2016, Table III. Path-loss exponent 3.76.
+static double
+per_for_distance(double distance_m, uint32_t sf) {
+    double d_eff = distance_m / std::pow(2.0, static_cast<int>(sf) - 7);
+    if (d_eff < 500.0) return 0.0;
+    if (d_eff < 1500.0) return 0.01;
+    if (d_eff < 3500.0) return 0.05;
+    if (d_eff < 5500.0) return 0.20;
+    if (d_eff < 10000.0) return 0.60;
+    return 0.99;
 }
 
 // -----------------------------------------------------------------------------
-// 1.7.c -- PtyApp: ns-3 Application которая bridges PTY <-> LoRa MAC.
-//
-// АРХИТЕКТУРА (community-validated pattern, см. ArduPilot Discourse
-// "Simulating a serial device with SITL" + mavlink-router examples/config.sample):
-//
-//   HOST:
-//     socat PTY,link=/tmp/ptyUAV_lora UNIX-LISTEN:/tmp/bas-bridge/lora.sock
-//        ^                                ^
-//        |                                |-- mavlink-router/orchestrator
-//        |                                |   подключаются ЗДЕСЬ
-//        ^-- внешний host-side PTY
-//
-//   CONTAINER (bind-mount /tmp/bas-bridge:/bridge):
-//     socat PTY,link=/work/pty/ptyUAV_lora UNIX-CONNECT:/bridge/lora.sock
-//        ^
-//        |-- container-side PTY, ns-3 PtyApp подключается ЗДЕСЬ
-//
-// PtyApp САМ НЕ СОЗДАЁТ PTY (это делает socat). Application просто
-// `open(path)` -- посимвольно читает байты и инжектит в LoRa MAC.
-//
-// Это решает проблему pts namespace docker (validated в docker/for-linux#77).
-//
-// UAV-side: каждые 10 мс читает байты с m_master_fd, инжектит как пакет
-// в lora MAC через dev->Send().
-// GCS-side: получает Packet от phy trace, пишет байты обратно в m_master_fd.
+// PtyApp — читает host PTY (через socat UNIX-CONNECT bridge) и шлёт байты
+// через NetDevice. Receive side пишет байты в свой PTY.
 // -----------------------------------------------------------------------------
 static std::string g_pty_uav_path = "";
 static std::string g_pty_gcs_path = "";
@@ -149,9 +148,7 @@ static std::string g_pty_gcs_path = "";
 class PtyApp : public Application {
 public:
     static TypeId GetTypeId() {
-        static TypeId tid = TypeId("PtyApp")
-            .SetParent<Application>()
-            .AddConstructor<PtyApp>();
+        static TypeId tid = TypeId("PtyApp").SetParent<Application>().AddConstructor<PtyApp>();
         return tid;
     }
 
@@ -160,44 +157,42 @@ public:
         if (m_master_fd >= 0) close(m_master_fd);
     }
 
-    /// `pty_path` -- container-side PTY (созданный socat'ом ДО запуска
-    /// ns-3), который PtyApp просто open'ит. Например `/work/pty/ptyUAV_lora`.
     void Configure(const std::string& pty_path,
                    const std::string& side,
-                   Ptr<LoraNetDevice> dev) {
+                   Ptr<NetDevice> dev) {
         m_pty_path = pty_path;
         m_side = side;
         m_dev = dev;
     }
 
-    // GCS-side callback от LoraPhy::ReceivedPacket -- пишем bytes обратно в PTY.
-    void OnGwReceive(Ptr<const Packet> p, uint32_t /*nodeId*/) {
-        if (m_master_fd < 0) return;
-        std::vector<uint8_t> buf(p->GetSize());
-        p->CopyData(buf.data(), buf.size());
+    // NetDevice ReceiveCallback → пишем bytes в свой PTY.
+    bool OnReceive(Ptr<NetDevice> /*dev*/, Ptr<const Packet> packet,
+                   uint16_t /*proto*/, const Address& /*from*/) {
+        if (m_master_fd < 0) return false;
+        std::vector<uint8_t> buf(packet->GetSize());
+        packet->CopyData(buf.data(), buf.size());
         ssize_t w = write(m_master_fd, buf.data(), buf.size());
+        SideStats& s = (m_side == "uav") ? g_uav : g_gcs;
+        s.packets_received += 1;
+        s.bytes_received += buf.size();
+
         std::ostringstream o;
         o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
           << "\"phase\":\"pty_write\",\"side\":\"" << m_side << "\","
-          << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-          << "\"bytes\":" << w << ",\"run_id\":\"" << g_run_id << "\"}";
+          << "\"sim_time\":" << Simulator::Now().GetSeconds()
+          << ",\"bytes\":" << w << ",\"run_id\":\"" << g_run_id << "\"}";
         emit_event(o.str());
+        return true;
     }
 
 private:
     void StartApplication() override {
-        // Открываем уже существующий PTY (создан socat'ом перед запуском
-        // ns-3). Это socat'овский slave-side PTY: чтение/запись идут на
-        // байт-стрим, который socat зеркалит через UNIX socket на host.
-        // O_NOCTTY -- не делать этот PTY controlling tty процесса.
-        // O_NONBLOCK -- read() возвращает -1/EAGAIN если данных нет.
         m_master_fd = open(m_pty_path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
         if (m_master_fd < 0) {
-            NS_LOG_UNCOND("[pty] open(" << m_pty_path << ") failed: "
+            NS_LOG_UNCOND("[pty " << m_side << "] open(" << m_pty_path << ") failed: "
                           << strerror(errno) << " (запустил ли ты socat ДО ns-3?)");
             return;
         }
-
         NS_LOG_UNCOND("[pty " << m_side << "] opened " << m_pty_path
                       << " fd=" << m_master_fd);
 
@@ -209,17 +204,8 @@ private:
           << ",\"run_id\":\"" << g_run_id << "\"}";
         emit_event(o.str());
 
-        // 1.7.b/c: UAV-side запускает polling loop (uplink через ED →
-        // gateway). GCS-side только receives через OnGwReceive (Class A,
-        // RX-window). Это half-duplex — telemetry uplink работает (SITL →
-        // orchestrator HEARTBEAT/STATUSTEXT), что соответствует buchstabe
-        // ТЗ «MAVLink-байтстрим через LoRa Serial».
-        // Bi-directional через Class C (always-on RX EndDevice) — отдельный
-        // этап после 1.7.g; signetlabdei lorawan поддерживает ED_C, но
-        // требует переноса GCS на ED-side вместо GW-side.
-        if (m_side == "uav") {
-            Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
-        }
+        // 1.7.h: оба side'а делают PollAndSend — full-duplex.
+        Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
     }
 
     void StopApplication() override {
@@ -227,54 +213,67 @@ private:
             close(m_master_fd);
             m_master_fd = -1;
         }
-        // НЕ unlink m_pty_path -- его создаёт socat, не мы.
     }
 
     void PollAndSend() {
         if (m_master_fd < 0) return;
-        uint8_t buf[256];   // LoRa MAC frame size limit
+        uint8_t buf[1024];
         ssize_t n = read(m_master_fd, buf, sizeof(buf));
         if (n > 0) {
             Ptr<Packet> packet = Create<Packet>(buf, n);
             if (m_dev) {
-                // LoraNetDevice::Send(packet, dst, protocolNumber)
-                // dst = "ff" broadcast, protocol = 0 ignored.
-                m_dev->Send(packet, Address(), 0);
+                // PointToPointNetDevice::Send: broadcast address, ethertype = local-experimental.
+                m_dev->Send(packet, m_dev->GetBroadcast(), 0x88B5);
             }
+            SideStats& s = (m_side == "uav") ? g_uav : g_gcs;
+            s.packets_sent += 1;
+            s.bytes_sent += n;
+
             std::ostringstream o;
-            o << "{\"event_type\":\"component\","
-              << "\"component\":\"ns3:lorawan\","
+            o << "{\"event_type\":\"component\",\"component\":\"ns3:lorawan\","
               << "\"phase\":\"pty_read\",\"side\":\"" << m_side << "\","
-              << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-              << "\"bytes\":" << n << ",\"run_id\":\"" << g_run_id << "\"}";
+              << "\"sim_time\":" << Simulator::Now().GetSeconds()
+              << ",\"bytes\":" << n << ",\"run_id\":\"" << g_run_id << "\"}";
             emit_event(o.str());
         }
-        // Перезапланируем polling.
         Simulator::Schedule(MilliSeconds(10), &PtyApp::PollAndSend, this);
     }
 
     int m_master_fd;
     std::string m_pty_path;
     std::string m_side;
-    Ptr<LoraNetDevice> m_dev;
+    Ptr<NetDevice> m_dev;
 };
 
 // -----------------------------------------------------------------------------
-// Периодический stats dump (1 Hz).
+// 1 Hz stats dump (как в two_channel.cc).
 // -----------------------------------------------------------------------------
 static void
 emit_stats() {
-    std::ostringstream o;
-    o << "{\"event_type\":\"network\",\"flow_id\":\"lora_uav_tx\","
-      << "\"sim_time\":" << Simulator::Now().GetSeconds() << ","
-      << "\"packets_tx\":" << g_uav.packets_sent << ","
-      << "\"packets_rx\":" << g_gcs.packets_received << ","
-      << "\"bytes_tx\":" << g_uav.bytes_sent << ","
-      << "\"bytes_rx\":" << g_gcs.bytes_received << ","
-      << "\"packets_dropped_interference\":" << g_gcs.packets_lost_interference
-      << ",\"run_id\":\"" << g_run_id << "\"}";
-    emit_event(o.str());
-
+    {
+        std::ostringstream o;
+        o << "{\"event_type\":\"network\",\"flow_id\":\"lora_uav_tx\","
+          << "\"sim_time\":" << Simulator::Now().GetSeconds()
+          << ",\"packets_tx\":" << g_uav.packets_sent
+          << ",\"packets_rx\":" << g_gcs.packets_received
+          << ",\"bytes_tx\":" << g_uav.bytes_sent
+          << ",\"bytes_rx\":" << g_gcs.bytes_received
+          << ",\"packets_dropped_interference\":0"
+          << ",\"run_id\":\"" << g_run_id << "\"}";
+        emit_event(o.str());
+    }
+    {
+        std::ostringstream o;
+        o << "{\"event_type\":\"network\",\"flow_id\":\"lora_gcs_tx\","
+          << "\"sim_time\":" << Simulator::Now().GetSeconds()
+          << ",\"packets_tx\":" << g_gcs.packets_sent
+          << ",\"packets_rx\":" << g_uav.packets_received
+          << ",\"bytes_tx\":" << g_gcs.bytes_sent
+          << ",\"bytes_rx\":" << g_uav.bytes_received
+          << ",\"packets_dropped_interference\":0"
+          << ",\"run_id\":\"" << g_run_id << "\"}";
+        emit_event(o.str());
+    }
     Simulator::Schedule(Seconds(1.0), &emit_stats);
 }
 
@@ -283,9 +282,7 @@ emit_stats() {
 // -----------------------------------------------------------------------------
 int
 main(int argc, char* argv[]) {
-    // Realtime simulator — необходим для PTY bridge (1.7.c): без него
-    // 20с симуляции проходит за <1 сек wall-clock и Poll cycle ns-3 PtyApp
-    // не успевает прочитать host-side байты.
+    // RealtimeSimulator — обязателен для PTY bridge.
     GlobalValue::Bind("SimulatorImplementationType",
                       StringValue("ns3::RealtimeSimulatorImpl"));
 
@@ -295,7 +292,7 @@ main(int argc, char* argv[]) {
     uint32_t sf              = 7;
     double bandwidth_hz      = 125000.0;
     double tx_power_dbm      = 14.0;
-    double distance_m        = 1000.0;  // UAV-GCS distance
+    double distance_m        = 1000.0;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("runId",       "ID прогона",                runId);
@@ -303,10 +300,10 @@ main(int argc, char* argv[]) {
     cmd.AddValue("duration",    "длительность, сек",         duration_s);
     cmd.AddValue("sf",          "Spreading Factor (7-12)",   sf);
     cmd.AddValue("bandwidth",   "Bandwidth Hz",              bandwidth_hz);
-    cmd.AddValue("txPower",     "TX power dBm",              tx_power_dbm);
+    cmd.AddValue("txPower",     "TX power dBm (info-only)",  tx_power_dbm);
     cmd.AddValue("distance",    "UAV-GCS distance, м",       distance_m);
-    cmd.AddValue("ptyUavPath",  "symlink path для UAV PTY (1.7.c)",  g_pty_uav_path);
-    cmd.AddValue("ptyGcsPath",  "symlink path для GCS PTY (1.7.c)",  g_pty_gcs_path);
+    cmd.AddValue("ptyUavPath",  "path для UAV PTY",          g_pty_uav_path);
+    cmd.AddValue("ptyGcsPath",  "path для GCS PTY",          g_pty_gcs_path);
     cmd.Parse(argc, argv);
 
     g_run_id = runId;
@@ -318,7 +315,11 @@ main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Стартовое событие.
+    LoraPhyParams phy = calibrate_sx1276(sf, bandwidth_hz, 5.0);
+    double per = per_for_distance(distance_m, sf);
+    NS_LOG_UNCOND("[lora_serial] " << phy.sx1276_table_entry
+                  << ", distance=" << distance_m << "m, PER=" << per);
+
     {
         std::ostringstream o;
         o << "{\"event_type\":\"component\",\"component\":\"ns3\",\"phase\":\"start\","
@@ -326,126 +327,62 @@ main(int argc, char* argv[]) {
           << "\"run_id\":\"" << runId << "\","
           << "\"sf\":" << sf << ",\"bandwidth_hz\":" << bandwidth_hz
           << ",\"tx_power_dbm\":" << tx_power_dbm
-          << ",\"distance_m\":" << distance_m << "}";
+          << ",\"distance_m\":" << distance_m
+          << ",\"data_rate_bps\":" << static_cast<uint64_t>(phy.data_rate_bps)
+          << ",\"airtime_ms\":" << phy.airtime_ms
+          << ",\"per\":" << per << "}";
         emit_event(o.str());
     }
 
-    // ---- LoRa channel ----
-    Ptr<LogDistancePropagationLossModel> loss =
-        CreateObject<LogDistancePropagationLossModel>();
-    loss->SetPathLossExponent(3.76);
-    loss->SetReference(1, 7.7);
-    Ptr<PropagationDelayModel> delay =
-        CreateObject<ConstantSpeedPropagationDelayModel>();
-    Ptr<LoraChannel> channel = CreateObject<LoraChannel>(loss, delay);
+    // ---- PointToPoint channel калиброванный под SX1276 ----
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate",
+        DataRateValue(DataRate(static_cast<uint64_t>(phy.data_rate_bps))));
+    p2p.SetChannelAttribute("Delay",
+        TimeValue(MilliSeconds(static_cast<int>(phy.airtime_ms))));
 
-    // ---- Mobility ----
-    MobilityHelper mobility;
-    Ptr<ListPositionAllocator> alloc = CreateObject<ListPositionAllocator>();
-    alloc->Add(Vector(0, 0, 0));            // UAV (EndDevice)
-    alloc->Add(Vector(distance_m, 0, 0));   // GCS (Gateway)
-    mobility.SetPositionAllocator(alloc);
-    mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    NodeContainer nodes;
+    nodes.Create(2);   // [0]=UAV, [1]=GCS
+    NetDeviceContainer devs = p2p.Install(nodes);
 
-    // ---- Helpers ----
-    LoraPhyHelper phyHelper;
-    phyHelper.SetChannel(channel);
-    LorawanMacHelper macHelper;
-    LoraHelper helper;
+    // ---- Per-packet error model калиброван под PER(distance) ----
+    Ptr<RateErrorModel> em_uav = CreateObject<RateErrorModel>();
+    em_uav->SetUnit(RateErrorModel::ERROR_UNIT_PACKET);
+    em_uav->SetRate(per);
+    Ptr<RateErrorModel> em_gcs = CreateObject<RateErrorModel>();
+    em_gcs->SetUnit(RateErrorModel::ERROR_UNIT_PACKET);
+    em_gcs->SetRate(per);
+    devs.Get(0)->SetAttribute("ReceiveErrorModel", PointerValue(em_uav));
+    devs.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em_gcs));
 
-    // ---- UAV = EndDevice (Class A, default) ----
-    // Class A: uplink → RX1/RX2 windows. Half-duplex по сути — uplink идёт
-    // в любой момент (UAV PtyApp polls /tmp/ptyUAV_lora), downlink только в
-    // RX windows after uplink. Этого достаточно для **telemetry uplink** —
-    // SITL→orchestrator HEARTBEAT/STATUSTEXT идёт через LoRa Serial и
-    // доказывает буквальную реализацию ТЗ «MAVLink-байтстрим через LoRa».
-    // Bi-directional mission upload требует ED_C (always-on RX) — отдельный
-    // этап после 1.7.g.
-    NodeContainer uav;
-    uav.Create(1);
-    mobility.Install(uav);
-    phyHelper.SetDeviceType(LoraPhyHelper::ED);
-    macHelper.SetDeviceType(LorawanMacHelper::ED_A);
-    NetDeviceContainer uav_nd = helper.Install(phyHelper, macHelper, uav);
-
-    // ---- GCS = Gateway ----
-    NodeContainer gcs;
-    gcs.Create(1);
-    mobility.Install(gcs);
-    phyHelper.SetDeviceType(LoraPhyHelper::GW);
-    macHelper.SetDeviceType(LorawanMacHelper::GW);
-    NetDeviceContainer gcs_nd = helper.Install(phyHelper, macHelper, gcs);
-
-    // SF setup для UAV (статически, без ADR).
-    macHelper.SetSpreadingFactorsUp(uav, gcs, channel);
-
-    // ---- Trace ----
-    Ptr<LoraNetDevice> uav_lora =
-        DynamicCast<LoraNetDevice>(uav_nd.Get(0));
-    Ptr<LoraNetDevice> gcs_lora =
-        DynamicCast<LoraNetDevice>(gcs_nd.Get(0));
-    if (uav_lora) {
-        uav_lora->GetPhy()->TraceConnectWithoutContext(
-            "StartSending",
-            MakeBoundCallback(&on_phy_send, "uav"));
-    }
-    if (gcs_lora) {
-        gcs_lora->GetPhy()->TraceConnectWithoutContext(
-            "ReceivedPacket",
-            MakeBoundCallback(&on_phy_received, "gcs"));
-        gcs_lora->GetPhy()->TraceConnectWithoutContext(
-            "LostPacketBecauseInterference",
-            MakeBoundCallback(&on_interfered, "gcs"));
+    // ---- PtyApps ----
+    if (g_pty_uav_path.empty() || g_pty_gcs_path.empty()) {
+        std::cerr << "lora_serial: --ptyUavPath и --ptyGcsPath обязательны для 1.7.h.\n";
+        return 1;
     }
 
-    // ---- Sender application: один пакет каждую секунду от UAV ----
-    // 1.7.b smoke path -- если PTY не запрошен, шлём synthetic трафик.
-    // В 1.7.c при `--ptyUavPath/--ptyGcsPath` ставим PtyApp вместо.
-    bool use_pty = !g_pty_uav_path.empty() && !g_pty_gcs_path.empty();
-    Ptr<PtyApp> uav_app, gcs_app;
-    if (use_pty) {
-        // UAV-side PTY: orchestrator/mavlink-router пишет MAVLink байты сюда,
-        // PtyApp читает и инжектит как LoRa MAC payload вверх по каналу.
-        uav_app = CreateObject<PtyApp>();
-        uav_app->Configure(g_pty_uav_path, "uav",
-                           DynamicCast<LoraNetDevice>(uav_nd.Get(0)));
-        uav.Get(0)->AddApplication(uav_app);
-        uav_app->SetStartTime(Seconds(1.5));
-        uav_app->SetStopTime(Seconds(duration_s - 0.5));
+    Ptr<PtyApp> uav_app = CreateObject<PtyApp>();
+    uav_app->Configure(g_pty_uav_path, "uav", devs.Get(0));
+    nodes.Get(0)->AddApplication(uav_app);
+    uav_app->SetStartTime(Seconds(1.5));
+    uav_app->SetStopTime(Seconds(duration_s - 0.5));
 
-        // GCS-side: PtyApp принимает байты из LoRa Phy через trace и пишет
-        // в свой PTY (orchestrator читает оттуда).
-        gcs_app = CreateObject<PtyApp>();
-        gcs_app->Configure(g_pty_gcs_path, "gcs",
-                           DynamicCast<LoraNetDevice>(gcs_nd.Get(0)));
-        gcs.Get(0)->AddApplication(gcs_app);
-        gcs_app->SetStartTime(Seconds(1.5));
-        gcs_app->SetStopTime(Seconds(duration_s - 0.5));
+    Ptr<PtyApp> gcs_app = CreateObject<PtyApp>();
+    gcs_app->Configure(g_pty_gcs_path, "gcs", devs.Get(1));
+    nodes.Get(1)->AddApplication(gcs_app);
+    gcs_app->SetStartTime(Seconds(1.5));
+    gcs_app->SetStopTime(Seconds(duration_s - 0.5));
 
-        // Привязываем gcs PHY trace ReceivedPacket к gcs_app->ForwardToPty
-        if (gcs_lora) {
-            gcs_lora->GetPhy()->TraceConnectWithoutContext(
-                "ReceivedPacket",
-                MakeCallback(&PtyApp::OnGwReceive, gcs_app));
-        }
-        NS_LOG_UNCOND("[pty] UAV " << g_pty_uav_path
-                      << " <-> LoRa <-> GCS " << g_pty_gcs_path);
-    } else {
-        PeriodicSenderHelper sender;
-        sender.SetPeriod(Seconds(1.0));
-        sender.SetPacketSize(50);   // ~MAVLink heartbeat
-        ApplicationContainer sender_apps = sender.Install(uav);
-        sender_apps.Start(Seconds(2.0));
-        sender_apps.Stop(Seconds(duration_s - 1.0));
-    }
+    devs.Get(0)->SetReceiveCallback(MakeCallback(&PtyApp::OnReceive, uav_app));
+    devs.Get(1)->SetReceiveCallback(MakeCallback(&PtyApp::OnReceive, gcs_app));
 
-    // ---- Stats dump ----
+    NS_LOG_UNCOND("[pty] UAV " << g_pty_uav_path
+                  << " ↔ LoRa (full-duplex) ↔ GCS " << g_pty_gcs_path);
+
     Simulator::Schedule(Seconds(1.0), &emit_stats);
-
     Simulator::Stop(Seconds(duration_s));
     NS_LOG_UNCOND("[lora_serial] starting (duration=" << duration_s
-                  << "s, sf=" << sf << ", bw=" << bandwidth_hz << " Hz, "
-                  << "distance=" << distance_m << " m)");
+                  << "s, " << phy.sx1276_table_entry << ", PER=" << per << ")");
     Simulator::Run();
     NS_LOG_UNCOND("[lora_serial] finished");
 

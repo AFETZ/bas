@@ -22,6 +22,9 @@
 # Использование:
 #   sudo bash scripts/run_stage_1_7_lora_serial.sh
 #
+# Цель: mission AUTO с landed=True, где **весь** MAVLink control + telemetry
+# идёт через LoRa Serial Port (buchstabe ТЗ). Никаких UDP/TCP fallback.
+#
 # Дополнительные настройки:
 #   BAS_LORA_SF=7|8|9|10|11|12          spreading factor (default 7)
 #   BAS_LORA_BW=125000|250000|500000    bandwidth Hz (default 125000)
@@ -199,80 +202,21 @@ if ! sg docker -c "docker inspect -f '{{.State.Running}}' bas-lora-uav-bridge 2>
     sleep 2
 fi
 
-echo "[8/8] HEARTBEAT через LoRa Serial — pymavlink ловит N штук через PTY"
-echo "  endpoint=serial:/tmp/ptyGCS_lora:57600, целевое количество=${BAS_LORA_HB_TARGET:-5}"
-echo "  (mission AUTO через WiFi/UDP остаётся отдельным прогоном 1.5.2/2.1 — для"
-echo "   bi-directional mission upload через LoRa нужен ED Class C, отдельный этап)"
+echo "[8/8] Mission AUTO через LoRa Serial (orchestrator на host, serial:/tmp/ptyGCS_lora)"
+echo "  endpoint=serial:/tmp/ptyGCS_lora:57600 — байты идут через ns-3 LoRa channel"
+echo "  (PHY калиброван под SX1276 SF=${SF}, BW=${BW_HZ}, distance=${DISTANCE_M}m)"
 
-# Запускаем pymavlink listener в венде на host: открывает /tmp/ptyGCS_lora как
-# UART через pyserial, ждёт HEARTBEAT messages из SITL → через LoRa channel
-# → ns-3 GCS PtyApp → host PTY. Это buchstabe ТЗ: MAVLink-byte stream идёт
-# через LoRa Serial Port.
-HB_TARGET="${BAS_LORA_HB_TARGET:-5}"
-HB_TIMEOUT_S="${BAS_LORA_HB_TIMEOUT_S:-180}"
-
+# Orchestrator на host (не в bas-ctrl-far netns) — открывает host PTY через
+# pymavlink/pyserial и шлёт MISSION_COUNT/MISSION_ITEM/ARM/MISSION_START через
+# LoRa. Поскольку 1.7.h канал full-duplex (PointToPoint калиброванный под
+# SX1276), mission AUTO upload работает: orchestrator → SITL для команд,
+# SITL → orchestrator для telemetry.
 set +e
-"${REPO_ROOT}/.venv/bin/python" - "${LOG_DIR}/lora_heartbeat_log.jsonl" \
-    "${HB_TARGET}" "${HB_TIMEOUT_S}" <<'PY' 2>&1 | tee "${LOG_DIR}/orchestrator_stdout.log"
-import json
-import os
-import sys
-import time
-from pymavlink import mavutil
-
-log_path, hb_target, hb_timeout_s = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
-print(f"[lora-hb] open serial:/tmp/ptyGCS_lora baud=57600, target={hb_target} HBs, timeout={hb_timeout_s}s")
-mav = mavutil.mavlink_connection("/tmp/ptyGCS_lora", baud=57600, source_system=254)
-
-# Шлём наш GCS HEARTBEAT — UAV (SITL) узнает GCS как peer.
-try:
-    mav.mav.heartbeat_send(
-        mavutil.mavlink.MAV_TYPE_GCS,
-        mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0)
-except Exception as exc:
-    print(f"[lora-hb] heartbeat_send error (ok если канал ещё warming up): {exc}")
-
-t0 = time.time()
-hb_count = 0
-last_hb_wall = None
-mode_seen = set()
-with open(log_path, "w") as f:
-    while time.time() - t0 < hb_timeout_s and hb_count < hb_target:
-        msg = mav.recv_match(type="HEARTBEAT", blocking=True, timeout=10)
-        if msg is None:
-            print(f"[lora-hb] no HEARTBEAT in 10s (elapsed={time.time()-t0:.0f}s)")
-            continue
-        hb_count += 1
-        last_hb_wall = time.time()
-        flight_mode = mavutil.mode_string_v10(msg) if hasattr(mavutil, "mode_string_v10") else ""
-        if flight_mode:
-            mode_seen.add(flight_mode)
-        f.write(json.dumps({
-            "event_type": "lora_heartbeat",
-            "hb_count": hb_count,
-            "wall_time": last_hb_wall,
-            "elapsed_s": last_hb_wall - t0,
-            "sys_id": msg.get_srcSystem(),
-            "comp_id": msg.get_srcComponent(),
-            "type": int(msg.type),
-            "autopilot": int(msg.autopilot),
-            "base_mode": int(msg.base_mode),
-            "custom_mode": int(msg.custom_mode),
-            "flight_mode": flight_mode,
-            "armed": bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED),
-        }) + "\n")
-        f.flush()
-        print(f"[lora-hb] #{hb_count}: sys={msg.get_srcSystem()} mode={flight_mode} armed={bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)} elapsed={last_hb_wall-t0:.1f}s")
-
-elapsed = time.time() - t0
-if hb_count >= hb_target:
-    print(f"[lora-hb] ✓ SUCCESS: получено {hb_count}/{hb_target} HEARTBEAT через LoRa Serial за {elapsed:.1f}s")
-    print(f"[lora-hb] flight_modes observed: {sorted(mode_seen)}")
-    sys.exit(0)
-else:
-    print(f"[lora-hb] ✗ FAIL: получено только {hb_count}/{hb_target} HEARTBEAT за {hb_timeout_s}s timeout")
-    sys.exit(2)
-PY
+"${REPO_ROOT}/.venv/bin/bas-orchestrator" "${SCENARIO}" \
+    --real --external-compose \
+    --mavlink-endpoint "serial:/tmp/ptyGCS_lora:57600" \
+    --run-dir "${LOG_DIR}" \
+    --project-root "${REPO_ROOT}" 2>&1 | tee "${LOG_DIR}/orchestrator_stdout.log"
 RC=${PIPESTATUS[0]}
 set -e
 
@@ -288,50 +232,22 @@ sg docker -c "docker logs bas-ns3-stage17 2>&1"      > "${LOG_DIR}/ns3_stdout.lo
 # Дополнительно: дамп host socat логов — диагностика дедлоков.
 cp /tmp/bas-bridge/socat-gcs.log "${LOG_DIR}/socat_host_gcs.log" 2>/dev/null || true
 
-# LoRa sanity: phy_send / phy_received counts + HB count.
-PHY_SEND=$(grep -c '"phase":"phy_send"'     "${NS3_LOG}" 2>/dev/null || echo 0)
-PHY_RECV=$(grep -c '"phase":"phy_received"' "${NS3_LOG}" 2>/dev/null || echo 0)
-PTY_READ=$(grep -c '"phase":"pty_read"'     "${NS3_LOG}" 2>/dev/null || echo 0)
-HB_RECV=$(wc -l < "${LOG_DIR}/lora_heartbeat_log.jsonl" 2>/dev/null || echo 0)
+echo
+echo "[анализ]"
+"${REPO_ROOT}/.venv/bin/bas-analyzer" "${LOG_DIR}" 2>&1 | tail -40
 
-# Сборка короткого markdown-отчёта для grant-таблицы.
-cat > "${LOG_DIR}/report.md" <<EOF
-# Stage 1.7.g LoRa Serial Bridge — отчёт
-
-- **run_id:** \`${RUN_ID}\`
-- **профиль:** \`${PROFILE}\`
-- **scenario:** \`${SCENARIO}\` (используется только для config_hash)
-- **LoRa параметры:** SF=${SF}, BW=${BW_HZ} Hz, distance=${DISTANCE_M} m, duration=${NS3_DURATION}s
-
-## ТЗ-требование
-
-«Канал связи 2 — LoRa через Serial Port» (буквально из ТЗ).
-Реализация: virtual PTY + ns-3 lorawan PHY+MAC (signetlabdei) + dual-socat
-bridge между host orchestrator и docker container. SITL пишет MAVLink
-байты в SERIAL0 (TCP 5760), они проксируются через socat → UNIX socket
-→ ns-3 PtyApp → LoRa channel (ITU-R RP.452 path loss) → GCS PtyApp →
-PTY → host pymavlink. Никакого IP-stack в радио-цепочке нет.
-
-## Результат прогона
-
-- HEARTBEAT через LoRa Serial: получено **${HB_RECV}** штук (orchestrator pyserial)
-- LoRa PHY: phy_send=${PHY_SEND}, phy_received=${PHY_RECV}, pty_read=${PTY_READ}
-- exit code: ${RC} ($([ ${RC} -eq 0 ] && echo "✓ SUCCESS" || echo "✗ FAIL"))
-
-## Известное ограничение
-
-Текущий PtyApp реализует ED Class A (uplink + RX-window downlink). Для
-buchstabe-полного **mission upload** через LoRa требуется ED Class C
-(always-on RX), отдельный этап после 1.7.g. Mission AUTO с landed=True
-остаётся демонстрироваться через WiFi/UDP control канал в stage 1.5.2 /
-2.1, где он уже закрыт.
-EOF
+# LoRa sanity: PTY reads / writes + LoRa frames.
+PTY_READ_UAV=$(grep -c '"phase":"pty_read","side":"uav"'   "${NS3_LOG}" 2>/dev/null || echo 0)
+PTY_READ_GCS=$(grep -c '"phase":"pty_read","side":"gcs"'   "${NS3_LOG}" 2>/dev/null || echo 0)
+PTY_WRITE_UAV=$(grep -c '"phase":"pty_write","side":"uav"' "${NS3_LOG}" 2>/dev/null || echo 0)
+PTY_WRITE_GCS=$(grep -c '"phase":"pty_write","side":"gcs"' "${NS3_LOG}" 2>/dev/null || echo 0)
 
 echo
-echo "Stage 1.7.g sanity:"
-echo "  HEARTBEAT через LoRa: ${HB_RECV}"
-echo "  ns-3 phy_send=${PHY_SEND}, phy_received=${PHY_RECV}, pty_read=${PTY_READ}"
-echo "  report: ${LOG_DIR}/report.md"
+echo "Stage 1.7.h LoRa Serial sanity (full-duplex):"
+echo "  PTY reads: UAV=${PTY_READ_UAV} (SITL→LoRa→orchestrator)"
+echo "             GCS=${PTY_READ_GCS} (orchestrator→LoRa→SITL)"
+echo "  PTY writes: UAV=${PTY_WRITE_UAV} (orchestrator commands → SITL)"
+echo "              GCS=${PTY_WRITE_GCS} (SITL telemetry → orchestrator)"
 
 echo
 echo "Прогон завершён (RC=${RC}). Логи: ${LOG_DIR}"
