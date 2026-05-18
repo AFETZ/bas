@@ -57,7 +57,13 @@ from pathlib import Path
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from rclpy.qos import (
+    QoSProfile,
+    QoSReliabilityPolicy,
+    QoSHistoryPolicy,
+    QoSDurabilityPolicy,
+    qos_profile_sensor_data,
+)
 
 # MAVROS message types (apt установлено через ros-humble-mavros-msgs).
 from mavros_msgs.msg import State, ExtendedState, Waypoint, WaypointReached
@@ -162,29 +168,35 @@ class MavrosBridge(Node):
         self.mission_state = "in_progress"
         self.is_complete = False
 
-        # QoS-обзор MAVROS humble publishers:
+        # QoS-карта MAVROS humble publishers (проверена через `ros2 topic info -v`):
         #   /mavros/state, /mavros/extended_state, /mavros/mission/reached →
-        #       Reliable (control-plane).
-        #   /mavros/global_position/*, /mavros/local_position/* → BEST_EFFORT
-        #       (sensor-data, MAVROS PluginQoS::create_sensor_data_qos).
-        # Subscriber должен matchить publisher reliability — иначе
-        # "incompatible QoS, no messages".
-        qos_sensor = QoSProfile(
-            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+        #       Reliable + Transient Local (control-plane, default rclpy).
+        #   /mavros/global_position/*, /mavros/local_position/* →
+        #       Best Effort + Volatile (sensor data,
+        #       rclpy.qos.qos_profile_sensor_data preset).
+        # Subscriber должен matchить publisher reliability+durability — иначе
+        # "offering incompatible QoS, no messages will be received".
+
+        # Для state/extended_state/mission_reached используем Transient Local
+        # durability, чтобы поймать последний published msg даже если sub
+        # появился позже publisher'а.
+        qos_ctrl = QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=10,
         )
-        self.create_subscription(State, "/mavros/state", self._on_state, 10)
+        self.create_subscription(State, "/mavros/state", self._on_state, qos_ctrl)
         self.create_subscription(NavSatFix, "/mavros/global_position/global",
-                                 self._on_gps, qos_sensor)
+                                 self._on_gps, qos_profile_sensor_data)
         self.create_subscription(Float64, "/mavros/global_position/rel_alt",
-                                 self._on_rel_alt, qos_sensor)
+                                 self._on_rel_alt, qos_profile_sensor_data)
         self.create_subscription(PoseStamped, "/mavros/local_position/pose",
-                                 self._on_local_pose, qos_sensor)
+                                 self._on_local_pose, qos_profile_sensor_data)
         self.create_subscription(ExtendedState, "/mavros/extended_state",
-                                 self._on_extended_state, 10)
+                                 self._on_extended_state, qos_ctrl)
         self.create_subscription(WaypointReached, "/mavros/mission/reached",
-                                 self._on_wp_reached, 10)
+                                 self._on_wp_reached, qos_ctrl)
 
         # Service clients.
         self.cli_arming = self.create_client(CommandBool, "/mavros/cmd/arming")
