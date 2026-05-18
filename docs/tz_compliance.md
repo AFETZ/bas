@@ -35,7 +35,7 @@
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
 | ArduPilot ↔ Gazebo interface | ✅ | 1.2 | `ardupilot_gazebo` plugin, JSON FDM между Gazebo и SITL |
-| **MAVROS для работы на основе ROS** | ⏳ | **1.8** | Намечено: MAVROS-нода в `bas-ctrl-far` netns, runtime-flag `--mavlink-backend pymavlink\|mavros`. Подтверждено руководителем: **обязательная** интеграция, при этом текущая pymavlink-реализация остаётся как переключаемый режим |
+| **MAVROS для работы на основе ROS** | ✅ | **1.8** | Закрыто: runtime-flag `--mavlink-backend pymavlink\|mavros` в `bas-orchestrator`. `mavros` backend = docker `bas/mavros:dev` (ROS2 humble + MAVROS 2.14) с custom rclpy bridge node, который заменяет pymavlink на ROS2 service calls (`mavros_msgs/srv/StreamRate`, `WaypointPush`, `SetMode`, `CommandLong` force-arm). Acceptance прогон `scripts/run_stage_1_8_mavros.sh baseline_wifi`: status=success, mission_landed=True, AUTO mode, 7/7 waypoints uploaded через `/mavros/mission/push`, force-arm через CommandLong+magic 21196, landed-detection через armed-transition. Pymavlink-backend остаётся default. Подробности — `docs/stage_1_8_mavros_plan.md` (включая 7 root-cause fixes по ROS2 nuance) |
 | ArduPilot ↔ AirSim interface | ➖ | — | Зона Федотенкова А.А. |
 | Gazebo → AirSim bridge (Gazebo физика + AirSim визуал) | ➖→⏳ | 2.2 | Зона Федотенкова А.А., но архитектурный интерфейс положу я в 2.2 |
 
@@ -87,11 +87,11 @@
 | Каналы связи (личная) | 5 | 0 | 5 | **100%** |
 | ns-3 / Sionna RT (личная) | 5 | 0 | 5 | **100%** |
 | Карта 3D (личная) | 2 | 0 | 2 | **100%** |
-| MAVROS интеграция (личная) | 0 | 1 | 1 | 0% |
+| MAVROS интеграция (личная) | 1 | 0 | 1 | **100%** |
 | Моделирование БАС (совместная) | 1 | 1 (manual GCS) | 2 | 50% |
-| **Итого по Физулинской зоне** | **13** | **2** | **15** | **87%** |
+| **Итого по Физулинской зоне** | **14** | **1** | **15** | **93%** |
 
-После закрытия 1.8 + 2.4 — **100% моих пунктов по ТЗ**.
+После закрытия 2.4 — **100% моих пунктов по ТЗ**.
 
 ## Приоритезация по grant-deadline
 

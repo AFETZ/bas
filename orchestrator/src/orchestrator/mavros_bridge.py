@@ -67,7 +67,9 @@ from rclpy.qos import (
 
 # MAVROS message types (apt установлено через ros-humble-mavros-msgs).
 from mavros_msgs.msg import State, ExtendedState, Waypoint, WaypointReached
-from mavros_msgs.srv import CommandBool, SetMode, WaypointPush, CommandLong
+from mavros_msgs.srv import (
+    CommandBool, SetMode, WaypointPush, CommandLong, StreamRate,
+)
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float64
@@ -159,12 +161,14 @@ class MavrosBridge(Node):
         self.last_lon = 0.0
         self.last_alt_amsl = 0.0
         self.last_alt_rel = 0.0
+        self.home_alt_amsl: float | None = None
         self.last_vel = (0.0, 0.0, 0.0)
         self.last_heading = 0.0
         self.landed_state = 0       # 0=undefined, 1=on_ground, 2=in_air, 4=landing
         self.waypoints_reached = 0
         self.waypoints_planned = 0
         self.has_taken_off = False
+        self.has_armed_at_least_once = False
         self.mission_state = "in_progress"
         self.is_complete = False
 
@@ -203,6 +207,13 @@ class MavrosBridge(Node):
         self.cli_set_mode = self.create_client(SetMode, "/mavros/set_mode")
         self.cli_push_wp = self.create_client(WaypointPush, "/mavros/mission/push")
         self.cli_cmd = self.create_client(CommandLong, "/mavros/cmd/command")
+        # 1.8 critical: ArduPilot SITL не шлёт GPS_RAW_INT / GLOBAL_POSITION_INT
+        # / ATTITUDE без явного REQUEST_DATA_STREAM от GCS (SR1_* params = 0
+        # default). MAVROS не делает это автоматически для ArduPilot
+        # (PX4-default не требует). StreamRate service вызывает классический
+        # MAVLink REQUEST_DATA_STREAM (mavros sys plugin).
+        self.cli_stream_rate = self.create_client(
+            StreamRate, "/mavros/set_stream_rate")
 
         # Periodic flight emit (5 Hz).
         self.create_timer(0.2, self._emit_flight)
@@ -214,6 +225,7 @@ class MavrosBridge(Node):
     # ---- Subscribers ----
     def _on_state(self, msg: State):
         was_connected = self.connected
+        was_armed = self.armed
         self.connected = bool(msg.connected)
         self.armed = bool(msg.armed)
         self.flight_mode = str(msg.mode or "")
@@ -221,6 +233,15 @@ class MavrosBridge(Node):
         if not was_connected and self.connected:
             print(f"[bridge] FIRST state callback: connected={self.connected} "
                   f"armed={self.armed} mode={self.flight_mode}", flush=True)
+        # 1.8 fix: detect mission landed через armed transition
+        # True→False — ArduCopter auto-disarms after LAND mission item.
+        # Это надёжнее чем ExtendedState.landed_state (QoS issues).
+        if was_armed and not self.armed and self.has_armed_at_least_once:
+            self.mission_state = "landed"
+            self.is_complete = True
+            self.logger.emit("component", component="mavros",
+                             phase="mission_landed_via_disarm",
+                             waypoints_reached=self.waypoints_reached)
         self.logger.emit(
             "control_telemetry",
             message_type="HEARTBEAT",
@@ -240,10 +261,18 @@ class MavrosBridge(Node):
         # NavSatStatus.status: -1=NO_FIX, 0=FIX, 1=SBAS, 2=GBAS.
         # status >= 0 == valid fix (mavros sets 0 for 3D fix on ardupilot).
         self.gps_fix_type = max(int(msg.status.status) + 1, 0)
-        # NavSatFix не передаёт количество спутников напрямую; mavros publishes
-        # /mavros/global_position/raw/satellites отдельно. Для smoke хватит
-        # косвенного индикатора через position covariance.
         self.gps_satellites = 0
+        # Запомнить home altitude на первом fix — все алт. вычисляются от него.
+        if self.home_alt_amsl is None and self.gps_fix_type >= 1:
+            self.home_alt_amsl = self.last_alt_amsl
+        # Derived rel_alt fallback (для ArduPilot, где /rel_alt топик не идёт).
+        if self.home_alt_amsl is not None:
+            self.last_alt_rel = self.last_alt_amsl - self.home_alt_amsl
+            if not self.has_taken_off and self.last_alt_rel > 2.0:
+                self.has_taken_off = True
+                self.logger.emit("component", component="mavros",
+                                 phase="takeoff_detected",
+                                 alt_rel_m=self.last_alt_rel, src="gps_derived")
         self.logger.emit(
             "control_telemetry",
             message_type="GPS_RAW_INT",
@@ -255,11 +284,13 @@ class MavrosBridge(Node):
         )
 
     def _on_rel_alt(self, msg: Float64):
+        # rel_alt — derived топик, на ArduPilot часто не публикуется. Тогда
+        # last_alt_rel вычисляется в _on_gps как alt_amsl - home_alt_amsl.
         self.last_alt_rel = float(msg.data)
         if not self.has_taken_off and self.last_alt_rel > 2.0:
             self.has_taken_off = True
             self.logger.emit("component", component="mavros", phase="takeoff_detected",
-                             alt_rel_m=self.last_alt_rel)
+                             alt_rel_m=self.last_alt_rel, src="rel_alt_topic")
 
     def _on_local_pose(self, msg: PoseStamped):
         # heading from quaternion (yaw)
@@ -406,6 +437,23 @@ class MavrosBridge(Node):
         return wp
 
     # ---- Workflow ----
+    def _request_stream_rates(self) -> bool:
+        """Запросить data streams у SITL. Без этого ArduPilot не шлёт ничего
+        кроме HEARTBEAT (SR1_* params = 0 default). Запрашиваем STREAM_ALL @
+        10 Hz — даёт GPS_RAW_INT, GLOBAL_POSITION_INT, ATTITUDE, SYS_STATUS,
+        MISSION_CURRENT, etc."""
+        req = StreamRate.Request()
+        req.stream_id = StreamRate.Request.STREAM_ALL
+        req.message_rate = 10   # Hz
+        req.on_off = True
+        resp = self.call_service(self.cli_stream_rate, req,
+                                 "/mavros/set_stream_rate", timeout_s=10.0)
+        ok = resp is not None
+        self.logger.emit("component", component="mavros",
+                         phase=("stream_rate_set" if ok else "stream_rate_failed"),
+                         rate_hz=req.message_rate)
+        return ok
+
     def run_mission(self) -> bool:
         # 1. Wait /mavros/state.connected (callbacks приходят через executor.spin).
         self.logger.emit("component", component="mavros", phase="wait_connected")
@@ -415,6 +463,12 @@ class MavrosBridge(Node):
         if not self.connected:
             self.logger.emit("component", component="mavros", phase="connect_timeout")
             return False
+
+        # 1b. CRITICAL — попросить SITL слать data streams. Без этого
+        # NavSatFix/GLOBAL_POSITION_INT/ATTITUDE никогда не придут.
+        self._request_stream_rates()
+        # Mavros sys plugin берёт время на propagation (≈1с).
+        time.sleep(1.5)
 
         # 2. Wait GPS fix (NavSatStatus.STATUS_FIX => >= 0).
         self.logger.emit("component", component="mavros", phase="wait_gps_fix")
@@ -463,15 +517,25 @@ class MavrosBridge(Node):
         self.logger.emit("component", component="mavros", phase="set_mode_ok", mode="AUTO")
         time.sleep(2.0)
 
-        arm_req = CommandBool.Request()
-        arm_req.value = True
-        arm_resp = self.call_service(self.cli_arming, arm_req,
-                                     "/mavros/cmd/arming", timeout_s=10.0)
+        # ARM через CommandLong + MAV_CMD_COMPONENT_ARM_DISARM с force=21196
+        # — обходит ArduCopter pre-arm checks (RC failsafe, GPS HDOP и т.д.),
+        # как pymavlink-backend делает через _disable_arming_check.
+        # SITL без RC иначе не позволяет ARM в AUTO mode (MAV_RESULT_FAILED).
+        arm_cmd = CommandLong.Request()
+        arm_cmd.broadcast = False
+        arm_cmd.command = 400      # MAV_CMD_COMPONENT_ARM_DISARM
+        arm_cmd.confirmation = 0
+        arm_cmd.param1 = 1.0        # 1 = arm, 0 = disarm
+        arm_cmd.param2 = 21196.0    # force-arm magic (bypass pre-arm checks)
+        arm_resp = self.call_service(self.cli_cmd, arm_cmd,
+                                     "/mavros/cmd/command", timeout_s=10.0)
         if arm_resp is None or not arm_resp.success:
             self.logger.emit("component", component="mavros", phase="arm_failed",
                              result=getattr(arm_resp, "result", -1))
             return False
-        self.logger.emit("component", component="mavros", phase="arm_ok")
+        self.logger.emit("component", component="mavros", phase="arm_ok",
+                         result=int(arm_resp.result))
+        self.has_armed_at_least_once = True
 
         # 5. Wait landed (or max_duration). Callbacks приходят через executor.
         deadline = time.time() + self.max_duration_s

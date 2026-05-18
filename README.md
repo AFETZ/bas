@@ -254,8 +254,29 @@ PHY-калиброванный PointToPoint (1.7.h).
 См. полный roadmap в [docs/roadmap.md](docs/roadmap.md) и матрицу
 соответствия ТЗ в [docs/tz_compliance.md](docs/tz_compliance.md).
 
-1. **1.8 ROS2/MAVROS bridge** — runtime-переключение `--mavlink-backend pymavlink|mavros`,
-   текущий pymavlink-код остаётся
-2. **2.4 Ручное управление через QGroundControl/MAVProxy**
-3. **2.3 Multi-UAV / рой**
-4. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)
+1. **2.4 Ручное управление через QGroundControl/MAVProxy**
+2. **2.3 Multi-UAV / рой**
+3. **2.2 AirSim как overlay над Gazebo физикой** (совместно с Федотенковым)
+
+## Этап 1.8: MAVROS backend (закрыто)
+
+Runtime-flag `--mavlink-backend pymavlink|mavros` в `bas-orchestrator`.
+`mavros` backend запускает docker `bas/mavros:dev` (ROS2 humble + MAVROS
+2.14) с custom rclpy bridge node, который **полностью заменяет**
+pymavlink на ROS2 service calls (`mavros_msgs/srv/StreamRate`,
+`WaypointPush`, `SetMode`, `CommandLong` force-arm). Pymavlink-backend
+остаётся как default — все 1.5/1.7/2.1 пути не тронуты.
+
+```bash
+# pymavlink (default — все существующие демо)
+sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
+
+# MAVROS (новое — buchstabe ROS2 stack)
+sudo bash scripts/run_stage_1_8_mavros.sh baseline_wifi
+```
+
+Acceptance: `logs/stage_1_8_mavros_baseline_wifi_20260518T192718Z/report.md`
+status=success, mission_landed=True, AUTO mode, 7/7 waypoints uploaded
+через `/mavros/mission/push`. Подробности и 7 root-cause fixes по
+ROS2 QoS/discovery/streams nuance — в
+[`docs/stage_1_8_mavros_plan.md`](docs/stage_1_8_mavros_plan.md).
