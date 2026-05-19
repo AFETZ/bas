@@ -1,0 +1,224 @@
+const stateUrl = "/api/state";
+const trail = [];
+let activeHold = null;
+let holdTimer = null;
+let lastState = null;
+
+const el = (id) => document.getElementById(id);
+const fmt = (value, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : "--";
+
+// Toast notification: показывает ошибки командных запросов и важные events
+// в углу экрана. Без неё backend ошибки уходили в console.error и оператор
+// не видел почему дрон не реагирует (пример: "Takeoff required before
+// velocity control" до auto-takeoff патча).
+function toast(message, kind = "info", ttl_ms = 3500) {
+  let host = el("toasts");
+  if (!host) {
+    host = document.createElement("ol");
+    host.id = "toasts";
+    host.style.cssText = "position:fixed;top:16px;right:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;list-style:none;margin:0;padding:0;font-family:inherit;max-width:360px;";
+    document.body.appendChild(host);
+  }
+  const li = document.createElement("li");
+  const palette = {
+    info: ["rgba(15,23,42,.92)", "#e5e7eb"],
+    warn: ["rgba(180,83,9,.95)", "#fff7ed"],
+    error: ["rgba(153,27,27,.95)", "#fef2f2"],
+    ok: ["rgba(6,95,70,.95)", "#ecfdf5"],
+  }[kind] || ["rgba(15,23,42,.92)", "#e5e7eb"];
+  li.style.cssText = `background:${palette[0]};color:${palette[1]};padding:10px 14px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.32);font-size:13px;line-height:1.35;`;
+  li.textContent = message;
+  host.appendChild(li);
+  setTimeout(() => li.remove(), ttl_ms);
+}
+
+async function post(path, payload) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!data.ok) {
+    const msg = data.error || "command failed";
+    toast(msg, "error");
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function setPill(id, text, cls = "") {
+  const node = el(id);
+  node.textContent = text;
+  node.className = `pill ${cls}`.trim();
+}
+
+function localToSvg(north, east) {
+  return { x: east, y: -north };
+}
+
+function updateMap(s) {
+  const local = s.local;
+  if (!local) {
+    el("north-value").textContent = "--";
+    el("east-value").textContent = "--";
+    return;
+  }
+  const p = localToSvg(local.north, local.east);
+  el("drone").setAttribute("transform", `translate(${p.x} ${p.y})`);
+  // Trail только если позиция реально поменялась — иначе при стоянии
+  // на месте trail копит дублирующиеся точки и path ничего не показывает.
+  const last = trail[trail.length - 1];
+  if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.2) {
+    trail.push(p);
+    if (trail.length > 160) trail.shift();
+    el("trail").setAttribute("d", trail.map((q, i) => `${i ? "L" : "M"}${q.x.toFixed(1)} ${q.y.toFixed(1)}`).join(" "));
+  }
+  // Источник позиции: "ned" (LOCAL_POSITION_NED от SITL) или "derived"
+  // (вычислено из lat/lon — fallback когда SITL не публикует NED).
+  // Показываем оператору тэгом в N/E readout, чтобы было понятно почему
+  // позиция может быть менее точной чем при реальном NED.
+  const tag = s.local_source === "derived" ? " (gps)" : "";
+  el("north-value").textContent = fmt(local.north) + tag;
+  el("east-value").textContent = fmt(local.east);
+
+  const target = s.target;
+  const targetNode = el("target");
+  if (target) {
+    const t = localToSvg(target.north, target.east);
+    targetNode.classList.remove("hidden");
+    targetNode.setAttribute("transform", `translate(${t.x} ${t.y})`);
+    el("target-value").textContent = `${fmt(target.north)}, ${fmt(target.east)}${target.active ? " active" : ""}`;
+  } else {
+    targetNode.classList.add("hidden");
+    el("target-value").textContent = "--";
+  }
+}
+
+function updateEvents(events) {
+  const list = el("events");
+  const latest = [...events].slice(-40).reverse();
+  list.innerHTML = latest.map((event) => {
+    const time = event.ts ? event.ts.split("T")[1]?.replace("Z", "") : "";
+    const command = event.command ? ` ${event.command}` : "";
+    const label = event.command_name || event.event_type;
+    return `<li><strong>${time}</strong> ${label}${command}</li>`;
+  }).join("");
+}
+
+function renderState(s) {
+  lastState = s;
+  setPill("link-pill", s.connected && s.mavproxy_running ? "LINK OK" : "LINK WAIT", s.connected ? "ok" : "warn");
+  setPill("mode-pill", s.current_mode || "MODE --", s.current_mode === "LAND" ? "warn" : "ok");
+  setPill("arm-pill", s.armed ? "ARMED" : "DISARMED", s.armed ? "danger" : "");
+  el("altitude").textContent = `${fmt(s.altitude_m)} m`;
+  el("speed").textContent = `${fmt(s.groundspeed_mps)} m/s`;
+  el("gps").textContent = s.gps_fix_ok ? "FIX" : "--";
+  el("run-id").textContent = s.run_id || "--";
+  updateMap(s);
+  updateEvents(s.events || []);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(stateUrl, { cache: "no-store" });
+    renderState(await res.json());
+  } catch (err) {
+    setPill("link-pill", "UI LOST", "danger");
+  }
+}
+
+async function sendAction(action) {
+  const altitude = Number(el("goto-north").dataset.altitude || 10);
+  await post("/api/command", { action, altitude });
+  await refresh();
+}
+
+function startHold(action, button) {
+  if (activeHold === action) return;
+  stopHold(false);
+  activeHold = action;
+  button?.classList.add("active");
+  const tick = () => post("/api/command", { action }).catch(console.error);
+  tick();
+  holdTimer = setInterval(tick, 650);
+}
+
+function stopHold(sendStop = true) {
+  if (holdTimer) clearInterval(holdTimer);
+  holdTimer = null;
+  document.querySelectorAll(".move.active").forEach((node) => node.classList.remove("active"));
+  if (activeHold && sendStop) post("/api/command", { action: "stop" }).catch(console.error);
+  activeHold = null;
+}
+
+document.querySelectorAll("[data-action]").forEach((button) => {
+  button.addEventListener("click", () => sendAction(button.dataset.action).catch(console.error));
+});
+
+document.querySelectorAll("[data-hold]").forEach((button) => {
+  const action = button.dataset.hold;
+  button.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    button.setPointerCapture(event.pointerId);
+    startHold(action, button);
+  });
+  button.addEventListener("pointerup", () => stopHold(true));
+  button.addEventListener("pointercancel", () => stopHold(true));
+  button.addEventListener("pointerleave", () => stopHold(true));
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.repeat || event.target.tagName === "INPUT") return;
+  // event.code — физическое расположение клавиши на клавиатуре, не зависит
+  // от раскладки (Cyrillic ЦФЫВ на тех же клавишах что QWERTY WASD даёт
+  // KeyW/A/S/D одинаково). Также мапим IJKL/НШОЛ как альтернативу.
+  const map = {
+    KeyW: "north", ArrowUp: "north", KeyI: "north",
+    KeyS: "south", ArrowDown: "south", KeyK: "south",
+    KeyA: "west",  ArrowLeft: "west",  KeyJ: "west",
+    KeyD: "east",  ArrowRight: "east", KeyL: "east",
+    Space: "stop",
+  };
+  const action = map[event.code];
+  if (!action) return;
+  event.preventDefault();
+  if (action === "stop") sendAction("stop").catch((e) => toast(e.message, "error"));
+  else startHold(action, document.querySelector(`[data-hold="${action}"]`));
+});
+
+document.addEventListener("keyup", (event) => {
+  const movementKeys = ["KeyW", "ArrowUp", "KeyS", "ArrowDown", "KeyA", "ArrowLeft", "KeyD", "ArrowRight"];
+  if (movementKeys.includes(event.code)) stopHold(true);
+});
+
+el("goto-button").addEventListener("click", async () => {
+  await post("/api/goto", {
+    north: Number(el("goto-north").value),
+    east: Number(el("goto-east").value),
+  });
+  await refresh();
+});
+
+el("map").addEventListener("click", async (event) => {
+  const svg = event.currentTarget;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const ctm = svg.getScreenCTM().inverse();
+  const p = point.matrixTransform(ctm);
+  const north = -p.y;
+  const east = p.x;
+  el("goto-north").value = Math.round(north);
+  el("goto-east").value = Math.round(east);
+  await post("/api/goto", { north, east });
+  await refresh();
+});
+
+el("center-map").addEventListener("click", () => {
+  trail.length = 0;
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 650);

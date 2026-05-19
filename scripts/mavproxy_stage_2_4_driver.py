@@ -91,6 +91,12 @@ def parse_fields(message: str) -> dict[str, float]:
     return out
 
 
+def is_vehicle_heartbeat(fields: dict[str, float]) -> bool:
+    heartbeat_type = int(fields.get("type", -1))
+    autopilot = int(fields.get("autopilot", -1))
+    return heartbeat_type != 6 and autopilot != 8
+
+
 class EventLog:
     def __init__(self, path: Path, run_id: str):
         self.path = path
@@ -132,6 +138,12 @@ class TelemetryState:
     command_accepted_text: set[int] = field(default_factory=set)
     prearm_failure: str | None = None
     last_relative_alt_m: float | None = None
+    last_global_alt_m: float | None = None
+    last_lat_deg: float | None = None
+    last_lon_deg: float | None = None
+    last_local_z_m: float | None = None
+    last_groundspeed_mps: float | None = None
+    last_heading_deg: float | None = None
     initial_relative_alt_m: float | None = None
     max_relative_alt_m: float | None = None
     takeoff_detected_seen: bool = False
@@ -183,9 +195,11 @@ class TelemetryState:
             self.landed_seen = True
 
         for match in re.finditer(r"HEARTBEAT\s*\{[^}]*\}", clean):
+            fields = parse_fields(match.group(0))
+            if not is_vehicle_heartbeat(fields):
+                continue
             self.heartbeat_visible = True
             self.connected = True
-            fields = parse_fields(match.group(0))
             base_mode = int(fields.get("base_mode", -1))
             custom_mode = int(fields.get("custom_mode", -1))
             if base_mode >= 0:
@@ -219,6 +233,12 @@ class TelemetryState:
             self.gps_visible = True
             self.position_visible = True
             fields = parse_fields(match.group(0))
+            if "lat" in fields:
+                self.last_lat_deg = fields["lat"] / 1e7
+            if "lon" in fields:
+                self.last_lon_deg = fields["lon"] / 1e7
+            if "alt" in fields:
+                self.last_global_alt_m = fields["alt"] / 1000.0
             if "relative_alt" in fields:
                 alt_m = fields["relative_alt"] / 1000.0
                 self._set_relative_alt(alt_m)
@@ -226,6 +246,10 @@ class TelemetryState:
         for match in re.finditer(r"VFR_HUD\s*\{[^}]*\}", clean):
             self.position_visible = True
             fields = parse_fields(match.group(0))
+            if "groundspeed" in fields:
+                self.last_groundspeed_mps = fields["groundspeed"]
+            if "heading" in fields:
+                self.last_heading_deg = fields["heading"]
             if "alt" in fields and self.last_relative_alt_m is None:
                 self._set_relative_alt(fields["alt"])
 
@@ -239,6 +263,8 @@ class TelemetryState:
                     dx = xy[0] - self.movement_baseline_xy[0]
                     dy = xy[1] - self.movement_baseline_xy[1]
                     self.movement_delta_m = max(self.movement_delta_m, (dx * dx + dy * dy) ** 0.5)
+            if "z" in fields:
+                self.last_local_z_m = fields["z"]
 
         for match in re.finditer(r"EXTENDED_SYS_STATE\s*\{[^}]*\}", clean):
             fields = parse_fields(match.group(0))
@@ -263,12 +289,14 @@ class MavproxySession:
         cwd: Path,
         stdout_log: Path,
         state: TelemetryState,
+        mirror_stdout: bool = True,
     ):
         self.command = command
         self.env = env
         self.cwd = cwd
         self.stdout_log = stdout_log
         self.state = state
+        self.mirror_stdout = mirror_stdout
         self.selector = selectors.DefaultSelector()
         self.master_fd: int | None = None
         self.process: subprocess.Popen[bytes] | None = None
@@ -318,8 +346,9 @@ class MavproxySession:
         self._log_f.flush()
         text = raw.decode("utf-8", "replace")
         self.state.update_from_text(text)
-        sys.stdout.write(text)
-        sys.stdout.flush()
+        if self.mirror_stdout:
+            sys.stdout.write(text)
+            sys.stdout.flush()
         return text
 
     def send(self, command: str) -> None:

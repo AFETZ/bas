@@ -3,16 +3,17 @@
 ## Цель
 
 Stage 2.4 закрывает пункт ТЗ «ручное управление одним БАС через GCS».
-Для headless-friendly стенда GCS считается MAVProxy command-line GCS:
+Основной live demo режим теперь показывает операторский Web GCS UI, а
+командным backend остаётся MAVProxy command-line GCS:
 
 ```text
-MAVProxy GCS -> ns-3 control channel -> mavbridge -> SITL
+Browser operator UI -> MAVProxy GCS -> ns-3 control channel -> mavbridge -> SITL
 ```
 
 Acceptance-прогон должен показать не только heartbeat, а живую командную
 цепочку в GUIDED режиме: `mode GUIDED`, `arm throttle`, `takeoff 10`,
-live `position`/`velocity`/`guided` command, `mode LAND`, затем посадку
-или disarm.
+live `velocity`/`goto` command через кнопки или клавиатуру, `mode LAND`,
+затем посадку или disarm.
 
 ## Почему строго MAVProxy
 
@@ -26,6 +27,29 @@ Mission upload для этого теста не используется: Stage
 manual/GCS command demo, а не автономным полётным заданием.
 
 ## Запуск
+
+Live operator UI с Gazebo GUI:
+
+```bash
+sudo env BAS_GAZEBO_GUI=1 BAS_STAGE24_FORCE_ARM=1 \
+  bash scripts/run_stage_2_4_operator_ui.sh
+```
+
+Открыть в браузере:
+
+```text
+http://127.0.0.1:8765/
+```
+
+В UI доступны `GUIDED`, `ARM`, `TAKEOFF`, `LAND`, удержание `W/A/S/D` для
+скорости и клик по карте / `GO TO` для локальной точки. Все эти команды
+попадают в MAVProxy stdin; прямой `pymavlink` в UI не используется.
+
+UI-only preview без SITL/Gazebo/ns-3:
+
+```bash
+.venv/bin/python scripts/gcs_web_ui_server.py --demo --port 8765
+```
 
 Smoke acceptance:
 
@@ -113,7 +137,8 @@ position 5 0 -10
 ## Acceptance events
 
 Driver пишет `logs/<run_id>/events.jsonl` и `logs/<run_id>/report.md`.
-Ключевые события:
+В UI-режиме дополнительно пишется `operator_ui_manifest.json`.
+Ключевые события headless smoke:
 
 - `mavproxy_started`
 - `gcs_connected`
@@ -134,3 +159,7 @@ Driver пишет `logs/<run_id>/events.jsonl` и `logs/<run_id>/report.md`.
 Scenario получает `success` только если verified command path прошёл через
 MAVProxy, `Mission upload used: false`, `Direct pymavlink command path used:
 false`, и live команды изменили состояние/телеметрию vehicle.
+
+Для видео порядок лучше такой: сначала Gazebo окно и Web GCS live управление,
+затем `report.md`, `events.jsonl` и `ns3_events.jsonl` как доказательная
+машинная фиксация увиденного поведения.

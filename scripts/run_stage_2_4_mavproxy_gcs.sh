@@ -43,7 +43,7 @@ cleanup() {
 }
 
 case "$MODE" in
-    smoke|interactive|dry-run) ;;
+    smoke|interactive|ui|dry-run) ;;
     *)
         echo "Unknown mode: ${MODE}. Use smoke, interactive, or dry-run." >&2
         exit 2
@@ -173,7 +173,7 @@ for ns in bas-ctrl-far bas-uav; do
     ip netns exec "$ns" sysctl -w net.ipv4.neigh.default.retrans_time_ms=2000 >/dev/null 2>&1 || true
 done
 
-echo "[7/7] run MAVProxy command-line GCS in bas-ctrl-far netns"
+echo "[7/7] run MAVProxy command-line GCS"
 echo "  acceptance commands are sent only through MAVProxy stdin"
 echo "  mission upload: false"
 echo "  direct pymavlink command path: false"
@@ -185,7 +185,22 @@ if [ "$MODE" = "interactive" ]; then
 fi
 
 set +e
-if [ "$MODE" = "interactive" ]; then
+if [ "$MODE" = "ui" ]; then
+    UI_HOST="${BAS_GCS_UI_HOST:-127.0.0.1}"
+    UI_PORT="${BAS_GCS_UI_PORT:-8765}"
+    echo "  operator UI: http://${UI_HOST}:${UI_PORT}/"
+    echo "  Gazebo GUI: set BAS_GAZEBO_GUI=1 before launch to open the simulator window"
+    "${REPO_ROOT}/.venv/bin/python" \
+        "${REPO_ROOT}/scripts/gcs_web_ui_server.py" \
+        --run-id "$RUN_ID" \
+        --log-dir "$LOG_DIR" \
+        --master "$MAVPROXY_MASTER" \
+        --takeoff-alt "$TAKEOFF_ALT" \
+        --netns bas-ctrl-far \
+        --host "$UI_HOST" \
+        --port "$UI_PORT"
+    RC=$?
+elif [ "$MODE" = "interactive" ]; then
     ip netns exec bas-ctrl-far "${REPO_ROOT}/.venv/bin/python" \
         "${REPO_ROOT}/scripts/mavproxy_stage_2_4_driver.py" \
         "$DRIVER_MODE" \

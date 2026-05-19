@@ -93,7 +93,7 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
 | Моделирование как минимум одного БАС в тестовом сценарии | ✅ | 1.5.1 | mission AUTO 7/7 wp на обоих профилях |
-| Ручное управление одним БАС через GCS | ✅ | **2.4** | Закрыто через MAVProxy command-line GCS: `MAVProxy -> ns-3 control -> mavbridge -> SITL`. Smoke `logs/stage_2_4_mavproxy_gcs_20260518T203447Z`: heartbeat/GPS/mode/arm state visible, `mode GUIDED`, `arm throttle` pre-arm failure logged, explicit `BAS_STAGE24_FORCE_ARM=1`, `takeoff 10`, `velocity 1 0 0`, `mode LAND`, landed at relative altitude 0.01 м. Mission upload: false; direct pymavlink command path: false |
+| Ручное управление одним БАС через GCS | ✅ | **2.4** | Закрыто через live Web GCS operator UI + MAVProxy backend: `Browser UI -> MAVProxy -> ns-3 control -> mavbridge -> SITL`. UI даёт кнопки `GUIDED/ARM/TAKEOFF/LAND`, удержание `W/A/S/D` для velocity-команд и `GO TO` по локальной карте; команды вводятся в MAVProxy stdin, прямой pymavlink не используется. Headless smoke `logs/stage_2_4_mavproxy_gcs_20260518T203447Z`: heartbeat/GPS/mode/arm state visible, `mode GUIDED`, explicit `BAS_STAGE24_FORCE_ARM=1`, `takeoff 10`, `velocity 1 0 0`, `mode LAND`, landed at relative altitude 0.01 м. Mission upload: false; direct pymavlink command path: false |
 
 ## Чужая зона (НЕ Физулин)
 
@@ -123,8 +123,8 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Моделирование БАС (совместная) | 2 | 0 | 2 | **100%** |
 | **Итого по Физулинской зоне** | **15** | **0** | **15** | **100%** |
 
-Stage 2.4 закрыт smoke-прогоном через MAVProxy; личная зона Физулина по этой
-матрице — **100%**.
+Stage 2.4 закрыт live Web GCS UI и smoke-прогоном через MAVProxy; личная зона
+Физулина по этой матрице — **100%**.
 
 ## Актуальный остаток
 

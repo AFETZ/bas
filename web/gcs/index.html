@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BAS Operator Console</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">BAS GCS</p>
+          <h1>Operator Console</h1>
+        </div>
+        <div class="status-strip">
+          <span class="pill" id="link-pill">LINK</span>
+          <span class="pill" id="mode-pill">MODE</span>
+          <span class="pill" id="arm-pill">ARM</span>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <section class="map-panel" aria-label="Local flight map">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Local NED</p>
+              <h2>Command Map</h2>
+            </div>
+            <button class="icon-button" id="center-map" title="Center map">+</button>
+          </div>
+          <svg id="map" viewBox="-160 -160 320 320" role="img" aria-label="Drone local position and goto target">
+            <defs>
+              <pattern id="grid-small" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(229,231,235,.12)" stroke-width="1"/>
+              </pattern>
+              <pattern id="grid-large" width="80" height="80" patternUnits="userSpaceOnUse">
+                <rect width="80" height="80" fill="url(#grid-small)"/>
+                <path d="M 80 0 L 0 0 0 80" fill="none" stroke="rgba(229,231,235,.24)" stroke-width="1.5"/>
+              </pattern>
+            </defs>
+            <rect x="-160" y="-160" width="320" height="320" rx="0" fill="url(#grid-large)"/>
+            <line x1="-160" y1="0" x2="160" y2="0" class="axis"/>
+            <line x1="0" y1="-160" x2="0" y2="160" class="axis"/>
+            <path id="trail" class="trail" d=""/>
+            <g id="target" class="target hidden">
+              <circle r="11"/>
+              <path d="M-18 0H18M0-18V18"/>
+            </g>
+            <g id="drone" class="drone">
+              <path d="M0 -16 L11 12 L0 7 L-11 12 Z"/>
+              <circle r="3"/>
+            </g>
+          </svg>
+          <div class="map-readout">
+            <span>N <strong id="north-value">--</strong> m</span>
+            <span>E <strong id="east-value">--</strong> m</span>
+            <span>Target <strong id="target-value">--</strong></span>
+          </div>
+        </section>
+
+        <aside class="control-panel">
+          <section class="telemetry-grid">
+            <div><span>Altitude</span><strong id="altitude">--</strong></div>
+            <div><span>Speed</span><strong id="speed">--</strong></div>
+            <div><span>GPS</span><strong id="gps">--</strong></div>
+            <div><span>Run</span><strong id="run-id">--</strong></div>
+          </section>
+
+          <section class="command-block">
+            <div class="button-row">
+              <button data-action="guided">GUIDED</button>
+              <button data-action="arm">ARM</button>
+              <button data-action="force_arm">FORCE</button>
+            </div>
+            <div class="button-row">
+              <button data-action="takeoff" class="primary">TAKEOFF</button>
+              <button data-action="land" class="danger">LAND</button>
+              <button data-action="disarm">DISARM</button>
+            </div>
+          </section>
+
+          <section class="stick" aria-label="Velocity controls">
+            <button class="move" data-hold="north">W</button>
+            <button class="move" data-hold="west">A</button>
+            <button class="move stop" data-action="stop">STOP</button>
+            <button class="move" data-hold="east">D</button>
+            <button class="move" data-hold="south">S</button>
+          </section>
+
+          <section class="goto-block">
+            <label>N <input id="goto-north" type="number" value="30" step="5"></label>
+            <label>E <input id="goto-east" type="number" value="0" step="5"></label>
+            <button id="goto-button" class="primary">GO TO</button>
+          </section>
+
+          <section class="event-log">
+            <div class="panel-head tight">
+              <p class="eyebrow">Events</p>
+              <button data-action="stop" class="icon-button" title="Stop velocity">■</button>
+            </div>
+            <ol id="events"></ol>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
