@@ -66,7 +66,7 @@ from rclpy.qos import (
 )
 
 # MAVROS message types (apt установлено через ros-humble-mavros-msgs).
-from mavros_msgs.msg import State, ExtendedState, Waypoint, WaypointReached
+from mavros_msgs.msg import State, ExtendedState, Waypoint, WaypointReached, WaypointList
 from mavros_msgs.srv import (
     CommandBool, SetMode, WaypointPush, CommandLong, StreamRate,
 )
@@ -201,6 +201,11 @@ class MavrosBridge(Node):
                                  self._on_extended_state, qos_ctrl)
         self.create_subscription(WaypointReached, "/mavros/mission/reached",
                                  self._on_wp_reached, qos_ctrl)
+        # Fallback channel: WaypointList.current_seq обновляется ArduCopter'ом
+        # на каждом смене активного waypoint в mission. Это надёжнее чем
+        # WaypointReached topic, который не всегда диспатчится на ArduPilot.
+        self.create_subscription(WaypointList, "/mavros/mission/waypoints",
+                                 self._on_wp_list, qos_ctrl)
 
         # Service clients.
         self.cli_arming = self.create_client(CommandBool, "/mavros/cmd/arming")
@@ -262,8 +267,12 @@ class MavrosBridge(Node):
         # status >= 0 == valid fix (mavros sets 0 for 3D fix on ardupilot).
         self.gps_fix_type = max(int(msg.status.status) + 1, 0)
         self.gps_satellites = 0
-        # Запомнить home altitude на первом fix — все алт. вычисляются от него.
-        if self.home_alt_amsl is None and self.gps_fix_type >= 1:
+        # Запомнить home altitude на первом fix ДО ARM — alt_rel считается
+        # как alt_amsl − home_alt_amsl. Если зафиксировать home уже в
+        # воздухе (поздний NavSatFix после takeoff), alt_rel будет равен
+        # 0 всю миссию, и max_altitude_m в report = 0.
+        if (self.home_alt_amsl is None and self.gps_fix_type >= 1
+                and not self.armed):
             self.home_alt_amsl = self.last_alt_amsl
         # Derived rel_alt fallback (для ArduPilot, где /rel_alt топик не идёт).
         if self.home_alt_amsl is not None:
@@ -323,6 +332,19 @@ class MavrosBridge(Node):
                          message_type="MISSION_ITEM_REACHED",
                          seq=int(msg.wp_seq),
                          total=self.waypoints_planned)
+
+    def _on_wp_list(self, msg: WaypointList):
+        # WaypointList.current_seq — index активного waypoint. ArduCopter
+        # обновляет его при каждом MISSION_CURRENT broadcast. Берём max,
+        # чтобы не «откатывать» прогресс при race с другим channel.
+        seq = int(msg.current_seq)
+        if seq > self.waypoints_reached:
+            self.waypoints_reached = seq
+            self.logger.emit("control_telemetry",
+                             message_type="MISSION_CURRENT",
+                             seq=seq,
+                             total=self.waypoints_planned,
+                             src="waypoint_list")
 
     # ---- Periodic flight emit ----
     def _emit_flight(self):

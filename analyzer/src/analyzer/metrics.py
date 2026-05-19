@@ -793,13 +793,27 @@ def compute(events: list[dict[str, Any]]) -> RunReport:
             # Real-режим: {lat, lon, alt_amsl_m, alt_rel_m}.
             elif "lat" in pos and "lon" in pos:
                 flight.position_format = "geodetic"
+                cur_lat = float(pos["lat"])
+                cur_lon = float(pos["lon"])
+                # Filter invalid pre-GPS-fix samples: ArduPilot/MAVROS до
+                # первого GPS lock публикуют lat=0,lon=0. Без фильтра
+                # haversine(0,0 → real_pos) даёт ~14_000 km «прыжок» и
+                # ломает distance_flown.
+                if abs(cur_lat) < 1e-6 and abs(cur_lon) < 1e-6:
+                    continue
                 flight.final_position = pos
                 alt_rel = float(pos.get("alt_rel_m", 0.0))
-                cur = (float(pos["lat"]), float(pos["lon"]), alt_rel)
+                cur = (cur_lat, cur_lon, alt_rel)
                 if prev_pos_geo is not None:
                     horiz = _haversine_m(prev_pos_geo[0], prev_pos_geo[1], cur[0], cur[1])
                     dz = cur[2] - prev_pos_geo[2]
-                    flight.distance_flown_m += math.sqrt(horiz * horiz + dz * dz)
+                    step = math.sqrt(horiz * horiz + dz * dz)
+                    # Sanity guard: один step > 1 km между подряд идущими
+                    # samples (50 Hz × 1 km = 50 km/s полёт) физически
+                    # невозможен. Пропускаем — это GPS jitter или teleport
+                    # после re-fix.
+                    if step < 1000.0:
+                        flight.distance_flown_m += step
                 prev_pos_geo = cur
                 flight.max_altitude_m = max(flight.max_altitude_m, alt_rel)
 
