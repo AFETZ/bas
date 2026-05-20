@@ -1,8 +1,10 @@
 const stateUrl = "/api/state";
 const trail = [];
+const rfHistory = [];
 let activeHold = null;
 let holdTimer = null;
 let lastState = null;
+let rfObstaclesRendered = false;
 
 const el = (id) => document.getElementById(id);
 const fmt = (value, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : "--";
@@ -57,6 +59,108 @@ function localToSvg(north, east) {
   return { x: east, y: -north };
 }
 
+function drawRfObstacles(obstacles = []) {
+  const host = el("rf-obstacles");
+  host.innerHTML = obstacles.map((obstacle) => {
+    const n = Number(obstacle.north);
+    const e = Number(obstacle.east);
+    const sn = Number(obstacle.size_north_m);
+    const se = Number(obstacle.size_east_m);
+    const x = e - se / 2;
+    const y = -(n + sn / 2);
+    return `<g class="rf-obstacle" data-id="${obstacle.id}">
+      <rect x="${x}" y="${y}" width="${se}" height="${sn}" rx="1.5"/>
+      <text x="${e}" y="${-n + 3}">${obstacle.name || obstacle.id}</text>
+    </g>`;
+  }).join("");
+  rfObstaclesRendered = true;
+}
+
+function updateRfOverlay(s, p) {
+  const rf = s.rf;
+  if (!rf?.enabled) {
+    el("rf-layer").classList.add("hidden");
+    el("rf-panel").classList.add("hidden");
+    return;
+  }
+  el("rf-layer").classList.remove("hidden");
+  el("rf-panel").classList.remove("hidden");
+  if (!rfObstaclesRendered) drawRfObstacles(rf.obstacles || []);
+
+  const gcs = localToSvg(Number(rf.gcs.north), Number(rf.gcs.east));
+  el("rf-gcs").setAttribute("transform", `translate(${gcs.x} ${gcs.y})`);
+  const line = el("rf-los-line");
+  line.setAttribute("x1", gcs.x);
+  line.setAttribute("y1", gcs.y);
+  line.setAttribute("x2", p.x);
+  line.setAttribute("y2", p.y);
+  line.classList.toggle("nlos", !rf.los);
+
+  const status = rf.status || (rf.los ? "LOS" : "NLOS");
+  el("rf-status").textContent = status;
+  setPill("rf-pill", status, rf.los ? "ok" : "danger");
+  el("rf-rssi").textContent = Number.isFinite(rf.rssi_dbm) ? `${fmt(rf.rssi_dbm)} dBm` : "--";
+  el("rf-loss").textContent = Number.isFinite(rf.loss_ratio) ? `${fmt(rf.loss_ratio * 100, 0)} %` : "--";
+  el("rf-delay").textContent = Number.isFinite(rf.extra_delay_ms) ? `${fmt(rf.extra_delay_ms, 0)} ms` : "--";
+  updateRfChart(rf);
+}
+
+function updateRfChart(rf) {
+  if (!Number.isFinite(rf?.rssi_dbm)) return;
+  rfHistory.push({
+    rssi: rf.rssi_dbm,
+    loss: Number(rf.loss_ratio || 0),
+    los: Boolean(rf.los),
+  });
+  if (rfHistory.length > 180) rfHistory.shift();
+  const canvas = el("rf-chart");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0b0d0e";
+  ctx.fillRect(0, 0, w, h);
+
+  ctx.strokeStyle = "rgba(229,231,235,.18)";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i += 1) {
+    const y = 12 + i * ((h - 24) / 4);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  const yForRssi = (v) => {
+    const min = -100;
+    const max = -45;
+    return 10 + (1 - Math.max(0, Math.min(1, (v - min) / (max - min)))) * (h - 24);
+  };
+  const xForIndex = (i) => (rfHistory.length <= 1 ? 0 : (i / (rfHistory.length - 1)) * (w - 1));
+
+  ctx.beginPath();
+  rfHistory.forEach((sample, i) => {
+    const x = xForIndex(i);
+    const y = yForRssi(sample.rssi);
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = rf.los ? "#61d394" : "#ff5c5c";
+  ctx.lineWidth = 2.4;
+  ctx.stroke();
+
+  ctx.beginPath();
+  rfHistory.forEach((sample, i) => {
+    const x = xForIndex(i);
+    const y = h - 10 - sample.loss * (h - 24);
+    if (i) ctx.lineTo(x, y);
+    else ctx.moveTo(x, y);
+  });
+  ctx.strokeStyle = "#f4b860";
+  ctx.lineWidth = 1.7;
+  ctx.stroke();
+}
+
 function updateMap(s) {
   const local = s.local;
   if (!local) {
@@ -66,6 +170,7 @@ function updateMap(s) {
   }
   const p = localToSvg(local.north, local.east);
   el("drone").setAttribute("transform", `translate(${p.x} ${p.y})`);
+  updateRfOverlay(s, p);
   // Trail только если позиция реально поменялась — иначе при стоянии
   // на месте trail копит дублирующиеся точки и path ничего не показывает.
   const last = trail[trail.length - 1];
@@ -188,7 +293,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("keyup", (event) => {
-  const movementKeys = ["KeyW", "ArrowUp", "KeyS", "ArrowDown", "KeyA", "ArrowLeft", "KeyD", "ArrowRight"];
+  const movementKeys = ["KeyW", "ArrowUp", "KeyS", "ArrowDown", "KeyA", "ArrowLeft", "KeyD", "ArrowRight", "KeyI", "KeyK", "KeyJ", "KeyL"];
   if (movementKeys.includes(event.code)) stopHold(true);
 });
 
@@ -217,6 +322,25 @@ el("map").addEventListener("click", async (event) => {
 
 el("center-map").addEventListener("click", () => {
   trail.length = 0;
+  refresh();
+});
+
+el("rf-clear")?.addEventListener("click", async () => {
+  el("goto-north").value = 25;
+  el("goto-east").value = -45;
+  await post("/api/goto", { north: 25, east: -45 });
+  await refresh();
+});
+
+el("rf-nlos")?.addEventListener("click", async () => {
+  el("goto-north").value = 80;
+  el("goto-east").value = 45;
+  await post("/api/goto", { north: 80, east: 45 });
+  await refresh();
+});
+
+el("rf-reset")?.addEventListener("click", () => {
+  rfHistory.length = 0;
   refresh();
 });
 

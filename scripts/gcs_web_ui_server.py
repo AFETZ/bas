@@ -51,6 +51,40 @@ from mavproxy_stage_2_4_driver import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = REPO_ROOT / "web/gcs"
 
+RF_GCS = {
+    "north": 0.0,
+    "east": -60.0,
+    "height_m": 1.5,
+}
+
+RF_OBSTACLES = [
+    {
+        "id": "hangar_blocker",
+        "name": "Hangar",
+        "north": 45.0,
+        "east": 0.0,
+        "size_north_m": 20.0,
+        "size_east_m": 32.0,
+        "height_m": 18.0,
+        "material": "metal",
+    },
+    {
+        "id": "control_tower",
+        "name": "Tower",
+        "north": 82.0,
+        "east": 32.0,
+        "size_north_m": 9.0,
+        "size_east_m": 9.0,
+        "height_m": 24.0,
+        "material": "concrete",
+    },
+]
+
+MAV_FRAME_LOCAL_NED = 1
+POSITION_TARGET_LOCAL_NED_POS_ONLY_MASK = 3576
+DEFAULT_TARGET_SYSTEM = 1
+DEFAULT_TARGET_COMPONENT = 0
+
 
 def utc_now() -> str:
     return dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
@@ -58,6 +92,36 @@ def utc_now() -> str:
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def segment_rect_clip(
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    rect: tuple[float, float, float, float],
+) -> tuple[float, float] | None:
+    """Liang-Barsky clipping for a segment against an axis-aligned rectangle."""
+    x0, y0 = p0
+    x1, y1 = p1
+    xmin, ymin, xmax, ymax = rect
+    dx = x1 - x0
+    dy = y1 - y0
+    t0 = 0.0
+    t1 = 1.0
+    for p, q in ((-dx, x0 - xmin), (dx, xmax - x0), (-dy, y0 - ymin), (dy, ymax - y0)):
+        if abs(p) < 1e-9:
+            if q < 0:
+                return None
+            continue
+        r = q / p
+        if p < 0:
+            if r > t1:
+                return None
+            t0 = max(t0, r)
+        else:
+            if r < t0:
+                return None
+            t1 = min(t1, r)
+    return (t0, t1)
 
 
 class OperatorController:
@@ -80,6 +144,9 @@ class OperatorController:
         self.config_hash = ""
         self.mavproxy_command: list[str] = []
         self.command_lock = threading.RLock()
+        self.last_rf_status: str | None = None
+        self.last_rf_rssi: float | None = None
+        self.goto_altitude_m: float | None = None
         # Home reference captured at the first GPS fix BEFORE arming.
         # Used to derive local NED from GLOBAL_POSITION_INT when the
         # SITL never publishes LOCAL_POSITION_NED (ArduCopter default
@@ -131,6 +198,9 @@ class OperatorController:
 
         threading.Thread(target=self.reader_loop, name="mavproxy-reader", daemon=True).start()
         threading.Thread(target=self.guidance_loop, name="goto-guidance", daemon=True).start()
+        if self.args.rf_demo or self.args.rf_channel_path:
+            self.write_rf_channel(self.rf_snapshot())
+            threading.Thread(target=self.rf_loop, name="rf-channel", daemon=True).start()
         if self.args.demo:
             threading.Thread(target=self.demo_loop, name="demo-telemetry", daemon=True).start()
 
@@ -153,6 +223,8 @@ class OperatorController:
             "direct_pymavlink_command_path_used": False,
             "mavproxy_command_path_used": True,
             "config_sha256": self.config_hash,
+            "rf_demo_enabled": bool(self.args.rf_demo or self.args.rf_channel_path),
+            "rf_channel_path": self.args.rf_channel_path,
         }
 
     def record_event(self, event_type: str, **fields: Any) -> None:
@@ -294,6 +366,19 @@ class OperatorController:
             parts = command.split()
             if len(parts) >= 4:
                 self.demo_velocity = [float(parts[1]), float(parts[2])]
+        elif command.startswith("message SET_POSITION_TARGET_LOCAL_NED"):
+            parts = command.split()
+            if len(parts) >= 10:
+                target_north = float(parts[7])
+                target_east = float(parts[8])
+                dx = target_north - self.demo_position[0]
+                dy = target_east - self.demo_position[1]
+                dist = math.hypot(dx, dy)
+                if dist <= self.args.goto_tolerance:
+                    self.demo_velocity = [0.0, 0.0]
+                else:
+                    speed = min(self.args.goto_speed, dist)
+                    self.demo_velocity = [dx / dist * speed, dy / dist * speed]
 
     def handle_command(self, payload: dict[str, Any]) -> dict[str, Any]:
         action = str(payload.get("action", ""))
@@ -323,6 +408,7 @@ class OperatorController:
         with self.command_lock:
             if action == "takeoff":
                 self.goto_active = False
+                self.goto_altitude_m = None
                 self.ensure_airborne(altitude)
             elif action == "arm":
                 self.ensure_guided()
@@ -340,8 +426,9 @@ class OperatorController:
                 self.ensure_guided()
                 self.send_raw(commands[action], action)
             else:
-                if action != "stop":
-                    self.goto_active = False
+                self.goto_active = False
+                if action in {"stop", "land", "disarm"}:
+                    self.goto_altitude_m = None
                 self.send_raw(commands[action], action)
                 if action in {"land", "disarm"}:
                     self.goto_active = False
@@ -357,15 +444,37 @@ class OperatorController:
             self.ensure_guided()
             with self.lock:
                 self.target_ne = (north, east)
+                self.goto_altitude_m = altitude
                 self.goto_active = True
-            self.record_event("ui_goto_target_set", north_m=north, east_m=east)
+            self.record_event(
+                "ui_goto_target_set",
+                north_m=north,
+                east_m=east,
+                altitude_m=altitude,
+                command_name="goto_local_position",
+                command=self.goto_local_command(north, east, altitude),
+            )
         return {"ok": True, "target": {"north": north, "east": east}}
+
+    def goto_local_command(self, north: float, east: float, altitude_m: float) -> str:
+        # MAVProxy's built-in `velocity`/`position` commands use BODY_NED.
+        # For map GO TO we need an absolute local NED target, still delivered
+        # through MAVProxy stdin via the `message` module.
+        z_down = -abs(altitude_m)
+        return (
+            "message SET_POSITION_TARGET_LOCAL_NED "
+            f"0 {DEFAULT_TARGET_SYSTEM} {DEFAULT_TARGET_COMPONENT} "
+            f"{MAV_FRAME_LOCAL_NED} {POSITION_TARGET_LOCAL_NED_POS_ONLY_MASK} "
+            f"{north:.2f} {east:.2f} {z_down:.2f} "
+            "0 0 0 0 0 0 0 0"
+        )
 
     def guidance_loop(self) -> None:
         while not self.stop_event.is_set():
             target = self.target_ne
             active = self.goto_active
-            xy = self.state.last_local_xy
+            xy = self._derive_local_ne()
+            altitude_m = self.goto_altitude_m or self.args.takeoff_alt
             if active and target and xy:
                 if not self.is_airborne() or self.state.current_mode != "GUIDED":
                     time.sleep(0.75)
@@ -381,14 +490,132 @@ class OperatorController:
                         self.record_event("ui_command_error", command_name="goto_stop", error=str(exc))
                     self.record_event("ui_goto_reached", north_m=target[0], east_m=target[1], distance_m=dist)
                 else:
-                    speed = min(self.args.goto_speed, dist)
-                    vn = dx / dist * speed
-                    ve = dy / dist * speed
                     try:
-                        self.send_raw(f"velocity {vn:.2f} {ve:.2f} 0", "goto_velocity", quiet=True)
+                        command = self.goto_local_command(target[0], target[1], altitude_m)
+                        self.send_raw(command, "goto_local_position", quiet=True)
                     except Exception as exc:
-                        self.record_event("ui_command_error", command_name="goto_velocity", error=str(exc))
+                        self.record_event("ui_command_error", command_name="goto_local_position", error=str(exc))
             time.sleep(0.75)
+
+    def rf_loop(self) -> None:
+        while not self.stop_event.is_set():
+            rf = self.rf_snapshot()
+            self.write_rf_channel(rf)
+            if rf.get("enabled") and rf.get("rssi_dbm") is not None:
+                status = str(rf.get("status"))
+                rssi = float(rf.get("rssi_dbm"))
+                should_emit = status != self.last_rf_status
+                if self.last_rf_rssi is None or abs(rssi - self.last_rf_rssi) >= 4.0:
+                    should_emit = True
+                if should_emit:
+                    self.record_event(
+                        "rf_link_state",
+                        status=status,
+                        los=rf.get("los"),
+                        blocker=rf.get("blocker"),
+                        rssi_dbm=round(rssi, 1),
+                        loss_ratio=round(float(rf.get("loss_ratio", 0.0)), 3),
+                        extra_delay_ms=round(float(rf.get("extra_delay_ms", 0.0)), 1),
+                    )
+                    self.last_rf_status = status
+                    self.last_rf_rssi = rssi
+            time.sleep(0.25)
+
+    def write_rf_channel(self, rf: dict[str, Any]) -> None:
+        if not self.args.rf_channel_path:
+            return
+        payload = {
+            "wall_time": time.time(),
+            "rf_demo": bool(rf.get("enabled")),
+            "los": bool(rf.get("los", True)),
+            "status": rf.get("status", "LOS"),
+            "rssi_db": rf.get("rssi_dbm", -55.0),
+            "rss_db": rf.get("rssi_dbm", -55.0),
+            "path_loss_db": rf.get("path_loss_db", 75.0),
+            "loss_ratio": rf.get("loss_ratio", 0.0),
+            "extra_delay_ms": rf.get("extra_delay_ms", 0.0),
+            "blocker": rf.get("blocker"),
+        }
+        path = Path(self.args.rf_channel_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+
+    def compute_rf_link(self, xy: tuple[float, float] | None) -> dict[str, Any]:
+        enabled = bool(self.args.rf_demo or self.args.rf_channel_path)
+        base = {
+            "enabled": enabled,
+            "gcs": RF_GCS,
+            "obstacles": RF_OBSTACLES,
+            "channel_path": self.args.rf_channel_path,
+        }
+        if not enabled or xy is None:
+            return {
+                **base,
+                "los": True,
+                "status": "LOS",
+                "blocker": None,
+                "distance_m": None,
+                "rssi_dbm": None,
+                "path_loss_db": None,
+                "loss_ratio": 0.0,
+                "extra_delay_ms": 0.0,
+            }
+
+        north, east = xy
+        alt_m = max(float(self.state.last_relative_alt_m or 0.0), 0.0)
+        g_n = float(RF_GCS["north"])
+        g_e = float(RF_GCS["east"])
+        g_h = float(RF_GCS["height_m"])
+        dn = north - g_n
+        de = east - g_e
+        dz = alt_m - g_h
+        distance_m = max(math.sqrt(dn * dn + de * de + dz * dz), 1.0)
+
+        blocker: str | None = None
+        for obstacle in RF_OBSTACLES:
+            half_n = float(obstacle["size_north_m"]) / 2.0
+            half_e = float(obstacle["size_east_m"]) / 2.0
+            rect = (
+                float(obstacle["north"]) - half_n,
+                float(obstacle["east"]) - half_e,
+                float(obstacle["north"]) + half_n,
+                float(obstacle["east"]) + half_e,
+            )
+            clip = segment_rect_clip((g_n, g_e), (north, east), rect)
+            if clip is None:
+                continue
+            t_mid = (clip[0] + clip[1]) / 2.0
+            ray_height = g_h + t_mid * dz
+            if ray_height <= float(obstacle["height_m"]):
+                blocker = str(obstacle["id"])
+                break
+
+        path_loss_db = 40.05 + 20.0 * math.log10(distance_m)
+        if blocker:
+            path_loss_db += 28.0
+        rssi_dbm = 20.0 - path_loss_db
+        loss_ratio = 1.0 / (1.0 + math.exp(0.26 * (rssi_dbm + 86.0)))
+        if not blocker:
+            loss_ratio *= 0.08
+        loss_ratio = clamp(loss_ratio, 0.0, 0.98)
+        extra_delay_ms = clamp(loss_ratio * 180.0, 0.0, 180.0)
+
+        return {
+            **base,
+            "los": blocker is None,
+            "status": "LOS" if blocker is None else "NLOS",
+            "blocker": blocker,
+            "distance_m": distance_m,
+            "rssi_dbm": rssi_dbm,
+            "path_loss_db": path_loss_db,
+            "loss_ratio": loss_ratio,
+            "extra_delay_ms": extra_delay_ms,
+        }
+
+    def rf_snapshot(self) -> dict[str, Any]:
+        return self.compute_rf_link(self._derive_local_ne())
 
     def _derive_local_ne(self) -> tuple[float, float] | None:
         """Fallback: вычислить local NED из GPS lat/lon относительно home.
@@ -445,6 +672,7 @@ class OperatorController:
             "home_lon": self.home_lon,
             "local": {"north": xy[0], "east": xy[1]} if xy else None,
             "local_source": "ned" if self.state.last_local_xy is not None else ("derived" if xy else None),
+            "rf": self.compute_rf_link(xy),
             "target": {"north": target[0], "east": target[1], "active": self.goto_active} if target else None,
             "log_dir": str(self.log_dir),
             "endpoint_chain": "Web GCS -> MAVProxy CLI -> ns-3 control -> mavbridge -> SITL",
@@ -482,6 +710,10 @@ class OperatorController:
             f"- Altitude, m: {snapshot.get('altitude_m')}",
             f"- Local position: {snapshot.get('local')}",
             f"- Target: {snapshot.get('target')}",
+            f"- RF demo enabled: {str(bool(snapshot.get('rf', {}).get('enabled'))).lower()}",
+            f"- RF status: `{snapshot.get('rf', {}).get('status')}`",
+            f"- RF RSSI, dBm: {snapshot.get('rf', {}).get('rssi_dbm')}",
+            f"- RF loss ratio: {snapshot.get('rf', {}).get('loss_ratio')}",
             "",
             "## Operator events",
             "",
@@ -585,6 +817,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--goto-tolerance", type=float, default=float(os.environ.get("BAS_GCS_UI_GOTO_TOLERANCE", "2.5")))
     parser.add_argument("--mode", default="ui")
     parser.add_argument("--force-arm", action="store_true", default=os.environ.get("BAS_STAGE24_FORCE_ARM", "0") == "1")
+    parser.add_argument("--rf-demo", action="store_true", default=os.environ.get("BAS_GCS_RF_DEMO", "0") == "1")
+    parser.add_argument("--rf-channel-path", default=os.environ.get("BAS_RF_CHANNEL_PATH", os.environ.get("BAS_SIONNA_CHANNEL_PATH", "")))
     args = parser.parse_args(argv)
     if args.log_dir is None:
         args.log_dir = str(REPO_ROOT / "logs" / args.run_id)

@@ -407,7 +407,7 @@ class MavproxySession:
 
 
 def build_mavproxy_command(args: argparse.Namespace, aircraft_dir: Path) -> list[str]:
-    safe_cmd = "set shownoise false; module load cmdlong; set mavfwd false; set mavfwd_disarmed false"
+    safe_cmd = "set shownoise false; module load cmdlong; module load message; set mavfwd false; set mavfwd_disarmed false"
     return [
         str(args.mavproxy_bin),
         f"--master={args.master}",

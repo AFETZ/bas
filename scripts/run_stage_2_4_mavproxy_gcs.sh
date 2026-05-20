@@ -19,6 +19,8 @@ NS3_START_TIMEOUT_SECONDS="${NS3_START_TIMEOUT_SECONDS:-300}"
 MAVPROXY_MASTER="${BAS_STAGE24_MAVPROXY_MASTER:-udpout:10.10.0.2:14550}"
 TAKEOFF_ALT="${BAS_STAGE24_TAKEOFF_ALT:-10}"
 MODE="${1:-${BAS_STAGE24_MODE:-smoke}}"
+SIONNA_CHANNEL_PATH="${BAS_SIONNA_CHANNEL_PATH:-${BAS_RF_CHANNEL_PATH:-}}"
+SIONNA_CONTAINER_PATH=""
 
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
 
@@ -38,8 +40,42 @@ cleanup() {
     echo "[cleanup]"
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
     timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} down -v 2>/dev/null" >/dev/null 2>&1
+    ip link del veth-uav-br >/dev/null 2>&1 || true
+    ip link del veth-uav >/dev/null 2>&1 || true
+    umount /var/run/netns/bas-uav >/dev/null 2>&1 || true
     rm -f /var/run/netns/bas-uav
     set -e
+}
+
+wait_for_container_netns() {
+    local container="$1"
+    local netns_name="$2"
+    local pid=""
+
+    mkdir -p /var/run/netns
+    umount "/var/run/netns/${netns_name}" >/dev/null 2>&1 || true
+    rm -f "/var/run/netns/${netns_name}"
+
+    for _ in $(seq 1 60); do
+        pid="$(
+            sg docker -c "docker inspect --format '{{.State.Pid}} {{.State.Running}}' ${container}" 2>/dev/null \
+                | awk '$2 == "true" && $1 + 0 > 1 {print $1; exit}'
+        )"
+        if [ -n "$pid" ] && [ -e "/proc/${pid}/ns/net" ]; then
+            ln -sfnT "/proc/${pid}/ns/net" "/var/run/netns/${netns_name}"
+            if ip netns exec "$netns_name" true >/dev/null 2>&1; then
+                printf '%s\n' "$pid"
+                return 0
+            fi
+            umount "/var/run/netns/${netns_name}" >/dev/null 2>&1 || true
+            rm -f "/var/run/netns/${netns_name}"
+        fi
+        sleep 0.5
+    done
+
+    echo "Container ${container} did not expose a usable network namespace" >&2
+    sg docker -c "docker inspect --format 'pid={{.State.Pid}} running={{.State.Running}} status={{.State.Status}}' ${container} 2>&1" >&2 || true
+    return 1
 }
 
 case "$MODE" in
@@ -51,6 +87,14 @@ case "$MODE" in
 esac
 
 mkdir -p "$LOG_DIR"
+if [ -n "$SIONNA_CHANNEL_PATH" ]; then
+    mkdir -p "$(dirname "$SIONNA_CHANNEL_PATH")"
+    printf '{"loss_ratio":0.0,"extra_delay_ms":0.0,"rssi_db":-55.0,"rss_db":-55.0,"status":"LOS","los":true}\n' > "$SIONNA_CHANNEL_PATH"
+    SIONNA_CONTAINER_PATH="$SIONNA_CHANNEL_PATH"
+    if [[ "$SIONNA_CHANNEL_PATH" == /tmp/* ]]; then
+        SIONNA_CONTAINER_PATH="/tmp/$(basename "$SIONNA_CHANNEL_PATH")"
+    fi
+fi
 
 if [ "$MODE" = "dry-run" ]; then
     "${REPO_ROOT}/.venv/bin/python" "${REPO_ROOT}/scripts/mavproxy_stage_2_4_driver.py" \
@@ -79,6 +123,7 @@ echo "==> run_id=${RUN_ID}"
 echo "==> logs: ${LOG_DIR}"
 echo "==> mode: ${MODE}"
 echo "==> MAVProxy master: ${MAVPROXY_MASTER}"
+[ -n "$SIONNA_CHANNEL_PATH" ] && echo "==> RF/Sionna channel: ${SIONNA_CHANNEL_PATH}"
 echo "==> chain: MAVProxy -> bas-ctrl-far netns -> ns-3 control -> mavbridge -> SITL"
 
 "${REPO_ROOT}/.venv/bin/mavproxy.py" --help > "${LOG_DIR}/mavproxy_help.txt" 2>&1 || true
@@ -97,16 +142,15 @@ sg docker -c "docker compose -f ${DEFAULT_COMPOSE_FILE} down -v 2>/dev/null" >/d
 
 echo "[3/7] start uav-net pause container and inject control veth"
 sg docker -c "docker compose -f ${COMPOSE_FILE} up -d uav-net" 2>&1 | tail -3
-UAV_PID=$(sg docker -c "docker inspect --format '{{.State.Pid}}' bas-uav-net")
-mkdir -p /var/run/netns
-ln -sf "/proc/${UAV_PID}/ns/net" /var/run/netns/bas-uav
+UAV_PID="$(wait_for_container_netns bas-uav-net bas-uav)"
+echo "  bas-uav netns: PID=${UAV_PID}"
 
 ip link del veth-uav-br >/dev/null 2>&1 || true
 ip link del veth-uav >/dev/null 2>&1 || true
 ip link add veth-uav type veth peer name veth-uav-br
 ip link set veth-uav-br master br-ctrl-near
 ip link set veth-uav-br up
-ip link set veth-uav netns bas-uav
+ip link set veth-uav netns "$UAV_PID"
 ip -n bas-uav link set veth-uav name eth0
 ip -n bas-uav addr add 10.10.0.2/24 dev eth0
 ip -n bas-uav link set eth0 up
@@ -134,13 +178,25 @@ echo "[6/7] start ns-3 control channel (baseline_wifi: 5ms delay, no loss)"
 NS3_ARGS="--runId=${RUN_ID} --duration=${NS3_DURATION}"
 NS3_ARGS="${NS3_ARGS} --ctrlDelayMs=5 --ctrlLoss=0.0"
 NS3_ARGS="${NS3_ARGS} --ploadDelayMs=10 --ploadLoss=0.0"
+if [ -n "$SIONNA_CONTAINER_PATH" ]; then
+    NS3_ARGS="${NS3_ARGS} --sionnaChannelPath=${SIONNA_CONTAINER_PATH}"
+fi
+
+NS3_TMP_MOUNT=""
+NS3_TMP_LINK=""
+if [[ "$SIONNA_CHANNEL_PATH" == /tmp/* ]]; then
+    NS3_TMP_MOUNT="-v /tmp:/host_tmp"
+    NS3_TMP_LINK="ln -sf /host_tmp/$(basename "$SIONNA_CHANNEL_PATH") ${SIONNA_CONTAINER_PATH} && "
+fi
 
 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1 || true
 sg docker -c "docker run -d --name bas-ns3-stage24 --network host --cap-add NET_ADMIN --privileged \
     -e NS3_ARGS='${NS3_ARGS}' \
     -v ${REPO_ROOT}/ns3:/work/ns3:ro \
     -v ${REPO_ROOT}/logs:/work/logs \
+    ${NS3_TMP_MOUNT} \
     --entrypoint bash bas/ns3:dev -c '\
+        ${NS3_TMP_LINK} \
         cp /work/ns3/scenarios/two_channel.cc /work/ns3-src/scratch/ \
         && cd /work/ns3-src \
         && ./ns3 build > /tmp/build.log 2>&1 \
@@ -198,7 +254,8 @@ if [ "$MODE" = "ui" ]; then
         --takeoff-alt "$TAKEOFF_ALT" \
         --netns bas-ctrl-far \
         --host "$UI_HOST" \
-        --port "$UI_PORT"
+        --port "$UI_PORT" \
+        ${BAS_GCS_RF_DEMO:+--rf-demo}
     RC=$?
 elif [ "$MODE" = "interactive" ]; then
     ip netns exec bas-ctrl-far "${REPO_ROOT}/.venv/bin/python" \

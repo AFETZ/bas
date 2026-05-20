@@ -6,6 +6,7 @@ set shownoise false
 set mavfwd false
 set mavfwd_disarmed false
 module load cmdlong
+module load message
 
 alias add s24_status status
 alias add s24_guided mode GUIDED

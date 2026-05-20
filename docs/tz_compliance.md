@@ -93,7 +93,7 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
 | Моделирование как минимум одного БАС в тестовом сценарии | ✅ | 1.5.1 | mission AUTO 7/7 wp на обоих профилях |
-| Ручное управление одним БАС через GCS | ✅ | **2.4** | Закрыто через live Web GCS operator UI + MAVProxy backend: `Browser UI -> MAVProxy -> ns-3 control -> mavbridge -> SITL`. UI даёт кнопки `GUIDED/ARM/TAKEOFF/LAND`, удержание `W/A/S/D` для velocity-команд и `GO TO` по локальной карте; команды вводятся в MAVProxy stdin, прямой pymavlink не используется. Headless smoke `logs/stage_2_4_mavproxy_gcs_20260518T203447Z`: heartbeat/GPS/mode/arm state visible, `mode GUIDED`, explicit `BAS_STAGE24_FORCE_ARM=1`, `takeoff 10`, `velocity 1 0 0`, `mode LAND`, landed at relative altitude 0.01 м. Mission upload: false; direct pymavlink command path: false |
+| Ручное управление одним БАС через GCS | ✅ | **2.4** | Закрыто через live Web GCS operator UI + MAVProxy backend: `Browser UI -> MAVProxy -> ns-3 control -> mavbridge -> SITL`. UI даёт кнопки `GUIDED/ARM/TAKEOFF/LAND`, удержание `W/A/S/D` для velocity-команд и `GO TO` по локальной карте; `GO TO` отправляет через MAVProxy `message SET_POSITION_TARGET_LOCAL_NED`, чтобы точка была абсолютной local NED целью, а не body-frame velocity. Команды вводятся в MAVProxy stdin, прямой pymavlink не используется. RF/LOS demo добавляет Gazebo-сцену с препятствиями `Hangar`/`Tower`/GCS mast и live-панель LOS/NLOS, RSSI, packet loss, delay и график; channel JSON отдаётся в ns-3 polling как демонстрационный RF hook. Headless smoke `logs/stage_2_4_mavproxy_gcs_20260518T203447Z`: heartbeat/GPS/mode/arm state visible, `mode GUIDED`, explicit `BAS_STAGE24_FORCE_ARM=1`, `takeoff 10`, `velocity 1 0 0`, `mode LAND`, landed at relative altitude 0.01 м. Mission upload: false; direct pymavlink command path: false |
 
 ## Чужая зона (НЕ Физулин)
 
@@ -103,10 +103,10 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Пункт ТЗ | Исполнители | Состояние | Мой интерфейс |
 |---|---|---|---|
 | Аналитический обзор инструментов | Степанянц, Карпов, Маргарян | ➖ | — |
-| AirSim как симулятор графики/сенсоров | Андрончев, Федотенков | ⏳ 2.2 | Я подготовлю архитектурный bridge Gazebo→AirSim |
+| AirSim как симулятор графики/сенсоров | Андрончев, Федотенков | ⏳ 2.2 | В текущем репозитории оставлен архитектурный backlog Gazebo→AirSim, реализации нет |
 | MAVLink ↔ Gazebo / AirSim | Федотенков | ➖ | mavbridge готов как референс |
 | Опционально — кибератаки | Маргарян | ➖ | — |
-| Карта сценария в Gazebo | Карпов, Маргарян | ⏳ | `iris_runway.sdf` готов как стартовая база |
+| Карта сценария в Gazebo | Карпов, Маргарян | ⏳ | `iris_runway.sdf` и RF demo world готовы как стартовая база; финальная предметная карта вне этой матрицы |
 | Карта сценария в AirSim | Андрончев, Федотенков | ➖ | — |
 | Адаптация под карты >20×20 км | Андрончев, Карпов | ➖ опционально | — |
 | Веб-интерфейс | Федотенков | ➖ опционально | JSONL формат пригоден к импорту |
@@ -123,8 +123,9 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Моделирование БАС (совместная) | 2 | 0 | 2 | **100%** |
 | **Итого по Физулинской зоне** | **15** | **0** | **15** | **100%** |
 
-Stage 2.4 закрыт live Web GCS UI и smoke-прогоном через MAVProxy; личная зона
-Физулина по этой матрице — **100%**.
+Stage 2.4 закрыт live Web GCS UI, smoke-прогоном через MAVProxy и отдельным
+RF/LOS demo с препятствиями, RSSI/loss/delay графиком; личная зона Физулина по
+этой матрице — **100%**.
 
 ## Актуальный остаток
 

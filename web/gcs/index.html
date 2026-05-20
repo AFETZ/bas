@@ -43,6 +43,14 @@
             <rect x="-160" y="-160" width="320" height="320" rx="0" fill="url(#grid-large)"/>
             <line x1="-160" y1="0" x2="160" y2="0" class="axis"/>
             <line x1="0" y1="-160" x2="0" y2="160" class="axis"/>
+            <g id="rf-layer" class="rf-layer hidden">
+              <g id="rf-obstacles"></g>
+              <line id="rf-los-line" x1="0" y1="0" x2="0" y2="0"/>
+              <g id="rf-gcs">
+                <circle r="6"/>
+                <path d="M0 -14L0 14M-10 0L10 0"/>
+              </g>
+            </g>
             <path id="trail" class="trail" d=""/>
             <g id="target" class="target hidden">
               <circle r="11"/>
@@ -66,6 +74,27 @@
             <div><span>Speed</span><strong id="speed">--</strong></div>
             <div><span>GPS</span><strong id="gps">--</strong></div>
             <div><span>Run</span><strong id="run-id">--</strong></div>
+          </section>
+
+          <section class="rf-panel hidden" id="rf-panel">
+            <div class="panel-head tight">
+              <div>
+                <p class="eyebrow">RF Link</p>
+                <h2 id="rf-status">LOS</h2>
+              </div>
+              <span class="pill" id="rf-pill">RSSI</span>
+            </div>
+            <div class="rf-metrics">
+              <div><span>RSSI</span><strong id="rf-rssi">--</strong></div>
+              <div><span>Loss</span><strong id="rf-loss">--</strong></div>
+              <div><span>Delay</span><strong id="rf-delay">--</strong></div>
+            </div>
+            <canvas id="rf-chart" width="360" height="132" aria-label="Live RSSI chart"></canvas>
+            <div class="button-row rf-actions">
+              <button id="rf-clear">CLEAR</button>
+              <button id="rf-nlos" class="primary">NLOS PASS</button>
+              <button id="rf-reset">RESET</button>
+            </div>
           </section>
 
           <section class="command-block">
