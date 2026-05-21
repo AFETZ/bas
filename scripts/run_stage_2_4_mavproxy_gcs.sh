@@ -50,6 +50,10 @@ export BAS_QGC_UAV_PORT="${BAS_QGC_UAV_PORT:-14560}"
 # robpegurri/ns3-rt + bluenviron Sionna 1.x документации: load Mitsuba scene
 # один раз, на каждом UAV move двигаем Receiver и runs PathSolver.
 # Latency ~55мс на CPU (LLVM JIT), достаточно для 10Hz polling.
+# Multi-UAV demo: 2 SITL экземпляра + iris_runway_multi.sdf + mavrouter-multi
+# (vместо single mavbridge). Реалистичный pattern для будущего swarm-расширения.
+BAS_GCS_MULTI_UAV="${BAS_GCS_MULTI_UAV:-0}"
+
 BAS_SIONNA_RT_ONLINE="${BAS_SIONNA_RT_ONLINE:-0}"
 export BAS_RT_SCENE_PATH="${BAS_RT_SCENE_PATH:-${REPO_ROOT}/scene/iris_runway.xml}"
 export BAS_RT_TX_POS="${BAS_RT_TX_POS:-0,-60,1.5}"
@@ -137,7 +141,8 @@ cleanup() {
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-mavrouter 2>/dev/null" >/dev/null 2>&1
-    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv --profile qgc down -v 2>/dev/null" >/dev/null 2>&1
+    timeout 30 sg docker -c "docker rm -f bas-mavrouter-multi bas-sitl2 2>/dev/null" >/dev/null 2>&1
+    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv --profile qgc --profile multi down -v 2>/dev/null" >/dev/null 2>&1
     # FPV host-IP cleanup (idemptotent: del fails silently если не было).
     ip addr del 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
     ip link del veth-uav-br >/dev/null 2>&1 || true
@@ -441,7 +446,9 @@ ip -n bas-uav addr add 10.10.0.2/24 dev eth0
 ip -n bas-uav link set eth0 up
 ip -n bas-uav link set lo up
 
-if [ "$BAS_GCS_QGC" = "1" ]; then
+if [ "$BAS_GCS_MULTI_UAV" = "1" ]; then
+    echo "[4/7] start Gazebo (multi-UAV world), SITL1+SITL2, mavrouter-multi"
+elif [ "$BAS_GCS_QGC" = "1" ]; then
     echo "[4/7] start Gazebo, SITL, mavrouter (QGC bridge mode)"
 else
     echo "[4/7] start Gazebo, SITL, mavbridge"
@@ -449,7 +456,13 @@ fi
 sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo" 2>&1 | tail -3
 echo "  waiting 6s for Gazebo FDM"
 sleep 6
-if [ "$BAS_GCS_QGC" = "1" ]; then
+if [ "$BAS_GCS_MULTI_UAV" = "1" ]; then
+    # Multi-UAV: 2 SITL экземпляра (-I0 и -I1) + единый mavp2p router
+    # multiplexing оба TCP в один UDP 14550 для MAVProxy. UAV2 sysid=2
+    # переопределяется через --sysid CLI ArduCopter. Gazebo iris_runway_multi.sdf
+    # содержит обе iris модели на разных fdm_port (9002 и 9012).
+    sg docker -c "docker compose -f ${COMPOSE_FILE} --profile multi up -d sitl sitl2 mavrouter-multi" 2>&1 | tail -5
+elif [ "$BAS_GCS_QGC" = "1" ]; then
     # mavrouter (bluenviron/mavp2p) держит один TCP к SITL и serves UDP 14550
     # для MAVProxy GCS + UDP 14560 для QGC bridge. mavbridge не запускаем —
     # SITL TCP 5760 single-client, и mavp2p и socat конфликтуют.

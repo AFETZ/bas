@@ -1,0 +1,79 @@
+<?xml version="1.0" ?>
+<!--
+  Multi-UAV demo: тот же runway + два iris_with_ardupilot экземпляра на
+  разных fdm_port'ах (9002 для uav1, 9012 для uav2). Каждый FDM-канал
+  подключается к своему SITL (-I0 и -I1) внутри отдельного контейнера.
+
+  Pattern из:
+    https://github.com/arthurrichards77/ardupilot_sitl_docker
+    https://github.com/Intelligent-Quads/iq_tutorials/blob/master/docs/swarming_ardupilot.md
+    https://discuss.ardupilot.org/t/sitl-gazebo-vsc-docker-default-port-5760-already-in-use/117384
+
+  UAV2 модель локально skopirована в gazebo/models/iris_with_ardupilot_uav2/
+  только чтобы поменять fdm_port_in (9002 -> 9012); model.sdf upstream
+  иначе идентичен.
+-->
+<sdf version="1.9">
+  <world name="iris_runway_multi">
+    <physics name="1ms" type="ignore">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+
+    <scene>
+      <ambient>1.0 1.0 1.0</ambient>
+      <background>0.8 0.8 0.8</background>
+      <sky/>
+    </scene>
+
+    <spherical_coordinates>
+      <latitude_deg>-35.363262</latitude_deg>
+      <longitude_deg>149.165237</longitude_deg>
+      <elevation>584</elevation>
+      <heading_deg>0</heading_deg>
+      <surface_model>EARTH_WGS84</surface_model>
+    </spherical_coordinates>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.8 0.8 0.8 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <include>
+      <uri>model://runway</uri>
+      <pose degrees="true">-29 545 0 0 0 363</pose>
+    </include>
+
+    <!-- UAV1: стандартный iris_with_ardupilot на (0,0), FDM port 9002 -->
+    <include>
+      <name>iris_uav1</name>
+      <uri>model://iris_with_ardupilot</uri>
+      <pose degrees="true">0 0 0.195 0 0 90</pose>
+    </include>
+
+    <!-- UAV2: локальная копия с FDM port 9012, спавним рядом (8м к востоку) -->
+    <include>
+      <name>iris_uav2</name>
+      <uri>model://iris_with_ardupilot_uav2</uri>
+      <pose degrees="true">0 8 0.195 0 0 90</pose>
+    </include>
+  </world>
+</sdf>

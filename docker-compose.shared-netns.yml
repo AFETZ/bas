@@ -102,6 +102,54 @@ services:
       gazebo:
         condition: service_started
 
+  # ---- Stage 2.4 Multi-UAV: второй SITL экземпляр для swarm demo ----------
+  # ArduCopter '-I1' instance — offset на 10 портов:
+  #   FDM:        9012 (in) / 9013 (out)  ← iris_with_ardupilot_uav2 model
+  #   MAVLink:    5770 (TCP, instead of 5760)
+  # SYSID_THISMAV переопределяется через --defaults overlay (uav2.parm).
+  # Pattern из arthurrichards77/ardupilot_sitl_docker + Intelligent-Quads
+  # swarming_ardupilot.md.
+  sitl2:
+    image: bas/ardupilot-sitl:dev
+    container_name: bas-sitl2
+    network_mode: "container:bas-uav-net"
+    volumes:
+      - ./ardupilot:/work/ardupilot:ro
+      - ./logs:/work/logs
+    command:
+      - /home/ardupilot/ardupilot/build/sitl/bin/arducopter
+      - -I1
+      - --model
+      - JSON
+      - --speedup
+      - "1"
+      - --sysid
+      - "2"
+      - --defaults
+      - /home/ardupilot/ardupilot/Tools/autotest/default_params/gazebo-iris.parm
+    profiles: ["multi"]
+    depends_on:
+      gazebo:
+        condition: service_started
+
+  # MAVLink router для multi-UAV: один mavp2p на оба SITL и serves единый
+  # UDP endpoint на 14550 (для MAVProxy GCS через ns-3). Pattern идентичен
+  # QGC bridge (mavrouter), просто два tcpc вместо одного.
+  mavrouter-multi:
+    image: bluenviron/mavp2p:latest
+    container_name: bas-mavrouter-multi
+    network_mode: "container:bas-uav-net"
+    command:
+      - tcpc:127.0.0.1:5760    # UAV1 SITL (-I0)
+      - tcpc:127.0.0.1:5770    # UAV2 SITL (-I1, port offset +10)
+      - udps:0.0.0.0:14550     # MAVProxy GCS uplink
+    profiles: ["multi"]
+    depends_on:
+      sitl:
+        condition: service_started
+      sitl2:
+        condition: service_started
+
   # MAVLink bridge: TCP 127.0.0.1:5760 (SITL) <-> UDP 0.0.0.0:14550 (для GCS через ns-3).
   # UDP убирает TCP head-of-line blocking из радиоканала; TCP остаётся только локально
   # внутри shared netns между bridge и SITL.

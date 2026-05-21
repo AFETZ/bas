@@ -41,7 +41,7 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
 | Блок | Почему не закрыт здесь | Возможный следующий этап |
 |---|---|---|
 | AirSim / Cosys-AirSim overlay | Это отдельная связка Gazebo physics -> AirSim high-realism sensors, зона других исполнителей и отдельной интеграции | `2.2-airsim-overlay` |
-| Multi-UAV / swarm | В текущем репозитории все acceptance-сценарии рассчитаны на один БАС | `2.3-multi-uav` |
+| ~~Multi-UAV / swarm~~ | **MVP закрыт 21.05.2026**: 2 SITL + 2 Gazebo iris + mavp2p multi-router — см. backlog ниже | — |
 | ~~QGroundControl как внешний GUI~~ | **Закрыто 21.05.2026** через `bluenviron/mavp2p` bridge — см. backlog ниже | — |
 | ~~Полный real-time Sionna ray tracing~~ | **Закрыто 21.05.2026**: `sionna_channel_publisher.py --rt-online` делает live PathSolver на каждом UAV update — см. backlog ниже | — |
 | ИССГР объектная БД/API/CV | Это полный грантовый контур, шире моделирующего стенда | Отдельный репозиторий/модуль |
@@ -81,7 +81,24 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
    5G LENA blog. Verified: `channel_model="rt_online"`,
    `channel_latency_ms=35.8-42.1`, `rss_db=-55.9`, `path_loss_db=78.9`,
    `loss_ratio=1.6e-05` (LOS).
-4. Multi-UAV topology в ns-3: несколько SITL/Gazebo instances и общий анализатор.
+4. ~~Multi-UAV topology в ns-3~~ — **MVP закрыт 21.05.2026**:
+   `scripts/run_stage_2_4_multi_uav_demo.sh` поднимает 2 ArduCopter SITL
+   экземпляра (`-I0 sysid=1`, `-I1 sysid=2`) + 2 iris модели в кастомном
+   мире `gazebo/worlds/iris_runway_multi.sdf` (UAV1 fdm_port 9002, UAV2
+   fdm_port 9012 через локальную копию модели `gazebo/models/
+   iris_with_ardupilot_uav2/`) + единый `mavrouter-multi` (mavp2p
+   tcpc:5760 + tcpc:5770 + udps:14550) multiplex-ит обоих в общий
+   UDP endpoint для MAVProxy через ns-3. Verified: `mavp2p v1.3.2 router
+   started with 3 endpoints; channel opened tcp:5760 sid=1; channel
+   opened tcp:5770 sid=2; channel opened udp:GCS sid=255`. Pattern из
+   `arthurrichards77/ardupilot_sitl_docker` + `Intelligent-Quads/iq_tutorials`.
+   MVP single ns-3 channel для обоих UAV (общие радио-условия); Web UI
+   пока показывает только UAV1 маркер — расширение per-UAV ns-3 каналов
+   и multi-marker UI оставлено как extension backlog.
+5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
+   payload channel.
+6. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
+   видео/скриншотов в один отчёт.
 5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
    payload channel.
 6. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
