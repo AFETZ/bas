@@ -117,6 +117,31 @@ services:
       sitl:
         condition: service_started
 
+  # ---- Stage 2.4 QGroundControl bridge ------------------------------------
+  # Замена mavbridge для QGC-режима. Стандартный паттерн ardupilot-sitl-docker
+  # (через MAVProxy --out udp:host) и mavlink-router/Intel здесь адаптирован
+  # на bluenviron/mavp2p: один TCP client к SITL и несколько UDP server'ов
+  # для одновременных GCS-клиентов. SITL TCP 5760 single-client, поэтому
+  # mavbridge и mavrouter взаимоисключающие — wrapper останавливает первый
+  # перед запуском второго.
+  #
+  # Endpoint scheme:
+  #   tcpc:127.0.0.1:5760 — TCP client к SITL (внутри bas-uav netns)
+  #   udps:0.0.0.0:14550  — UDP server для MAVProxy GCS (через ns-3 control)
+  #   udps:0.0.0.0:14560  — UDP server для host-side socat → QGC bridge
+  mavrouter:
+    image: bluenviron/mavp2p:latest
+    container_name: bas-mavrouter
+    network_mode: "container:bas-uav-net"
+    command:
+      - tcpc:127.0.0.1:5760
+      - udps:0.0.0.0:14550
+      - udps:0.0.0.0:14560
+    profiles: ["qgc"]
+    depends_on:
+      sitl:
+        condition: service_started
+
   # Stage 1.7: LoRa Serial UAV-side bridge. ВМЕСТО mavbridge для LoRa-режима
   # (SITL TCP 5760 single-client, оба mavbridge и lora-uav-bridge не могут жить
   # одновременно). Соединяет host UNIX socket /tmp/bas-bridge/lora-uav.sock

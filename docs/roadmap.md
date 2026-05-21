@@ -56,8 +56,16 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
    `run_stage_2_4_fpv_rf_demo.sh`. При NLOS RF model деформирует и видео-канал,
    и MAVLink-команды синхронно. Verified: `flow_id:"control+payload",
    loss_ratio:0.606, extra_delay_ms:109` в `ns3_events.jsonl`.
-2. QGroundControl bridge как дополнительный внешний GUI поверх уже работающей
-   MAVProxy/Web GCS цепочки.
+2. ~~QGroundControl bridge как дополнительный внешний GUI~~ — **закрыто
+   21.05.2026**: `scripts/run_stage_2_4_qgc_demo.sh` поднимает
+   `bluenviron/mavp2p` (MAVLink router) вместо `mavbridge` socat;
+   `tcpc:5760 udps:14550 udps:14560` даёт одновременный доступ MAVProxy
+   через ns-3 + QGC через host-side socat UDP relay (`0.0.0.0:14560 →
+   10.10.0.2:14560`). QGC на Windows подключается на `<WSL eth0 IP>:14560`.
+   Verified: 100+ MAVLink v2 frames/5с (HEARTBEAT, GPS, ATTITUDE, SYS_STATUS)
+   reach host:14560. Pattern from `uxduck/ardupilot-sitl-docker` +
+   `mavlink-router/Intel` + `bluenviron/mavp2p`. Docs:
+   `docs/stage_2_4_qgc_setup.md`.
 3. Multi-UAV topology в ns-3: несколько SITL/Gazebo instances и общий анализатор.
 4. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
    payload channel.

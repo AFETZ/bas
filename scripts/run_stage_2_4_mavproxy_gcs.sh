@@ -32,6 +32,18 @@ SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-payload}"
 BAS_GCS_FPV="${BAS_GCS_FPV:-0}"
 export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
 export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
+
+# QGroundControl bridge: заменяет mavbridge (socat 1↔1) на bluenviron/mavp2p,
+# который держит один TCP client к SITL и serves MAVLink на нескольких UDP
+# server endpoint'ах одновременно — стандартный paттерн mavlink-router/Intel
+# адаптированный под наш netns layout. При BAS_GCS_QGC=1 wrapper:
+#  * пропускает mavbridge service;
+#  * поднимает mavrouter (profile qgc);
+#  * поднимает host-side socat UDP relay 14560 → 10.10.0.2:14560 (доступ из
+#    Windows-QGC через WSL2 localhost/eth0 forwarding).
+BAS_GCS_QGC="${BAS_GCS_QGC:-0}"
+export BAS_QGC_HOST_PORT="${BAS_QGC_HOST_PORT:-14560}"
+export BAS_QGC_UAV_PORT="${BAS_QGC_UAV_PORT:-14560}"
 # Эти env-переменные интерполируются docker compose из ХОСТ-окружения в
 # command-блоке fpv-mjpeg, поэтому экспортировать их обязательно (иначе
 # gst-launch получит пустые caps/framerate и сразу упадёт без открытия порта).
@@ -94,9 +106,15 @@ cleanup() {
     # Сначала остановим UI сервер если он наш — иначе порт 8765 повиснет
     # для следующего запуска.
     kill_stale_ui "${BAS_GCS_UI_PORT:-8765}"
+    # Стопим QGC host-side socat если он запускался.
+    if [ -f /tmp/bas_qgc_socat.pid ]; then
+        kill "$(cat /tmp/bas_qgc_socat.pid)" 2>/dev/null || true
+        rm -f /tmp/bas_qgc_socat.pid
+    fi
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
-    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv down -v 2>/dev/null" >/dev/null 2>&1
+    timeout 30 sg docker -c "docker rm -f bas-mavrouter 2>/dev/null" >/dev/null 2>&1
+    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv --profile qgc down -v 2>/dev/null" >/dev/null 2>&1
     # FPV host-IP cleanup (idemptotent: del fails silently если не было).
     ip addr del 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
     ip link del veth-uav-br >/dev/null 2>&1 || true
@@ -177,6 +195,74 @@ start_fpv_pipeline() {
         echo "  WARN: fpv-mjpeg did not open :${BAS_FPV_MJPEG_PORT} within ${waited}s" >&2
         sg docker -c "docker logs --tail 40 bas-fpv-mjpeg 2>&1" | sed 's/^/  fpv: /' >&2 || true
     fi
+}
+
+# Host-side socat UDP relay для QGroundControl. QGC на Windows пишет на
+# UDP :14560 хоста (через WSL2 localhost forwarding или mirrored networking).
+# Мы переадресуем эти пакеты в bas-uav netns на mavrouter UDP 14560 server.
+# Bidirectional: ответы (heartbeat от SITL) идут обратно через тот же socket.
+start_qgc_host_relay() {
+    [ "$BAS_GCS_QGC" = "1" ] || return 0
+
+    # Убедимся что mavrouter поднял :14560 в bas-uav netns.
+    local waited=0
+    while [ "$waited" -lt 12 ]; do
+        if ip netns exec bas-uav ss -uln 2>/dev/null | grep -q ":${BAS_QGC_UAV_PORT}"; then
+            echo "  mavrouter UDP listener up on bas-uav:${BAS_QGC_UAV_PORT}"
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if ! ip netns exec bas-uav ss -uln 2>/dev/null | grep -q ":${BAS_QGC_UAV_PORT}"; then
+        echo "  WARN: mavrouter did not open :${BAS_QGC_UAV_PORT} within ${waited}s" >&2
+        sg docker -c "docker logs --tail 30 bas-mavrouter 2>&1" | sed 's/^/  mavrouter: /' >&2 || true
+        return 1
+    fi
+
+    # Host IP на br-ctrl-near чтобы достучаться до bas-uav 10.10.0.2 (тот же
+    # подход что в start_fpv_pipeline — добавляем 10.10.0.254/24 если ещё нет).
+    if ! ip -4 addr show br-ctrl-near 2>/dev/null | grep -q "10.10.0.254/24"; then
+        ip addr add 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
+        echo "[qgc] br-ctrl-near host IP: 10.10.0.254/24 (route to bas-uav)"
+    fi
+
+    # Убрать старый relay если он остался (например после crashed run).
+    pkill -f "socat.*UDP4-LISTEN:${BAS_QGC_HOST_PORT}.*10.10.0.2" 2>/dev/null || true
+    sleep 1
+
+    # Запускаем socat в background. Каждое QGC-подключение получает свой
+    # forked процесс, который держит UDP socket к bas-uav:14560 двусторонне.
+    # bind=0.0.0.0 — слушаем на всех интерфейсах, чтобы Windows-QGC мог
+    # подключиться по WSL eth0 IP или через mirrored localhost.
+    nohup socat -d \
+        "UDP4-LISTEN:${BAS_QGC_HOST_PORT},bind=0.0.0.0,reuseaddr,fork" \
+        "UDP4:10.10.0.2:${BAS_QGC_UAV_PORT}" \
+        > "${LOG_DIR}/qgc_socat.log" 2>&1 &
+    echo $! > /tmp/bas_qgc_socat.pid
+    sleep 1
+    if ! kill -0 "$(cat /tmp/bas_qgc_socat.pid 2>/dev/null)" 2>/dev/null; then
+        echo "  WARN: host-side QGC socat не стартовал — см. ${LOG_DIR}/qgc_socat.log" >&2
+        return 1
+    fi
+    echo "[qgc] host UDP relay: 0.0.0.0:${BAS_QGC_HOST_PORT} -> 10.10.0.2:${BAS_QGC_UAV_PORT}"
+
+    # Печатаем WSL eth0 IP — оператору это нужно для QGC connection link.
+    local wsl_ip
+    wsl_ip="$(ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+    cat <<QGC
+
+==========================================================================
+ QGroundControl bridge готов
+--------------------------------------------------------------------------
+ В QGC: Application Settings → Comm Links → Add → UDP
+   * Name:        BAS-WSL
+   * Port:        ${BAS_QGC_HOST_PORT}
+   * Server addr: ${wsl_ip:-<WSL_eth0_IP>}   (или localhost если WSL2 mirrored)
+ Затем Connect — heartbeat появится сразу после старта SITL.
+==========================================================================
+
+QGC
 }
 
 wait_for_container_netns() {
@@ -295,11 +381,22 @@ ip -n bas-uav addr add 10.10.0.2/24 dev eth0
 ip -n bas-uav link set eth0 up
 ip -n bas-uav link set lo up
 
-echo "[4/7] start Gazebo, SITL, mavbridge"
+if [ "$BAS_GCS_QGC" = "1" ]; then
+    echo "[4/7] start Gazebo, SITL, mavrouter (QGC bridge mode)"
+else
+    echo "[4/7] start Gazebo, SITL, mavbridge"
+fi
 sg docker -c "docker compose -f ${COMPOSE_FILE} up -d gazebo" 2>&1 | tail -3
 echo "  waiting 6s for Gazebo FDM"
 sleep 6
-sg docker -c "docker compose -f ${COMPOSE_FILE} up -d sitl mavbridge" 2>&1 | tail -3
+if [ "$BAS_GCS_QGC" = "1" ]; then
+    # mavrouter (bluenviron/mavp2p) держит один TCP к SITL и serves UDP 14550
+    # для MAVProxy GCS + UDP 14560 для QGC bridge. mavbridge не запускаем —
+    # SITL TCP 5760 single-client, и mavp2p и socat конфликтуют.
+    sg docker -c "docker compose -f ${COMPOSE_FILE} --profile qgc up -d sitl mavrouter" 2>&1 | tail -3
+else
+    sg docker -c "docker compose -f ${COMPOSE_FILE} up -d sitl mavbridge" 2>&1 | tail -3
+fi
 
 echo "[5/7] wait for SITL MAVLink on :5760"
 for _ in $(seq 1 60); do
@@ -317,6 +414,9 @@ sleep 10
 # блокируя основной пайплайн при ошибках камеры (start_fpv_pipeline печатает
 # WARN'ы но не падает).
 start_fpv_pipeline
+# QGC host-side relay поднимаем здесь же — mavrouter уже стартовал в [4/7]
+# когда BAS_GCS_QGC=1, нам осталось только пробросить UDP с хоста.
+start_qgc_host_relay
 
 echo "[6/7] start ns-3 control channel (baseline_wifi: 5ms delay, no loss)"
 NS3_ARGS="--runId=${RUN_ID} --duration=${NS3_DURATION}"
