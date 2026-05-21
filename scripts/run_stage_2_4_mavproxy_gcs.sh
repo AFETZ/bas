@@ -22,6 +22,30 @@ MODE="${1:-${BAS_STAGE24_MODE:-smoke}}"
 SIONNA_CHANNEL_PATH="${BAS_SIONNA_CHANNEL_PATH:-${BAS_RF_CHANNEL_PATH:-}}"
 SIONNA_CONTAINER_PATH=""
 
+# Stage 2.4 FPV livestream: при BAS_GCS_FPV=1 поднимаем bas-fpv-mjpeg в
+# bas-uav netns, который принимает RTP H.264 от Gazebo iris_with_gimbal
+# (GstCameraPlugin → UDP loopback 5600) и раздаёт как multipart MJPEG TCP
+# 0.0.0.0:8766. Web GCS проксирует это в /camera.mjpg → <img> в браузере.
+BAS_GCS_FPV="${BAS_GCS_FPV:-0}"
+export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
+export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
+# Эти env-переменные интерполируются docker compose из ХОСТ-окружения в
+# command-блоке fpv-mjpeg, поэтому экспортировать их обязательно (иначе
+# gst-launch получит пустые caps/framerate и сразу упадёт без открытия порта).
+export BAS_FPV_WIDTH="${BAS_FPV_WIDTH:-640}"
+export BAS_FPV_HEIGHT="${BAS_FPV_HEIGHT:-480}"
+export BAS_FPV_FPS="${BAS_FPV_FPS:-15}"
+export BAS_FPV_QUALITY="${BAS_FPV_QUALITY:-70}"
+export BAS_FPV_CPUS="${BAS_FPV_CPUS:-0.6}"
+export BAS_FPV_GST_DEBUG="${BAS_FPV_GST_DEBUG:-2}"
+export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image/enable_streaming}"
+# Для FPV-режима фиксируем мир с onboard камерой (тот же что в 1.5.2.b).
+# Если оператор хочет RF-демо + FPV одновременно — это пока несовместимо
+# (iris_runway_rf_demo.sdf не имеет камеры). Можно объединить миры позже.
+if [ "$BAS_GCS_FPV" = "1" ]; then
+    export BAS_GAZEBO_WORLD="${BAS_GAZEBO_WORLD:-iris_runway.sdf}"
+fi
+
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
 
 ensure_docker() {
@@ -39,12 +63,88 @@ cleanup() {
     set +e
     echo "[cleanup]"
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
-    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} down -v 2>/dev/null" >/dev/null 2>&1
+    timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
+    timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv down -v 2>/dev/null" >/dev/null 2>&1
+    # FPV host-IP cleanup (idemptotent: del fails silently если не было).
+    ip addr del 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
     ip link del veth-uav-br >/dev/null 2>&1 || true
     ip link del veth-uav >/dev/null 2>&1 || true
     umount /var/run/netns/bas-uav >/dev/null 2>&1 || true
     rm -f /var/run/netns/bas-uav
     set -e
+}
+
+# --- FPV helpers ----------------------------------------------------------
+# Включает GstCameraPlugin в Gazebo через enable_streaming gz topic и
+# поднимает bas-fpv-mjpeg контейнер. Идемпотентно: если что-то уже
+# запущено — просто проверит и пойдёт дальше.
+discover_camera_enable_topic() {
+    local discovered
+    discovered="$(
+        sg docker -c "docker exec bas-gazebo gz topic -l 2>/dev/null" \
+            | grep '/enable_streaming$' \
+            | head -1 || true
+    )"
+    if [ -n "$discovered" ]; then
+        BAS_CAMERA_ENABLE_TOPIC="$discovered"
+        return 0
+    fi
+    return 1
+}
+
+start_fpv_pipeline() {
+    [ "$BAS_GCS_FPV" = "1" ] || return 0
+
+    # Хост по умолчанию не имеет IP на br-ctrl-near, поэтому gcs_web_ui_server
+    # (запущен в host netns) не может достучаться до 10.10.0.2:8766 в bas-uav
+    # netns. Даём bridge временный адрес 10.10.0.254/24, чтобы открыть L3
+    # route к bas-uav. Удаляется в cleanup.
+    if ! ip -4 addr show br-ctrl-near 2>/dev/null | grep -q "10.10.0.254/24"; then
+        ip addr add 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
+        echo "[fpv] br-ctrl-near host IP: 10.10.0.254/24 (route to bas-uav)"
+    fi
+
+    echo "[fpv] enable iris_with_gimbal GstCameraPlugin"
+    local discovered=0
+    for _ in $(seq 1 20); do
+        if discover_camera_enable_topic; then discovered=1; break; fi
+        sleep 1
+    done
+    if [ "$discovered" -ne 1 ]; then
+        echo "  camera enable topic not in gz topic -l; trying default"
+    fi
+    echo "  enable topic: ${BAS_CAMERA_ENABLE_TOPIC}"
+
+    local ok=0
+    for _ in $(seq 1 3); do
+        if sg docker -c "docker exec bas-gazebo gz topic -t '${BAS_CAMERA_ENABLE_TOPIC}' -m gz.msgs.Boolean -p 'data: true' >/tmp/bas_fpv_enable.log 2>&1"; then
+            ok=1
+        fi
+        sleep 1
+    done
+    if [ "$ok" -ne 1 ]; then
+        echo "  WARN: enable_streaming publish failed — FPV stream may not appear" >&2
+        sg docker -c "docker exec bas-gazebo cat /tmp/bas_fpv_enable.log 2>/dev/null" >&2 || true
+    fi
+
+    echo "[fpv] start bas-fpv-mjpeg (MJPEG TCP 0.0.0.0:${BAS_FPV_MJPEG_PORT})"
+    sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv up -d fpv-mjpeg" 2>&1 | tail -3
+
+    # Дождёмся пока tcpserversink реально откроет 8766 (gst pipeline сам по
+    # себе бьёт ERROR если нет RTP source, но порт открывается всё равно).
+    local waited=0
+    while [ "$waited" -lt 12 ]; do
+        if ip netns exec bas-uav ss -tln 2>/dev/null | grep -q ":${BAS_FPV_MJPEG_PORT}"; then
+            echo "  fpv-mjpeg TCP listener up on :${BAS_FPV_MJPEG_PORT}"
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if ! ip netns exec bas-uav ss -tln 2>/dev/null | grep -q ":${BAS_FPV_MJPEG_PORT}"; then
+        echo "  WARN: fpv-mjpeg did not open :${BAS_FPV_MJPEG_PORT} within ${waited}s" >&2
+        sg docker -c "docker logs --tail 40 bas-fpv-mjpeg 2>&1" | sed 's/^/  fpv: /' >&2 || true
+    fi
 }
 
 wait_for_container_netns() {
@@ -173,6 +273,11 @@ if ! ip netns exec bas-uav ss -tln 2>/dev/null | grep -q ":5760"; then
     exit 2
 fi
 sleep 10
+
+# Если оператор включил FPV, поднимем mjpeg-стрим параллельно с ns-3, не
+# блокируя основной пайплайн при ошибках камеры (start_fpv_pipeline печатает
+# WARN'ы но не падает).
+start_fpv_pipeline
 
 echo "[6/7] start ns-3 control channel (baseline_wifi: 5ms delay, no loss)"
 NS3_ARGS="--runId=${RUN_ID} --duration=${NS3_DURATION}"

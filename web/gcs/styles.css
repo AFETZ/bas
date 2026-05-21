@@ -157,6 +157,113 @@ h2 {
   gap: 12px;
 }
 
+.map-canvas-wrap {
+  position: relative;
+  min-height: 420px;
+}
+
+.fpv-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 320px;
+  background: rgba(8, 9, 10, .94);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .55);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width .18s ease, height .18s ease, top .18s ease, right .18s ease;
+}
+
+.fpv-overlay.expanded {
+  width: calc(100% - 24px);
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+}
+
+.fpv-overlay .fpv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(24, 26, 27, .9);
+}
+
+.fpv-overlay .fpv-head .eyebrow {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.fpv-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.fpv-actions .icon-button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+}
+
+.fpv-frame {
+  position: relative;
+  width: 100%;
+  height: 0;
+  padding-bottom: 75%;        /* 4:3 default — соответствует 640x480 потоку */
+  background: #000;
+}
+
+.fpv-overlay.expanded .fpv-frame {
+  height: 100%;
+  padding-bottom: 0;
+}
+
+.fpv-frame img,
+.fpv-frame .fpv-placeholder {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.fpv-frame img {
+  background: #000;
+}
+
+.fpv-frame img.dead {
+  opacity: 0;
+}
+
+.fpv-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(229, 231, 235, .6);
+  font-size: 13px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  background: linear-gradient(180deg, #0a0c0d 0%, #161718 100%);
+  pointer-events: none;
+}
+
+.fpv-placeholder.hidden {
+  display: none;
+}
+
 .panel-head {
   display: flex;
   align-items: center;

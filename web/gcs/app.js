@@ -344,5 +344,117 @@ el("rf-reset")?.addEventListener("click", () => {
   refresh();
 });
 
+// --- FPV live stream -------------------------------------------------------
+// Backend endpoint /api/fpv проверяет TCP-сокет к bas-fpv-mjpeg. Если поток
+// доступен — показываем overlay с <img src="/camera.mjpg">. На разрыв
+// connection (img.onerror) делаем backoff-ретрай каждые ~3с — gst при
+// перезапуске Gazebo поднимется не сразу.
+
+const FPV_RETRY_MS = 3000;
+let fpvProbeTimer = null;
+
+function setFpvPlaceholder(text) {
+  const ph = el("fpv-placeholder");
+  if (!ph) return;
+  if (text) {
+    ph.textContent = text;
+    ph.classList.remove("hidden");
+  } else {
+    ph.classList.add("hidden");
+  }
+}
+
+function attachFpvStream() {
+  const img = el("fpv-stream");
+  if (!img) return;
+  // Cache-bust: каждый attach даёт уникальный URL, чтобы браузер не
+  // переиспользовал умерший connection после перезапуска gst.
+  const bust = Date.now();
+  img.classList.remove("dead");
+  setFpvPlaceholder("connecting…");
+  img.onload = () => setFpvPlaceholder("");
+  img.onerror = () => {
+    img.classList.add("dead");
+    setFpvPlaceholder("waiting for stream…");
+    scheduleFpvProbe();
+  };
+  img.src = `/camera.mjpg?t=${bust}`;
+}
+
+function detachFpvStream() {
+  const img = el("fpv-stream");
+  if (!img) return;
+  img.onload = null;
+  img.onerror = null;
+  img.removeAttribute("src");
+}
+
+async function probeFpv() {
+  try {
+    const res = await fetch("/api/fpv");
+    if (!res.ok) return false;
+    const data = await res.json();
+    return Boolean(data.ok);
+  } catch (err) {
+    return false;
+  }
+}
+
+function scheduleFpvProbe(delay = FPV_RETRY_MS) {
+  if (fpvProbeTimer) return;
+  fpvProbeTimer = setTimeout(async () => {
+    fpvProbeTimer = null;
+    const overlay = el("fpv-overlay");
+    if (!overlay || overlay.classList.contains("hidden")) return;
+    const ok = await probeFpv();
+    if (ok) attachFpvStream();
+    else scheduleFpvProbe();
+  }, delay);
+}
+
+async function initFpv() {
+  const overlay = el("fpv-overlay");
+  if (!overlay) return;
+  const ok = await probeFpv();
+  if (!ok) {
+    overlay.classList.add("hidden");
+    return;
+  }
+  overlay.classList.remove("hidden");
+  attachFpvStream();
+}
+
+function toggleFpv() {
+  const overlay = el("fpv-overlay");
+  if (!overlay) return;
+  if (overlay.classList.contains("hidden")) {
+    overlay.classList.remove("hidden");
+    attachFpvStream();
+  } else {
+    overlay.classList.add("hidden");
+    detachFpvStream();
+  }
+}
+
+el("fpv-expand")?.addEventListener("click", () => {
+  el("fpv-overlay")?.classList.toggle("expanded");
+});
+
+el("fpv-close")?.addEventListener("click", () => {
+  const overlay = el("fpv-overlay");
+  if (!overlay) return;
+  overlay.classList.add("hidden");
+  detachFpvStream();
+});
+
+// 'F' на физической клавише — toggle FPV без мыши. event.code = "KeyF"
+// одинаков на любой раскладке (включая А-кириллицу).
+document.addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLInputElement) return;
+  if (event.code === "KeyF" && !event.repeat) toggleFpv();
+});
+
+initFpv();
+
 refresh();
 setInterval(refresh, 650);

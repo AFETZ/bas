@@ -30,6 +30,20 @@
             </div>
             <button class="icon-button" id="center-map" title="Center map">+</button>
           </div>
+          <div class="map-canvas-wrap">
+            <div class="fpv-overlay hidden" id="fpv-overlay" aria-label="First-person camera feed">
+              <div class="fpv-head">
+                <p class="eyebrow">FPV · iris_with_gimbal</p>
+                <div class="fpv-actions">
+                  <button id="fpv-expand" class="icon-button" title="Expand FPV">⤢</button>
+                  <button id="fpv-close" class="icon-button" title="Hide FPV">×</button>
+                </div>
+              </div>
+              <div class="fpv-frame">
+                <img id="fpv-stream" alt="Live onboard camera">
+                <div class="fpv-placeholder" id="fpv-placeholder">connecting…</div>
+              </div>
+            </div>
           <svg id="map" viewBox="-160 -160 320 320" role="img" aria-label="Drone local position and goto target">
             <defs>
               <pattern id="grid-small" width="20" height="20" patternUnits="userSpaceOnUse">
@@ -61,6 +75,7 @@
               <circle r="3"/>
             </g>
           </svg>
+          </div>
           <div class="map-readout">
             <span>N <strong id="north-value">--</strong> m</span>
             <span>E <strong id="east-value">--</strong> m</span>

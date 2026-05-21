@@ -15,6 +15,7 @@ import json
 import math
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -24,6 +25,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+# FPV upstream: TCP server bas-fpv-mjpeg внутри bas-uav netns, доступен с хоста
+# через control veth (10.10.0.2). Конфигурируется через env переменные, чтобы
+# при изменении топологии (например, FPV в другом netns) не править код.
+FPV_UPSTREAM_HOST = os.environ.get("BAS_FPV_UPSTREAM_HOST", "10.10.0.2")
+FPV_UPSTREAM_PORT = int(os.environ.get("BAS_FPV_UPSTREAM_PORT", "8766"))
+FPV_BOUNDARY = os.environ.get("BAS_FPV_BOUNDARY", "spionkop")
+FPV_CONNECT_TIMEOUT_S = float(os.environ.get("BAS_FPV_CONNECT_TIMEOUT_S", "3.0"))
+FPV_CHUNK_BYTES = 4096
 
 from mavproxy_stage_2_4_driver import (
     ARM_COMMAND,
@@ -748,6 +758,12 @@ class GcsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             self.send_json({"ok": True, "url": self.controller.public_url})
             return
+        if parsed.path == "/api/fpv":
+            self.send_json(self._probe_fpv())
+            return
+        if parsed.path == "/camera.mjpg":
+            self._proxy_fpv()
+            return
         rel = "index.html" if parsed.path in ("", "/") else parsed.path.lstrip("/")
         path = (STATIC_DIR / rel).resolve()
         if not str(path).startswith(str(STATIC_DIR.resolve())) or not path.exists() or path.is_dir():
@@ -795,6 +811,86 @@ class GcsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _probe_fpv(self) -> dict[str, Any]:
+        """Лёгкая проверка: открывается ли TCP-сокет на bas-fpv-mjpeg.
+
+        Frontend дёргает /api/fpv до первого <img>, чтобы понять, есть ли
+        смысл показывать видео-блок. Без отдельного probe браузер мог бы
+        долго ретраить <img src="/camera.mjpg"> и получать ECONNREFUSED
+        в консоли каждый раз — некрасиво.
+        """
+        try:
+            with socket.create_connection(
+                (FPV_UPSTREAM_HOST, FPV_UPSTREAM_PORT),
+                timeout=FPV_CONNECT_TIMEOUT_S,
+            ) as probe:
+                probe.settimeout(0.5)
+                # Не читаем — multipartmux всё равно сразу шлёт boundary,
+                # просто факт connection success достаточен.
+            return {
+                "ok": True,
+                "upstream": f"{FPV_UPSTREAM_HOST}:{FPV_UPSTREAM_PORT}",
+            }
+        except OSError as exc:
+            return {
+                "ok": False,
+                "upstream": f"{FPV_UPSTREAM_HOST}:{FPV_UPSTREAM_PORT}",
+                "error": str(exc),
+            }
+
+    def _proxy_fpv(self) -> None:
+        """TCP-проксирование multipart MJPEG из bas-fpv-mjpeg в браузер.
+
+        gst tcpserversink + multipartmux уже отдаёт корректный поток
+        частей `--<boundary>\\r\\nContent-Type: image/jpeg\\r\\n\\r\\n<JPEG>\\r\\n`.
+        Нам остаётся прислонить правильный HTTP заголовок и копировать
+        байты как есть. Без re-encoding и без буферизации (sync=false на
+        gst-стороне обеспечивает realtime).
+        """
+        try:
+            upstream = socket.create_connection(
+                (FPV_UPSTREAM_HOST, FPV_UPSTREAM_PORT),
+                timeout=FPV_CONNECT_TIMEOUT_S,
+            )
+        except OSError as exc:
+            self.send_error(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                f"FPV stream not available: {exc}",
+            )
+            return
+
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header(
+                "Content-Type",
+                f"multipart/x-mixed-replace; boundary={FPV_BOUNDARY}",
+            )
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            upstream.settimeout(5.0)
+            while True:
+                chunk = upstream.recv(FPV_CHUNK_BYTES)
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    # Browser закрыл tab/обновил страницу — нормально, выход.
+                    break
+        except (OSError, socket.timeout):
+            # Upstream gst упал или потерял источник — выйти молча.
+            pass
+        finally:
+            try:
+                upstream.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            upstream.close()
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
