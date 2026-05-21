@@ -278,12 +278,16 @@ document.addEventListener("keydown", (event) => {
   // event.code — физическое расположение клавиши на клавиатуре, не зависит
   // от раскладки (Cyrillic ЦФЫВ на тех же клавишах что QWERTY WASD даёт
   // KeyW/A/S/D одинаково). Также мапим IJKL/НШОЛ как альтернативу.
+  // Vertical: Space = up, Ctrl = down — как в FPV Drone Simulator (Steam).
+  // STOP перенесён на Escape, чтобы не блокировать Space под подъём.
   const map = {
     KeyW: "north", ArrowUp: "north", KeyI: "north",
     KeyS: "south", ArrowDown: "south", KeyK: "south",
     KeyA: "west",  ArrowLeft: "west",  KeyJ: "west",
     KeyD: "east",  ArrowRight: "east", KeyL: "east",
-    Space: "stop",
+    Space: "up",
+    ControlLeft: "down", ControlRight: "down",
+    Escape: "stop",
   };
   const action = map[event.code];
   if (!action) return;
@@ -293,7 +297,12 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("keyup", (event) => {
-  const movementKeys = ["KeyW", "ArrowUp", "KeyS", "ArrowDown", "KeyA", "ArrowLeft", "KeyD", "ArrowRight", "KeyI", "KeyK", "KeyJ", "KeyL"];
+  const movementKeys = [
+    "KeyW", "ArrowUp", "KeyS", "ArrowDown",
+    "KeyA", "ArrowLeft", "KeyD", "ArrowRight",
+    "KeyI", "KeyK", "KeyJ", "KeyL",
+    "Space", "ControlLeft", "ControlRight",
+  ];
   if (movementKeys.includes(event.code)) stopHold(true);
 });
 

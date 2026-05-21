@@ -525,6 +525,40 @@ h2 {
 [data-hold="south"] { grid-area: s; }
 .stop { grid-area: stop; }
 
+/* Vertical velocity stick: Space (up) / Ctrl (down) — как в FPV-симуляторах. */
+.stick-vertical {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 12px;
+  margin-top: 8px;
+  background: #121415;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stick-vertical .move {
+  min-height: 52px;
+  font-size: 12px;
+  letter-spacing: .04em;
+}
+
+.move.climb {
+  background: rgba(34, 94, 64, .45);
+  border-color: rgba(34, 197, 94, .35);
+}
+
+.move.descend {
+  background: rgba(126, 79, 36, .45);
+  border-color: rgba(217, 119, 6, .35);
+}
+
+.move.climb.active,
+.move.descend.active {
+  background: rgba(34, 197, 94, .35);
+  border-color: rgba(34, 197, 94, .9);
+}
+
 .goto-block {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
