@@ -559,6 +559,32 @@ class MavrosBridge(Node):
                          result=int(arm_resp.result))
         self.has_armed_at_least_once = True
 
+        # 4c. MISSION_START — без этого ArduCopter в AUTO+armed без RC throttle
+        # просто стоит на земле (см. ArduPilot AP_Mission::start_or_resume).
+        # В реальном полёте throttle stick поднимает оператор; в SITL без RC
+        # шлём MAV_CMD_MISSION_START (300) явно, как делает MissionPlanner
+        # после "Auto" + "Arm" нажатий. Параметры: first/last item index (0/0 =
+        # с начала до конца). Без этого fix waypoints_reached=0, distance=0.
+        time.sleep(1.0)   # дать MAVROS зафиксировать ARMED state
+        mission_start_cmd = CommandLong.Request()
+        mission_start_cmd.broadcast = False
+        mission_start_cmd.command = 300          # MAV_CMD_MISSION_START
+        mission_start_cmd.confirmation = 0
+        mission_start_cmd.param1 = 0.0           # first_item
+        mission_start_cmd.param2 = 0.0           # last_item (0 = до конца)
+        ms_resp = self.call_service(self.cli_cmd, mission_start_cmd,
+                                    "/mavros/cmd/command", timeout_s=10.0)
+        if ms_resp is None or not ms_resp.success:
+            self.logger.emit("component", component="mavros",
+                             phase="mission_start_failed",
+                             result=getattr(ms_resp, "result", -1))
+            # Не fatal: SITL может всё-таки полететь по auto-takeoff hint;
+            # просто без явного MISSION_START. Лог уже зафиксирован.
+        else:
+            self.logger.emit("component", component="mavros",
+                             phase="mission_start_ok",
+                             result=int(ms_resp.result))
+
         # 5. Wait landed (or max_duration). Callbacks приходят через executor.
         deadline = time.time() + self.max_duration_s
         while time.time() < deadline:
