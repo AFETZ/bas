@@ -21,6 +21,9 @@ TAKEOFF_ALT="${BAS_STAGE24_TAKEOFF_ALT:-10}"
 MODE="${1:-${BAS_STAGE24_MODE:-smoke}}"
 SIONNA_CHANNEL_PATH="${BAS_SIONNA_CHANNEL_PATH:-${BAS_RF_CHANNEL_PATH:-}}"
 SIONNA_CONTAINER_PATH=""
+# Sionna live hook target flow: payload (back-compat default) | control | both.
+# В FPV+RF демо имеет смысл "both" — за зданием падает и видео, и команды.
+SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-payload}"
 
 # Stage 2.4 FPV livestream: при BAS_GCS_FPV=1 поднимаем bas-fpv-mjpeg в
 # bas-uav netns, который принимает RTP H.264 от Gazebo iris_with_gimbal
@@ -321,6 +324,8 @@ NS3_ARGS="${NS3_ARGS} --ctrlDelayMs=5 --ctrlLoss=0.0"
 NS3_ARGS="${NS3_ARGS} --ploadDelayMs=10 --ploadLoss=0.0"
 if [ -n "$SIONNA_CONTAINER_PATH" ]; then
     NS3_ARGS="${NS3_ARGS} --sionnaChannelPath=${SIONNA_CONTAINER_PATH}"
+    NS3_ARGS="${NS3_ARGS} --sionnaTargetFlow=${SIONNA_TARGET_FLOW}"
+    echo "==> Sionna target flow: ${SIONNA_TARGET_FLOW}"
 fi
 
 NS3_TMP_MOUNT=""

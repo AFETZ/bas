@@ -117,8 +117,28 @@ on_csma_phy_drop(std::string ch, Ptr<const Packet>) {
 // с outage-расписанием). Polling раз в 100 мс через Simulator::Schedule.
 // -----------------------------------------------------------------------------
 static std::string g_sionna_path = "";
+// target_flow: какой канал деформирует Sionna live update.
+//   "payload" — только видео (back-compat, было so до этого изменения)
+//   "control" — только MAVLink/команды (для NLOS-демо без визуала)
+//   "both"    — оба канала одновременно (реалистично: за зданием падает и
+//                 видео, и управление, как в реальной физике радио)
+// Применяется к loss_ratio и extra_delay_ms идентично.
+static std::string g_sionna_target_flow = "payload";
 static double g_sionna_last_loss = -1.0;       // для логов: эмитить event только при изменении
 static double g_sionna_last_delay_ms = -1.0;   // 2.1.d: то же для delay
+
+// Возвращает список каналов которым применяется Sionna update.
+// Хелпер чтобы избежать ifelse-каскада в sionna_poll_tick.
+static std::vector<std::string>
+sionna_target_channels() {
+    if (g_sionna_target_flow == "both") {
+        return {"control", "payload"};
+    }
+    if (g_sionna_target_flow == "control") {
+        return {"control"};
+    }
+    return {"payload"};   // default + "payload" + любое неизвестное значение
+}
 
 static double
 parse_sionna_field(const std::string& body, const std::string& key_name) {
@@ -141,14 +161,17 @@ sionna_poll_tick(std::string runId) {
             std::string body((std::istreambuf_iterator<char>(f)),
                              std::istreambuf_iterator<char>());
 
+            auto targets = sionna_target_channels();
+
             // ---- loss_ratio ----
             double loss = parse_sionna_field(body, "loss_ratio");
             bool loss_changed = false;
             if (loss >= 0.0 && loss <= 1.0) {
-                auto it = g_error_models.find("payload");
-                if (it != g_error_models.end() && it->second) {
+                for (const auto& ch : targets) {
+                    auto it = g_error_models.find(ch);
+                    if (it == g_error_models.end() || !it->second) continue;
                     // Не перетираем outage-блокировку: outage кладёт ErrorRate=1.0.
-                    if (!g_stats["payload"].in_outage) {
+                    if (!g_stats[ch].in_outage) {
                         it->second->SetAttribute(
                             "ErrorRate", DoubleValue(loss));
                     }
@@ -160,18 +183,25 @@ sionna_poll_tick(std::string runId) {
             }
 
             // ---- extra_delay_ms (Sionna multi-path/scattering propagation delay) ----
-            // Применяется как `base_delay + extra_delay` к channel delay payload.
+            // Применяется как `base_delay + extra_delay` к каждому каналу из targets.
+            // Note: base_delay у control и payload разный (5 ms vs 10 ms по дефолту),
+            // поэтому в логи пишем delay по первому target — это для оператора
+            // ориентировочный показатель; реальные значения в emit_stats.
             double extra_delay_ms = parse_sionna_field(body, "extra_delay_ms");
             bool delay_changed = false;
-            double total_delay_ms = 0.0;
+            double logged_total_delay_ms = 0.0;
             if (extra_delay_ms >= 0.0 && extra_delay_ms <= 5000.0) {
-                auto ch_it = g_csma_channels.find("payload");
-                auto base_it = g_base_delay_ms.find("payload");
-                if (ch_it != g_csma_channels.end() && ch_it->second
-                    && base_it != g_base_delay_ms.end()) {
-                    total_delay_ms = base_it->second + extra_delay_ms;
+                for (const auto& ch : targets) {
+                    auto ch_it = g_csma_channels.find(ch);
+                    auto base_it = g_base_delay_ms.find(ch);
+                    if (ch_it == g_csma_channels.end() || !ch_it->second) continue;
+                    if (base_it == g_base_delay_ms.end()) continue;
+                    double total_delay_ms = base_it->second + extra_delay_ms;
                     ch_it->second->SetAttribute(
                         "Delay", TimeValue(MilliSeconds(total_delay_ms)));
+                    if (logged_total_delay_ms == 0.0) {
+                        logged_total_delay_ms = total_delay_ms;
+                    }
                 }
                 if (std::abs(extra_delay_ms - g_sionna_last_delay_ms) > 0.5) {
                     g_sionna_last_delay_ms = extra_delay_ms;
@@ -181,15 +211,23 @@ sionna_poll_tick(std::string runId) {
 
             // Один JSONL event если хоть что-то изменилось.
             if (loss_changed || delay_changed) {
+                // target_flow в логи как одна строка: "payload", "control",
+                // "control+payload" (для both) — оператор сразу видит scope.
+                std::string flow_label;
+                for (size_t i = 0; i < targets.size(); ++i) {
+                    if (i > 0) flow_label += "+";
+                    flow_label += targets[i];
+                }
                 std::ostringstream o;
                 o << "{\"event_type\":\"component\","
                   << "\"component\":\"ns3:sionna_poll\","
                   << "\"phase\":\"channel_updated\","
                   << "\"sim_time\":" << Simulator::Now().GetSeconds()
-                  << ",\"flow_id\":\"payload\""
+                  << ",\"flow_id\":\"" << flow_label << "\""
+                  << ",\"target_flow\":\"" << g_sionna_target_flow << "\""
                   << ",\"loss_ratio\":" << g_sionna_last_loss
                   << ",\"extra_delay_ms\":" << g_sionna_last_delay_ms
-                  << ",\"channel_delay_ms\":" << total_delay_ms
+                  << ",\"channel_delay_ms\":" << logged_total_delay_ms
                   << ",\"run_id\":\"" << runId << "\"}";
                 emit_event(o.str());
             }
@@ -395,6 +433,14 @@ int main(int argc, char* argv[]) {
     cmd.AddValue("sionnaChannelPath",
                  "путь к JSON-файлу с актуальным Sionna loss_ratio (poll 10 Hz)",
                  g_sionna_path);
+    // Roadmap backlog: target_flow для Sionna live hook.
+    //   payload (default) — только видео, как было раньше
+    //   control           — только MAVLink-команды (демо NLOS без визуала)
+    //   both              — оба канала; за зданием падает и видео, и
+    //                       управление, как в реальной радио-физике
+    cmd.AddValue("sionnaTargetFlow",
+                 "куда применять Sionna update: payload|control|both",
+                 g_sionna_target_flow);
 
     cmd.Parse(argc, argv);
 
@@ -450,8 +496,28 @@ int main(int argc, char* argv[]) {
 
     // Sionna RT poll (если задан --sionnaChannelPath).
     if (!g_sionna_path.empty()) {
+        // Нормализуем target_flow до известного значения (UI/orchestrator
+        // могут передать что угодно через CLI). Default — payload.
+        if (g_sionna_target_flow != "control" &&
+            g_sionna_target_flow != "payload" &&
+            g_sionna_target_flow != "both") {
+            NS_LOG_UNCOND("[sionna] unknown target_flow=\"" << g_sionna_target_flow
+                          << "\", falling back to \"payload\"");
+            g_sionna_target_flow = "payload";
+        }
         NS_LOG_UNCOND("[sionna] poll path=" << g_sionna_path
-                      << " interval=100ms target=payload");
+                      << " interval=100ms target=" << g_sionna_target_flow);
+        // Эмитим explicit start-event с target_flow, чтобы analyzer/отчёт
+        // мог пометить run как "Sionna applied to both/control/payload".
+        std::ostringstream o;
+        o << "{\"event_type\":\"component\","
+          << "\"component\":\"ns3:sionna_poll\","
+          << "\"phase\":\"start\","
+          << "\"target_flow\":\"" << g_sionna_target_flow << "\","
+          << "\"channel_path\":\"" << escape_json(g_sionna_path) << "\","
+          << "\"run_id\":\"" << runId << "\"}";
+        emit_event(o.str());
+
         Simulator::Schedule(MilliSeconds(100), &sionna_poll_tick, runId);
     }
 

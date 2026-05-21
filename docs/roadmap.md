@@ -50,8 +50,12 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
 
 Эти пункты полезны, но не нужны для заявления “личная зона закрыта”:
 
-1. `--sionnaTargetFlow=control|payload|both` в `two_channel.cc`, чтобы live RF
-   model мог деградировать не только payload hook, но и manual control channel.
+1. ~~`--sionnaTargetFlow=control|payload|both` в `two_channel.cc`~~ — **закрыто
+   21.05.2026**: CLI option в ns-3, default `payload` (back-compat),
+   `BAS_SIONNA_TARGET_FLOW=both` по умолчанию включён в
+   `run_stage_2_4_fpv_rf_demo.sh`. При NLOS RF model деформирует и видео-канал,
+   и MAVLink-команды синхронно. Verified: `flow_id:"control+payload",
+   loss_ratio:0.606, extra_delay_ms:109` в `ns3_events.jsonl`.
 2. QGroundControl bridge как дополнительный внешний GUI поверх уже работающей
    MAVProxy/Web GCS цепочки.
 3. Multi-UAV topology в ns-3: несколько SITL/Gazebo instances и общий анализатор.

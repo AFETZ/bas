@@ -36,6 +36,11 @@ export BAS_GAZEBO_WORLD="${BAS_GAZEBO_WORLD:-iris_runway_rf_demo.sdf}"
 export BAS_GCS_RF_DEMO="${BAS_GCS_RF_DEMO:-1}"
 export BAS_RF_CHANNEL_PATH="${BAS_RF_CHANNEL_PATH:-/tmp/bas_stage24_rf.json}"
 export BAS_SIONNA_CHANNEL_PATH="${BAS_SIONNA_CHANNEL_PATH:-$BAS_RF_CHANNEL_PATH}"
+# В объединённом FPV+RF демо имеет смысл деформировать оба канала: за
+# зданием реалистично падает и видео-поток (визуальная картинка теряется),
+# и MAVLink-команды (дрон перестаёт реагировать на WASD/GO TO). Это та
+# самая радиофизика которую обещает Sionna RT hook.
+export BAS_SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-both}"
 export BAS_GCS_FPV="${BAS_GCS_FPV:-1}"
 export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
 
