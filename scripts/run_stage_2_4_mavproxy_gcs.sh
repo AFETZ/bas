@@ -59,9 +59,38 @@ ensure_docker() {
     return 1
 }
 
+# Убрать stale gcs_web_ui_server.py с UI порта. После аварийного выхода
+# (например crash python -> trap не сработал) Python процесс остаётся жив и
+# держит :8765, ломая повторный запуск с "Address already in use". Ищем по
+# именно нашему имени модуля чтобы не задеть случайные python-серверы.
+kill_stale_ui() {
+    local port="${1:-8765}"
+    local pids
+    pids="$(ss -tlnp 2>/dev/null \
+            | awk -v p=":${port}" '$4 ~ p {print}' \
+            | grep -oE 'pid=[0-9]+' \
+            | cut -d= -f2 \
+            | sort -u || true)"
+    [ -z "$pids" ] && return 0
+    for pid in $pids; do
+        # Confirm это наш UI сервер (cmdline содержит gcs_web_ui_server).
+        if grep -q gcs_web_ui_server "/proc/${pid}/cmdline" 2>/dev/null; then
+            echo "  kill stale gcs_web_ui_server PID=${pid} on :${port}"
+            kill "$pid" 2>/dev/null || true
+            sleep 1
+            kill -9 "$pid" 2>/dev/null || true
+        else
+            echo "  WARN: port :${port} held by PID=${pid} (not our UI server)" >&2
+        fi
+    done
+}
+
 cleanup() {
     set +e
     echo "[cleanup]"
+    # Сначала остановим UI сервер если он наш — иначе порт 8765 повиснет
+    # для следующего запуска.
+    kill_stale_ui "${BAS_GCS_UI_PORT:-8765}"
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
     timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv down -v 2>/dev/null" >/dev/null 2>&1
@@ -208,6 +237,13 @@ fi
 
 ensure_root
 ensure_docker
+
+# Preflight: убрать с UI-порта остатки от аварийных запусков. Только если
+# режим действительно поднимает Web UI (mode=ui).
+if [ "$MODE" = "ui" ]; then
+    kill_stale_ui "${BAS_GCS_UI_PORT:-8765}"
+fi
+
 trap cleanup EXIT INT TERM
 
 [ -x "${REPO_ROOT}/.venv/bin/python" ] || {
