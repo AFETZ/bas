@@ -29,3 +29,19 @@ build/
 dist/
 ns3/build/
 sionna_env/
+
+# Runtime artifacts (UI/browser testing/MAVProxy state)
+output/
+.playwright-cli/
+.playwright/
+
+# Stray MAVProxy per-run state at repo root (нормально оно живёт внутри
+# logs/<run_id>/, но при interactive сессии иногда оседает наверху).
+mavproxy_aircraft/
+mavproxy_home/
+
+# Пользовательские TZ-первоисточники (DOCX/PDF/PPTX). Это локальная
+# knowledge-base оператора, не артефакты проекта — не публикуем в git.
+docs/*.docx
+docs/*.pdf
+docs/*.pptx
