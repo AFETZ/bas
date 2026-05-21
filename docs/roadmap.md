@@ -42,8 +42,8 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
 |---|---|---|
 | AirSim / Cosys-AirSim overlay | Это отдельная связка Gazebo physics -> AirSim high-realism sensors, зона других исполнителей и отдельной интеграции | `2.2-airsim-overlay` |
 | Multi-UAV / swarm | В текущем репозитории все acceptance-сценарии рассчитаны на один БАС | `2.3-multi-uav` |
-| QGroundControl как внешний GUI | Stage 2.4 закрыт через Web GCS + MAVProxy; QGC не был acceptance-клиентом | `2.4-qgc-client` |
-| Полный real-time Sionna ray tracing | Сейчас есть offline radio map + dynamic JSON hook; live RF demo использует geometry model | `2.1-online-rt-extension` |
+| ~~QGroundControl как внешний GUI~~ | **Закрыто 21.05.2026** через `bluenviron/mavp2p` bridge — см. backlog ниже | — |
+| ~~Полный real-time Sionna ray tracing~~ | **Закрыто 21.05.2026**: `sionna_channel_publisher.py --rt-online` делает live PathSolver на каждом UAV update — см. backlog ниже | — |
 | ИССГР объектная БД/API/CV | Это полный грантовый контур, шире моделирующего стенда | Отдельный репозиторий/модуль |
 
 ## Backlog без обещаний
@@ -66,10 +66,25 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
    reach host:14560. Pattern from `uxduck/ardupilot-sitl-docker` +
    `mavlink-router/Intel` + `bluenviron/mavp2p`. Docs:
    `docs/stage_2_4_qgc_setup.md`.
-3. Multi-UAV topology в ns-3: несколько SITL/Gazebo instances и общий анализатор.
-4. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
+3. ~~Online Sionna RT (real-time ray tracing)~~ — **закрыто 21.05.2026**:
+   `sionna_channel_publisher.py --rt-online` запускает live `PathSolver`
+   call на каждое UAV-обновление позиции вместо `radio_maps/*.npz`
+   lookup. Загружает Mitsuba scene `scene/iris_runway.xml` один раз
+   (с runway + 3 obstacles + materials), на UAV update двигает
+   `Receiver` и вызывает `rt.PathSolver()(scene, max_depth=2)`. WSL2 без
+   OptiX SDK → pin `llvm_ad_mono_polarized` (CPU JIT), **~42-55мс per
+   ray-tracing call** в нашей сцене — это 18Hz max, ns-3 поллит 10Hz.
+   Wrapper `scripts/run_stage_2_4_rt_online_demo.sh` ставит
+   `BAS_SIONNA_RT_ONLINE=1` + публикует в `/tmp/bas_stage24_rt.json`
+   (отдельно от UI rf_loop в `/tmp/bas_stage24_rf.json`). Pattern из
+   `robpegurri/ns3-rt` + paper "Ns3 meets Sionna" (arXiv 2412.20524) +
+   5G LENA blog. Verified: `channel_model="rt_online"`,
+   `channel_latency_ms=35.8-42.1`, `rss_db=-55.9`, `path_loss_db=78.9`,
+   `loss_ratio=1.6e-05` (LOS).
+4. Multi-UAV topology в ns-3: несколько SITL/Gazebo instances и общий анализатор.
+5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
    payload channel.
-5. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
+6. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
    видео/скриншотов в один отчёт.
 
 ## Где смотреть детали

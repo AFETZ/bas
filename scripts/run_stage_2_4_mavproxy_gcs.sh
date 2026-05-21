@@ -44,6 +44,23 @@ export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
 BAS_GCS_QGC="${BAS_GCS_QGC:-0}"
 export BAS_QGC_HOST_PORT="${BAS_QGC_HOST_PORT:-14560}"
 export BAS_QGC_UAV_PORT="${BAS_QGC_UAV_PORT:-14560}"
+
+# Online Sionna RT: вместо geometric model (Web UI rf_loop) ИЛИ offline radio
+# map lookup используем live PathSolver на каждый UAV update. Pattern из
+# robpegurri/ns3-rt + bluenviron Sionna 1.x документации: load Mitsuba scene
+# один раз, на каждом UAV move двигаем Receiver и runs PathSolver.
+# Latency ~55мс на CPU (LLVM JIT), достаточно для 10Hz polling.
+BAS_SIONNA_RT_ONLINE="${BAS_SIONNA_RT_ONLINE:-0}"
+export BAS_RT_SCENE_PATH="${BAS_RT_SCENE_PATH:-${REPO_ROOT}/scene/iris_runway.xml}"
+export BAS_RT_TX_POS="${BAS_RT_TX_POS:-0,-60,1.5}"
+export BAS_RT_MAX_DEPTH="${BAS_RT_MAX_DEPTH:-2}"
+# Online RT пишет в отдельный JSON чтобы не конфликтовать с Web UI rf_loop
+# (тот продолжает обслуживать UI panel). ns-3 поллит RT файл напрямую.
+export BAS_RT_CHANNEL_PATH="${BAS_RT_CHANNEL_PATH:-/tmp/bas_stage24_rt.json}"
+if [ "$BAS_SIONNA_RT_ONLINE" = "1" ]; then
+    # Override SIONNA_CHANNEL_PATH — ns-3 теперь поллит RT live JSON
+    SIONNA_CHANNEL_PATH="$BAS_RT_CHANNEL_PATH"
+fi
 # Эти env-переменные интерполируются docker compose из ХОСТ-окружения в
 # command-блоке fpv-mjpeg, поэтому экспортировать их обязательно (иначе
 # gst-launch получит пустые caps/framerate и сразу упадёт без открытия порта).
@@ -111,6 +128,12 @@ cleanup() {
         kill "$(cat /tmp/bas_qgc_socat.pid)" 2>/dev/null || true
         rm -f /tmp/bas_qgc_socat.pid
     fi
+    # Стопим Sionna RT publisher если он запускался.
+    if [ -f /tmp/bas_sionna_rt.pid ]; then
+        kill "$(cat /tmp/bas_sionna_rt.pid)" 2>/dev/null || true
+        rm -f /tmp/bas_sionna_rt.pid
+    fi
+    pkill -f "sionna_channel_publisher.*rt-online" 2>/dev/null || true
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-mavrouter 2>/dev/null" >/dev/null 2>&1
@@ -265,6 +288,43 @@ start_qgc_host_relay() {
 QGC
 }
 
+start_sionna_rt_publisher() {
+    [ "$BAS_SIONNA_RT_ONLINE" = "1" ] || return 0
+
+    local venv_python="${REPO_ROOT}/sionna_env/bin/python"
+    if [ ! -x "$venv_python" ]; then
+        echo "  WARN: sionna_env venv не найден (${venv_python}); skip live RT" >&2
+        return 1
+    fi
+    if [ ! -f "$BAS_RT_SCENE_PATH" ]; then
+        echo "  WARN: Mitsuba scene не найдена: ${BAS_RT_SCENE_PATH}; skip live RT" >&2
+        return 1
+    fi
+
+    # Стопим старый publisher если остался от crashed run.
+    pkill -f "sionna_channel_publisher.*rt-online" 2>/dev/null || true
+
+    # Initial seed file — пока publisher делает warm-up (~2с), ns-3 видит
+    # дефолтный LOS state без потерь, не висит на чтении.
+    mkdir -p "$(dirname "$BAS_RT_CHANNEL_PATH")"
+    printf '{"loss_ratio":0.0,"extra_delay_ms":0.0,"rss_db":-55.0,"status":"LOS","los":true,"channel_model":"rt_online_warmup"}\n' \
+        > "$BAS_RT_CHANNEL_PATH"
+
+    echo "[sionna-rt] start live PathSolver publisher (scene=${BAS_RT_SCENE_PATH##*/})"
+    nohup "$venv_python" "${REPO_ROOT}/scripts/sionna_channel_publisher.py" \
+        --events "${LOG_DIR}/events.jsonl" \
+        --rt-online \
+        --rt-scene "$BAS_RT_SCENE_PATH" \
+        --rt-tx "$BAS_RT_TX_POS" \
+        --rt-max-depth "$BAS_RT_MAX_DEPTH" \
+        --out "$BAS_RT_CHANNEL_PATH" \
+        --interval-ms 100 \
+        > "${LOG_DIR}/sionna_rt_publisher.log" 2>&1 &
+    echo $! > /tmp/bas_sionna_rt.pid
+    echo "  pid=$(cat /tmp/bas_sionna_rt.pid) → ${BAS_RT_CHANNEL_PATH}"
+    echo "  log: ${LOG_DIR}/sionna_rt_publisher.log"
+}
+
 wait_for_container_netns() {
     local container="$1"
     local netns_name="$2"
@@ -417,6 +477,9 @@ start_fpv_pipeline
 # QGC host-side relay поднимаем здесь же — mavrouter уже стартовал в [4/7]
 # когда BAS_GCS_QGC=1, нам осталось только пробросить UDP с хоста.
 start_qgc_host_relay
+# Sionna RT live publisher (если BAS_SIONNA_RT_ONLINE=1). Должен подняться
+# ДО ns-3 чтобы initial seed JSON был на месте к моменту первого polling tick.
+start_sionna_rt_publisher
 
 echo "[6/7] start ns-3 control channel (baseline_wifi: 5ms delay, no loss)"
 NS3_ARGS="--runId=${RUN_ID} --duration=${NS3_DURATION}"
