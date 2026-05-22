@@ -1,288 +1,233 @@
-# BAS Prototype
+# BAS Prototype — стенд моделирования беспилотных авиационных систем
 
-Исследовательский прототип среды моделирования БАС: Gazebo + ArduPilot SITL +
-MAVLink/MAVROS + ns-3 + Sionna RT + операторский Web GCS. Репозиторий закрывает
-личную зону Физулина А.В. по моделированию каналов связи, MAVLink/MAVROS,
-ns-3/Sionna и ручному управлению одним БАС.
+![Stages](https://img.shields.io/badge/stages-1.0--2.4_+_backlog-success)
+![License](https://img.shields.io/badge/license-research-blue)
+![Platform](https://img.shields.io/badge/platform-Linux/WSL2-orange)
 
-Проект не является production autopilot stack. Это воспроизводимый стенд для
-демонстрации, экспериментов и отчётных прогонов: полётная физика в Gazebo/SITL,
-радиоканал в ns-3, полезная нагрузка через отдельный payload-канал, логи в JSONL
-и отчёты в Markdown.
+Воспроизводимый исследовательский стенд для моделирования БАС с фокусом на
+**каналы связи, радиофизику и ручное управление**. Закрывает зону Физулина
+А.В. по гранту ПВАТС УЛ САПР (15/15 пунктов ТЗ + 7/7 backlog).
 
-## Текущий статус
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Browser Web GCS ─── MAVProxy/QGC ──── ns-3 control + payload ──── SITL  │
+│       │                                       │              ↕          │
+│       │                                       Sionna RT     ArduCopter  │
+│       │                                       (live or                  │
+│       │                                       offline)      ↕           │
+│       └─── FPV overlay <───── camera <─── Gazebo physics + iris_with_g  │
+│                                                              ↕          │
+│                                                          Cosys-AirSim   │
+│                                                          (overlay, UE5) │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
-| Блок | Статус | Что реально есть |
+## Что внутри
+
+| Сценарий | Команда | Что увидите |
 |---|---|---|
-| Gazebo + ArduPilot SITL | Готово | Миссия ArduCopter в Gazebo Harmonic через `ardupilot_gazebo` |
-| ns-3 control/payload channels | Готово | Два TAP-канала: MAVLink control и RTP/H.264 payload |
-| WiFi / degraded LoRa-like IP profiles | Готово | `wifi_good`, `degraded_lora`, outage/loss/delay/jitter/goodput |
-| Видео через payload | Готово | `videotestsrc` и режим реальной Gazebo POV camera, MP4 на приёмнике |
-| Сравнение WiFi vs LoRa | Готово | Side-by-side Markdown + CSV через analyzer |
-| LoRa через Serial Port | Готово | PTY + dual-socat + ns-3 PHY-calibrated byte stream без IP в радиопетле |
-| MAVROS backend | Готово | ROS2/MAVROS bridge как альтернативный backend к `pymavlink` |
-| Sionna RT | Готово | Offline radio map + dynamic JSON channel hook для ns-3 |
-| Web GCS / ручное управление | Готово | Browser UI -> MAVProxy stdin -> ns-3 -> SITL/Gazebo |
-| RF/LOS live demo | Готово | Препятствия в Gazebo и UI, LOS/NLOS, RSSI/loss/delay график |
-| AirSim overlay | Не реализовано | Вне текущей закрытой зоны, оставлено в roadmap |
-| Multi-UAV / swarm | Не реализовано | Вне текущей закрытой зоны, оставлено в roadmap |
-| Полная ИССГР объектная БД/API | Не реализовано | Это шире личной зоны данного репозитория |
+| **Auto demo (рекомендую)** | `sudo bash scripts/run_stage_2_4_auto_demo.sh` | 10 шагов flight (TAKEOFF→GOTO ангар LOS/NLOS→LAND), видео Web GCS + FPV, скриншоты, Markdown отчёт |
+| **FPV + RF live** | `sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh` | Ручное управление WASD + FPV-окно борта + RF panel с RSSI/loss/delay при заходе за здание |
+| **Online Sionna RT** | `sudo bash scripts/run_stage_2_4_rt_online_demo.sh` | Live ray-tracing на каждый UAV update, ns-3 деформирует **оба канала** в реальном времени |
+| **QGroundControl** | `sudo bash scripts/run_stage_2_4_qgc_demo.sh` | Web GCS + QGC одновременно через mavp2p MAVLink router |
+| **Multi-UAV** | `sudo bash scripts/run_stage_2_4_multi_uav_demo.sh` | 2 SITL + 2 iris в Gazebo + единый mavp2p router |
+| **AirSim overlay** | `sudo env BAS_AIRSIM_MODE=windows bash scripts/run_stage_2_2_airsim_overlay.sh` | Real GPU rendering на Windows Cosys-AirSim, bridge через WSL interop |
+| **MAVROS smoke** | `sudo bash scripts/run_stage_1_8_mavros.sh baseline_wifi` | ROS2/MAVROS бэкенд: 7/7 waypoints AUTO mission |
+| **WiFi vs LoRa** | `sudo bash scripts/run_stage_1_6_compare.sh` | Side-by-side report двух профилей сети |
 
-Матрица соответствия ТЗ: [docs/tz_compliance.md](docs/tz_compliance.md).
+Полный каталог демо: [docs/DEMOS.md](docs/DEMOS.md).
 
-## Итоговая архитектура
+## Быстрый старт
+
+```bash
+# 1. Установка (~15 мин, требует sudo, тянет 1.3 ГБ моделей AirSim
+#    опционально)
+sudo bash scripts/bootstrap.sh
+
+# 2. Запуск любого demo (см. таблицу выше)
+sudo bash scripts/run_stage_2_4_auto_demo.sh
+
+# 3. Открыть http://127.0.0.1:8765/ или дождаться авто-видео в
+#    logs/<run_id>/demo_report.md
+```
+
+Детальная установка: [docs/INSTALL.md](docs/INSTALL.md).
+Подробный каталог demo-команд: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+## Архитектура одним взглядом
 
 ```mermaid
 flowchart LR
-    subgraph Operator["НПУ / GCS side"]
-        Web["Web GCS UI<br/>buttons, WASD, GO TO, RF graph"]
-        MAVProxy["MAVProxy CLI GCS<br/>stdin command path"]
-        Orchestrator["Python orchestrator<br/>mission runners"]
-        MAVROS["ROS2 / MAVROS backend<br/>optional Stage 1.8"]
+    subgraph GCS["GCS side"]
+        Web[Web GCS UI<br/>WASD/Space/Ctrl, FPV, RF]
+        MP[MAVProxy CLI]
+        QGC[QGroundControl<br/>Windows, optional]
+        MAVROS[ROS2 MAVROS<br/>Stage 1.8]
     end
 
-    subgraph Net["Моделируемая сеть"]
-        NS3["ns-3 realtime<br/>two_channel.cc"]
-        Control["control channel<br/>MAVLink"]
-        Payload["payload channel<br/>RTP/H.264 / telemetry experiments"]
-        LoRa["lora_serial.cc<br/>PTY byte stream, no IP"]
-        Sionna["Sionna/RT JSON hook<br/>loss, delay, RSSI model"]
+    subgraph Radio["Radio simulation"]
+        NS3[ns-3 two_channel.cc<br/>control + payload]
+        LoRa[ns-3 lora_serial.cc<br/>PTY byte stream]
+        Sionna[Sionna RT<br/>offline npz / online PathSolver]
     end
 
-    subgraph UAV["BAS side"]
-        MavBridge["mavbridge<br/>UDP 14550 <-> TCP 5760"]
-        SITL["ArduPilot SITL<br/>ArduCopter"]
-        Gazebo["Gazebo Harmonic<br/>physics, scene, camera"]
-        VideoTx["video sender<br/>GStreamer/RTP"]
+    subgraph UAV["UAV side"]
+        SITL[ArduPilot SITL<br/>ArduCopter -I0/-I1]
+        Gz[Gazebo Harmonic<br/>iris_with_gimbal]
+        FPV[GstCameraPlugin<br/>RTP H.264 → MJPEG]
+        Router[mavp2p MAVLink router<br/>multi-endpoint]
     end
 
-    subgraph Evidence["Доказательная база"]
-        Logs["events.jsonl<br/>ns3_events.jsonl"]
-        Report["report.md<br/>comparison.md / CSV"]
-        Media["video_rx.mp4<br/>screenshots / plots"]
+    subgraph Overlay["AirSim overlay"]
+        AS[Cosys-AirSim UE5.5<br/>Windows/Linux]
     end
 
-    Web --> MAVProxy
-    MAVProxy --> Control
-    Orchestrator --> Control
-    MAVROS --> Control
-    Control --> NS3
-    Payload --> NS3
-    LoRa --> NS3
+    subgraph Out["Artifacts"]
+        EV[events.jsonl + ns3_events.jsonl]
+        Rep[report.md + comparison.csv]
+        Vid[video_rx.mp4 + fpv.mjpeg.mp4]
+        Demo[demo_report.md + screenshots]
+    end
+
+    Web --> MP --> NS3 --> Router --> SITL
+    QGC -.->|UDP 14560| Router
+    MAVROS -.->|Stage 1.8| Router
+    SITL <--> Gz
+    Gz --> FPV
+    Gz -->|pose events| AS
+    AS -->|simGetImage| Web
     Sionna --> NS3
-    NS3 --> MavBridge
-    MavBridge --> SITL
-    SITL <--> Gazebo
-    Gazebo --> VideoTx
-    VideoTx --> Payload
-    Web --> Sionna
-    Orchestrator --> Logs
-    MAVProxy --> Logs
-    NS3 --> Logs
-    Logs --> Report
-    VideoTx --> Media
+    LoRa --> SITL
+
+    SITL --> EV
+    NS3 --> EV
+    EV --> Rep
+    FPV --> Vid
+    Web --> Demo
 ```
 
-Ключевая идея: **полётная физика и автопилот не подменяются сетевой моделью**.
-Gazebo/SITL отвечают за движение БАС, ns-3 отвечает за свойства канала, а
-оркестратор, MAVProxy или MAVROS выступают в роли НПУ/GCS.
+Полная архитектура: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Основные режимы работы
+## Статус по этапам
 
-### 1. Mission через ns-3 control channel
+| Stage | Что закрывает | Status | Docs |
+|---|---|---|---|
+| 1.0–1.4 | Docker, Gazebo/SITL, ns-3 TapBridge, базовый MAVLink | ✅ | [stage_1_5_1_known_issues.md](docs/stage_1_5_1_known_issues.md) |
+| 1.5.0–1.5.1 | Shadow GCS + AUTO mission через ns-3 control | ✅ | — |
+| 1.5.2 | RTP/H.264 payload + Gazebo camera + outage correlation | ✅ | [stage_1_5_2_plan.md](docs/stage_1_5_2_plan.md) |
+| 1.6 | WiFi vs LoRa comparison report (Markdown + CSV) | ✅ | — |
+| 1.7 | LoRa через Serial Port (PHY-calibrated, no IP) | ✅ | [stage_1_7_lora_serial_plan.md](docs/stage_1_7_lora_serial_plan.md) |
+| 1.8 | ROS2/MAVROS backend как альтернативный путь | ✅ | [stage_1_8_mavros_plan.md](docs/stage_1_8_mavros_plan.md) |
+| 2.1 | Sionna RT offline radio map + dynamic JSON hook | ✅ | [stage_2_1_sionna_plan.md](docs/stage_2_1_sionna_plan.md) |
+| **2.1.e** | **Online Sionna RT PathSolver per UAV update** | ✅ | [STAGES.md](docs/STAGES.md#stage-21-sionna-rt) |
+| **2.2** | **Cosys-AirSim overlay (Windows GPU)** | ✅ | [stage_2_2_airsim_overlay.md](docs/stage_2_2_airsim_overlay.md) |
+| **2.3** | **Multi-UAV MVP (2 SITL + mavp2p)** | ✅ | [STAGES.md](docs/STAGES.md#stage-23-multi-uav) |
+| 2.4 | Web GCS + MAVProxy ручное управление | ✅ | [stage_2_4_manual_gcs.md](docs/stage_2_4_manual_gcs.md) |
+| 2.4 RF | Obstacles + live RSSI/loss/delay графики | ✅ | — |
+| **2.4 QGC** | **QGroundControl bridge через mavp2p** | ✅ | [stage_2_4_qgc_setup.md](docs/stage_2_4_qgc_setup.md) |
+| **2.4 Auto demo** | **Playwright + ffmpeg auto-recorder** | ✅ | [STAGES.md](docs/STAGES.md#stage-24-auto-demo) |
 
-Автоматическая миссия через MAVLink/UDP, проходящая через `bas-ctrl-far`
-namespace, ns-3 control TAP и `mavbridge` на стороне БАС.
-
-```bash
-sudo bash scripts/run_stage_1_5_1_mission.sh wifi_good
-sudo bash scripts/run_stage_1_5_1_mission.sh degraded_lora
-```
-
-Результат: `logs/stage_1_5_1_mission_*/report.md`.
-
-### 2. Mission + видео через payload channel
-
-Добавляет RTP/H.264 видеопоток через отдельный payload-канал ns-3.
-
-```bash
-sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
-sudo bash scripts/run_stage_1_5_2_mission.sh degraded_lora
-```
-
-Режим с бортовой Gazebo camera:
-
-```bash
-sudo env BAS_VIDEO_SOURCE=camera \
-  bash scripts/run_stage_1_5_2_mission.sh wifi_good
-```
-
-Артефакты: `video_rx.mp4`, `video_tx.jsonl`, `video_rx.jsonl`, секция
-`Видеопоток` в `report.md`.
-
-### 3. Сравнение WiFi vs LoRa
-
-```bash
-sudo bash scripts/run_stage_1_6_compare.sh
-```
-
-Создаёт `logs/stage_1_6_<UTC>/comparison.md` и `comparison.csv`.
-
-### 4. LoRa через Serial Port
-
-Буквальный serial-path без IP-stack в радиопетле: host PTY -> ns-3 -> PTY ->
-SITL serial TCP.
-
-```bash
-sudo bash scripts/run_stage_1_7_lora_serial.sh
-```
-
-Настройка PHY-параметров:
-
-```bash
-sudo env BAS_LORA_SF=9 BAS_LORA_DISTANCE_M=3000 \
-  bash scripts/run_stage_1_7_lora_serial.sh
-```
-
-### 5. MAVROS backend
-
-Альтернативный ROS2/MAVROS путь для миссии. `pymavlink` остаётся default для
-основных сценариев, MAVROS включается отдельным runner'ом.
-
-```bash
-sudo bash scripts/run_stage_1_8_mavros.sh baseline_wifi
-```
-
-Документация: [docs/stage_1_8_mavros_plan.md](docs/stage_1_8_mavros_plan.md).
-
-### 6. Sionna RT
-
-Sionna используется для физически обоснованной радиокарты и dynamic channel
-hook. Полный setup тяжёлый, потому что ставит отдельный Python environment.
-
-```bash
-bash scripts/setup_sionna.sh
-sionna_env/bin/python scripts/export_scene_to_sionna.py
-sionna_env/bin/python scripts/compute_radio_map.py --save-png
-sudo bash scripts/run_stage_2_1_sionna.sh
-```
-
-Быстрый synthetic-путь без SITL/Gazebo:
-
-```bash
-bash scripts/run_stage_2_1_synthetic.sh
-```
-
-Артефакты: `radio_maps/iris_runway.npz`, `radio_maps/iris_runway.png`,
-`logs/stage_2_1_synthetic_*/sionna_overview.png`.
-
-### 7. Live Web GCS / RF demo
-
-Самый наглядный режим для видео: открываются Gazebo GUI и браузерный пульт.
-Команды идут через MAVProxy stdin, дальше через ns-3 control channel в SITL.
-
-```bash
-sudo bash scripts/run_stage_2_4_rf_demo.sh
-```
-
-После запуска открыть:
-
-```text
-http://127.0.0.1:8765/
-```
-
-Сценарий для демонстрации:
-
-1. Нажать `TAKEOFF`.
-2. Управлять `W/A/S/D` или кнопками на панели.
-3. Нажать `NLOS PASS` или задать `GO TO N=80 E=45`.
-4. На видео показать Gazebo-сцену с препятствиями и Web GCS: LOS/NLOS,
-   RSSI, loss, delay и live-график.
-
-`GO TO` использует `SET_POSITION_TARGET_LOCAL_NED` через MAVProxy `message`,
-поэтому точка на карте трактуется как абсолютная локальная `N/E` цель, а не
-как body-frame velocity.
-
-## Структура репозитория
-
-| Путь | Назначение |
-|---|---|
-| `configs/` | Сценарии, миссии, сетевые профили, MAVProxy init |
-| `docker/` | Dockerfile'ы для SITL, Gazebo, ns-3, MAVROS, video |
-| `orchestrator/` | Python orchestration, mission runners, MAVROS bridge |
-| `analyzer/` | Метрики, Markdown-отчёты, сравнение прогонов |
-| `ns3/scenarios/` | `two_channel.cc`, `lora_serial.cc`, LoRaWAN baseline |
-| `gazebo/worlds/` | Gazebo worlds, включая RF demo scene |
-| `scene/` | Mitsuba/Sionna scene XML |
-| `radio_maps/` | Сохранённые Sionna radio maps |
-| `scripts/` | Запуск стендов, setup, диагностика, визуализация |
-| `web/gcs/` | Browser operator console |
-| `video/` | RTP sender/receiver для payload channel |
-| `docs/` | Архитектура, планы этапов, матрица ТЗ |
-| `logs/` | Run artifacts; обычно gitignored |
-
-## Артефакты прогона
-
-Каждый runner создаёт `logs/<run_id>/`. Внутри обычно лежат:
-
-| Файл | Что доказывает |
-|---|---|
-| `report.md` | Человеческий отчёт: flight, network, video/RF summaries |
-| `events.jsonl` | События оркестратора/GCS/MAVLink |
-| `ns3_events.jsonl` | События ns-3: tx/rx/drop/outage/channel updates |
-| `mavproxy_stdout.log` | Что видел и отправлял MAVProxy |
-| `operator_ui_manifest.json` | Конфигурация Web GCS run |
-| `video_rx.mp4` | Принятый payload video |
-| `comparison.md`, `comparison.csv` | Сравнение нескольких прогонов |
-
-## Требования к окружению
-
-Проверялось в Ubuntu/WSL2. Для большинства live-сценариев нужны:
-
-- Docker + Docker Compose
-- `sudo` для netns/TAP/veth setup
-- Python virtualenv `.venv` с пакетами проекта
-- WSLg/X11, если нужен Gazebo GUI
-- отдельный `sionna_env`, если запускается Sionna RT pipeline
-
-Перед тяжёлыми прогонами обычно достаточно:
-
-```bash
-sudo service docker start
-docker compose build
-```
-
-Если порт Web GCS занят, остановить предыдущий runner через `Ctrl+C` в его
-терминале и запустить сценарий заново.
-
-## Честные ограничения
-
-- Stage 2.4 реализован через **Web GCS + MAVProxy**: Browser -> MAVProxy
-  stdin -> ns-3 -> SITL. QGroundControl не был acceptance-клиентом; его можно
-  добавить отдельно поверх уже работающего MAVProxy/MAVLink контура.
-- RF/LOS live demo в Web GCS использует детерминированную геометрию препятствий
-  и пишет channel JSON для ns-3 polling. Это видео-friendly live model, а не
-  полноценный real-time Sionna ray tracing в каждом кадре.
-- Sionna RT часть реализована как offline radio map + dynamic JSON hook.
-  Это достаточно для воспроизводимой демонстрации position-dependent loss/delay,
-  но не является универсальным радиопланировщиком.
-- Multi-UAV/swarm и AirSim overlay не реализованы в этом репозитории.
-- Полная объектно-ориентированная ИССГР БД, REST/OGC API и обработка видовых
-  данных относятся к более широкому грантовому контуру и здесь не закрываются.
+Полные результаты по ТЗ: [docs/tz_compliance.md](docs/tz_compliance.md).
+Backlog roadmap: [docs/roadmap.md](docs/roadmap.md).
 
 ## Документация
 
-- [docs/architecture.md](docs/architecture.md) — итоговая архитектура и контуры
-- [docs/tz_compliance.md](docs/tz_compliance.md) — матрица соответствия ТЗ
-- [docs/stage_2_4_manual_gcs.md](docs/stage_2_4_manual_gcs.md) — Web GCS/MAVProxy
-- [docs/stage_1_7_lora_serial_plan.md](docs/stage_1_7_lora_serial_plan.md) — LoRa Serial
-- [docs/stage_1_8_mavros_plan.md](docs/stage_1_8_mavros_plan.md) — MAVROS backend
-- [docs/stage_2_1_sionna_plan.md](docs/stage_2_1_sionna_plan.md) — Sionna RT
-- [docs/stage_camera_regression.md](docs/stage_camera_regression.md) — Gazebo camera notes
+| Файл | Что внутри |
+|---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Пошаговая установка (apt, Docker, GPU, ns-3, Sionna, AirSim) |
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | Готовые команды для каждого demo сценария |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Полная архитектура: топология netns, ns-3 каналы, IPC paths |
+| [docs/DEMOS.md](docs/DEMOS.md) | Каталог всех `scripts/run_stage_*.sh` обёрток с env переменными |
+| [docs/STAGES.md](docs/STAGES.md) | Краткое описание всех stages 1.0–2.4 + backlog |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Частые проблемы (firewall, GPU, ns-3 build, WSL2) |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Соглашения по веткам, commit messages, code style |
+| [docs/architecture.md](docs/architecture.md) | Историческая высокоуровневая схема (для отчёта) |
+| [docs/tz_compliance.md](docs/tz_compliance.md) | Матрица соответствия ТЗ Физулина А.В. |
+| [docs/roadmap.md](docs/roadmap.md) | Текущий backlog + закрытые пункты |
+| [CHANGELOG.md](CHANGELOG.md) | История релизов по этапам |
 
-## Короткая сводка для отчёта
+## Структура репозитория
 
-Личная зона Физулина А.В. по текущей матрице закрыта: два канала связи,
-MAVLink/MAVROS, ns-3/Sionna RT, LoRa Serial, видео payload, ручное управление
-одним БАС и live RF/LOS демонстрация. Остаток относится либо к полной ИССГР
-системе, либо к AirSim/Multi-UAV задачам за пределами текущей закрытой части.
+```
+bas-prototype/
+├── README.md                   ← этот файл
+├── Makefile                    ← bootstrap/test/demo targets
+├── docker-compose.yml          ← базовый compose
+├── docker-compose.shared-netns.yml ← основной shared-netns compose
+├── docker/                     ← Dockerfile'ы для gazebo, sitl, ns3, video, mavros
+├── configs/
+│   ├── scenarios/              ← baseline_wifi, degraded_lora YAML
+│   ├── network_profiles/       ← wifi_good, lora_serial, sionna_urban
+│   └── missions/               ← simple_route waypoints
+├── gazebo/
+│   ├── worlds/                 ← iris_runway_rf_demo, _multi, _fpv
+│   └── models/                 ← iris_with_ardupilot_uav2 (multi-UAV)
+├── ns3/scenarios/              ← two_channel.cc, lora_serial.cc, lora_serial_lorawan.cc
+├── orchestrator/               ← Python orchestrator (mission runners, analyzer)
+│   └── src/orchestrator/       ← scenarios, mavros_bridge, real_components
+├── analyzer/                   ← report.md + comparison.csv generator
+├── scene/                      ← Mitsuba XML для Sionna RT
+├── radio_maps/                 ← .npz offline lookups (compute_radio_map output)
+├── scripts/                    ← run_stage_*.sh wrappers + utilities
+│   ├── run_stage_1_5_2_mission.sh
+│   ├── run_stage_2_4_auto_demo.sh
+│   ├── run_stage_2_4_qgc_demo.sh
+│   ├── run_stage_2_4_fpv_rf_demo.sh
+│   ├── run_stage_2_4_multi_uav_demo.sh
+│   ├── run_stage_2_4_rt_online_demo.sh
+│   ├── run_stage_2_2_airsim_overlay.sh
+│   ├── airsim_{client,stub_server,bridge}.py
+│   ├── sionna_channel_publisher.py    ← offline lookup + --rt-online live RT
+│   └── bootstrap.sh                   ← one-command system setup
+├── web/gcs/                    ← Web GCS UI (HTML + CSS + JS)
+├── video/                      ← GStreamer pipelines (sender, receiver, fpv_mjpeg)
+├── docs/                       ← Markdown документация (см. выше)
+└── .github/workflows/          ← CI/CD: lint, syntax, headless smoke
+```
+
+## Системные требования
+
+| Компонент | Минимум | Рекомендую |
+|---|---|---|
+| OS | Ubuntu 22.04 / WSL2 Ubuntu 24.04 | WSL2 Ubuntu 24.04 |
+| CPU | 4 cores | 8+ cores (i7/Ryzen 7) |
+| RAM | 16 GB | 32 GB |
+| GPU | не нужен для stub/Linux mode | NVIDIA RTX (CUDA 12+) для Sionna RT live + Windows AirSim GPU rendering |
+| Disk | 10 GB | 25 GB (с AirSim, Cosys-AirSim, sionna scenes) |
+| Docker | 24.0+ | 27.0+ |
+| Python | 3.10 | 3.12 |
+
+WSL2 specifics: см. [docs/INSTALL.md#wsl2-particulars](docs/INSTALL.md#wsl2-particulars).
+
+## Артефакты прогона
+
+Каждый run создаёт `logs/<run_id>/`:
+
+```
+logs/<run_id>/
+├── events.jsonl             ← orchestrator + GCS + MAVLink events
+├── ns3_events.jsonl         ← ns-3 tx/rx/drop/outage/channel updates
+├── report.md                ← per-run analyzer report
+├── operator_ui_manifest.json
+├── video/                   ← FPV mp4 + Web GCS webm (auto demo)
+├── screenshots/             ← timeline screenshots (auto demo)
+├── demo_report.md           ← assembled demo report (auto demo)
+├── sionna_rt_publisher.log  ← online RT (если включён)
+├── airsim_pose_forward.jsonl ← bridge pose forwards (AirSim mode)
+└── airsim_camera/           ← AirSim camera frames (Windows mode)
+```
+
+Анализатор считает: PDR, loss, jitter, goodput, video FPS, frame loss, outage
+correlation, MAVLink heartbeat rate, RSSI dB.
+
+## Лицензия
+
+Research / academic prototype. См. [docs/CONTRIBUTING.md#license](docs/CONTRIBUTING.md#license).
+
+## Контакты
+
+- Lead engineer: Физулин Андрей Вадимович
+- Группа: ПВАТС УЛ САПР
+- Грант: БАС симуляция, 2026
+
+Issues + PR'ы — через GitHub.
