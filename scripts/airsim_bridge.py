@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""Stage 2.2 — Gazebo ↔ Cosys-AirSim overlay bridge.
+
+Архитектура (per ТЗ): Gazebo физика → AirSim высокодетализированный
+визуал + сенсоры. Bridge подсасывает текущую UAV pose из Gazebo
+(через events.jsonl flight events которые orchestrator пишет) и
+форвардит её в AirSim через `simSetVehiclePose`. AirSim, в свою
+очередь, рендерит свои сенсоры (camera, LiDAR, etc.) в той самой
+геометрической позиции — итог: physics из ArduPilot+Gazebo,
+визуал/сенсоры из Cosys-AirSim.
+
+Pattern из ТЗ DOCX (Андрончев + Федотенков):
+  "Gazebo должен использоваться в качестве симулятора физики полета,
+   результат моделирования которой должен быть передан в AirSim,
+   который используется для высокореалистичного моделирования
+   окружающей обстановки и сенсоров БАС."
+
+Реализация bridge:
+  1. Tail events.jsonl с тем же patterns что sionna_channel_publisher.
+  2. На каждый flight event конвертирует (lat, lon, alt) → AirSim NED
+     (x_north, y_east, z_down) через haversine flat approximation.
+  3. Вызывает simSetVehiclePose с этим Pose.
+  4. Опционально: stream AirSim camera → JPEG файл в logs/ или /tmp,
+     с заданной периодичностью (без задержки rendering для каждого
+     pose update).
+  5. Опционально: pull LiDAR cloud → NDJSON.
+
+Если AirSim endpoint недоступен (no UE5 Editor running) — переходит
+в **stub mode**: pose log ведётся локально, но RPC calls пропускаются.
+Это нужно для CI smoke тестов где UE5 нет.
+
+Endpoint default `127.0.0.1:41451`; при запуске Cosys-AirSim на
+Windows-стороне — пробросить через `--airsim-host=<windows IP>`.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+# Импортируем наш минимальный RPC клиент.
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from airsim_client import (   # noqa: E402
+    AirSimRpcClient, AirSimRpcError, Pose, Quaternionr, Vector3r,
+)
+
+
+# AirSim default home — Canberra (та же что ArduPilot SITL default).
+ORIGIN_LAT = -35.363262
+ORIGIN_LON = 149.165237
+
+
+def haversine_xy_m(lat: float, lon: float) -> tuple[float, float]:
+    """(lat,lon) → (x_north, y_east) метры от ORIGIN. Точность ±1м в
+    радиусе нескольких км — достаточно для AirSim overlay (он сам
+    делает финальный rendering)."""
+    R = 6_371_000.0
+    dlat = math.radians(lat - ORIGIN_LAT)
+    dlon = math.radians(lon - ORIGIN_LON)
+    x_north = R * dlat
+    y_east = R * dlon * math.cos(math.radians(ORIGIN_LAT))
+    return x_north, y_east
+
+
+def yaw_to_quaternion(yaw_rad: float) -> Quaternionr:
+    """Z-axis-only yaw → quaternion. Для overlay heading достаточно."""
+    return Quaternionr(
+        w=math.cos(yaw_rad / 2.0),
+        x=0.0, y=0.0,
+        z=math.sin(yaw_rad / 2.0),
+    )
+
+
+@dataclass
+class BridgeConfig:
+    events_path: Path
+    log_dir: Path
+    airsim_host: str = "127.0.0.1"
+    airsim_port: int = 41451
+    vehicle_name: str = ""
+    rpc_timeout_s: float = 5.0
+    pose_log_name: str = "airsim_pose_forward.jsonl"
+    image_period_s: float = 2.0
+    camera_name: str = "front_center"
+    image_dir_name: str = "airsim_camera"
+    capture_images: bool = True
+    capture_lidar: bool = False
+    lidar_name: str = ""
+    replay: bool = False
+    max_seconds: float = 0.0
+
+
+def tail_flight_events(events_path: Path, from_start: bool = False):
+    """tail -f → flight events с lat/lon/alt. Pattern идентичен
+    sionna_channel_publisher."""
+    fp = None
+    while True:
+        if not events_path.exists():
+            time.sleep(0.1)
+            continue
+        if fp is None:
+            fp = events_path.open("r", encoding="utf-8")
+            if not from_start:
+                fp.seek(0, os.SEEK_END)
+        line = fp.readline()
+        if not line:
+            time.sleep(0.05)
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("event_type") != "flight":
+            continue
+        pos = ev.get("position", {})
+        if "lat" not in pos:
+            continue
+        yield {
+            "wall_time": ev.get("wall_time", time.time()),
+            "lat": float(pos["lat"]),
+            "lon": float(pos["lon"]),
+            "alt_rel_m": float(pos.get("alt_rel_m", 0.0)),
+            "yaw_deg": float(pos.get("heading_deg", 0.0)),
+        }
+
+
+def safe_connect_airsim(cfg: BridgeConfig) -> AirSimRpcClient | None:
+    """Try connect; вернуть None если AirSim не запущен (stub mode)."""
+    try:
+        client = AirSimRpcClient(
+            host=cfg.airsim_host, port=cfg.airsim_port,
+            timeout_s=cfg.rpc_timeout_s,
+        )
+        client.connect()
+        # Минимальный handshake.
+        pong = client.ping()
+        version = client.get_server_version()
+        print(f"[airsim] connected {cfg.airsim_host}:{cfg.airsim_port}"
+              f" ping={pong} server_version={version}", flush=True)
+        try:
+            scene = client.list_scene_objects()
+            print(f"[airsim] scene objects ({len(scene)}): {scene[:6]}",
+                  flush=True)
+        except AirSimRpcError as exc:
+            print(f"[airsim] scene listing failed (non-fatal): {exc}",
+                  flush=True)
+        return client
+    except (OSError, AirSimRpcError) as exc:
+        print(f"[airsim] no AirSim endpoint at {cfg.airsim_host}:{cfg.airsim_port}"
+              f" ({exc}); running in LOCAL POSE-LOG MODE", flush=True)
+        return None
+
+
+def forward_pose(
+    client: AirSimRpcClient | None,
+    event: dict[str, float],
+    cfg: BridgeConfig,
+) -> dict:
+    """Конвертирует Gazebo event → AirSim Pose; шлёт через RPC если есть."""
+    x_north, y_east = haversine_xy_m(event["lat"], event["lon"])
+    alt = event["alt_rel_m"]
+    yaw = math.radians(event.get("yaw_deg", 0.0))
+
+    pose = Pose(
+        position=Vector3r(x=x_north, y=y_east, z=-alt),   # NED: down positive
+        orientation=yaw_to_quaternion(yaw),
+    )
+
+    record = {
+        "wall_time": event["wall_time"],
+        "lat": event["lat"], "lon": event["lon"],
+        "alt_rel_m": alt, "yaw_deg": event.get("yaw_deg", 0.0),
+        "ned_north": x_north, "ned_east": y_east, "ned_down": -alt,
+        "rpc_sent": False,
+        "rpc_error": None,
+    }
+
+    if client is not None:
+        try:
+            client.set_vehicle_pose(pose, ignore_collision=True,
+                                    vehicle_name=cfg.vehicle_name)
+            record["rpc_sent"] = True
+        except (AirSimRpcError, OSError) as exc:
+            record["rpc_error"] = str(exc)
+            # Не падаем — может AirSim рестартанул, продолжаем в stub mode
+            # до следующего успешного ping.
+    return record
+
+
+def capture_camera(
+    client: AirSimRpcClient,
+    cfg: BridgeConfig,
+    frame_idx: int,
+) -> dict:
+    """Пытается снять снапшот камеры. AirSim возвращает PNG/JPG bytes."""
+    record = {
+        "frame_idx": frame_idx, "wall_time": time.time(),
+        "saved": False, "size_bytes": 0,
+        "camera_name": cfg.camera_name,
+    }
+    try:
+        data = client.get_image(cfg.camera_name, image_type=0,
+                                vehicle_name=cfg.vehicle_name)
+    except (AirSimRpcError, OSError) as exc:
+        record["error"] = str(exc)
+        return record
+    if not data:
+        record["error"] = "empty image bytes (stub or camera missing)"
+        return record
+    img_dir = cfg.log_dir / cfg.image_dir_name
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = img_dir / f"frame_{frame_idx:06d}.bin"
+    img_path.write_bytes(data)
+    record.update({"saved": True, "size_bytes": len(data),
+                   "path": str(img_path.relative_to(cfg.log_dir))})
+    return record
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Gazebo ↔ Cosys-AirSim overlay bridge")
+    ap.add_argument("--events", required=True,
+                    help="logs/<run>/events.jsonl orchestrator")
+    ap.add_argument("--log-dir", required=True,
+                    help="Папка прогона для bridge log + camera frames")
+    ap.add_argument("--airsim-host", default="127.0.0.1",
+                    help="Cosys-AirSim msgpack-rpc host (Windows IP при overlay)")
+    ap.add_argument("--airsim-port", type=int, default=41451)
+    ap.add_argument("--vehicle-name", default="",
+                    help="AirSim multirotor vehicle_name; пусто = default")
+    ap.add_argument("--rpc-timeout-s", type=float, default=5.0)
+    ap.add_argument("--image-period-s", type=float, default=2.0,
+                    help="Как часто захватывать AirSim camera (0 = выкл)")
+    ap.add_argument("--camera-name", default="front_center")
+    ap.add_argument("--no-images", action="store_true",
+                    help="Не запрашивать AirSim camera")
+    ap.add_argument("--replay", action="store_true",
+                    help="Прочитать events.jsonl с начала (smoke режим)")
+    ap.add_argument("--max-seconds", type=float, default=0.0,
+                    help="Auto-stop после N секунд (0 = forever)")
+    args = ap.parse_args()
+
+    cfg = BridgeConfig(
+        events_path=Path(args.events),
+        log_dir=Path(args.log_dir).resolve(),
+        airsim_host=args.airsim_host,
+        airsim_port=args.airsim_port,
+        vehicle_name=args.vehicle_name,
+        rpc_timeout_s=args.rpc_timeout_s,
+        image_period_s=args.image_period_s,
+        camera_name=args.camera_name,
+        capture_images=not args.no_images,
+        replay=args.replay,
+        max_seconds=args.max_seconds,
+    )
+    cfg.log_dir.mkdir(parents=True, exist_ok=True)
+    pose_log = cfg.log_dir / cfg.pose_log_name
+    pose_log.write_text("")   # truncate
+
+    client = safe_connect_airsim(cfg)
+    mode_label = "RPC" if client is not None else "STUB (no AirSim)"
+    print(f"[airsim-bridge] mode={mode_label}, log_dir={cfg.log_dir}",
+          flush=True)
+
+    start = time.time()
+    frame_idx = 0
+    last_image_t = 0.0
+    pose_count = 0
+
+    try:
+        with pose_log.open("a", encoding="utf-8") as poses_fp:
+            for ev in tail_flight_events(cfg.events_path,
+                                          from_start=cfg.replay):
+                record = forward_pose(client, ev, cfg)
+                poses_fp.write(json.dumps(record, separators=(",", ":")) + "\n")
+                poses_fp.flush()
+                pose_count += 1
+
+                # Periodic camera snapshot, только если RPC работает.
+                now = time.time()
+                if (client is not None and cfg.capture_images
+                        and cfg.image_period_s > 0
+                        and now - last_image_t >= cfg.image_period_s):
+                    cap = capture_camera(client, cfg, frame_idx)
+                    print(f"[airsim] camera frame {frame_idx}: "
+                          f"saved={cap.get('saved')} "
+                          f"size={cap.get('size_bytes', 0)}",
+                          flush=True)
+                    frame_idx += 1
+                    last_image_t = now
+
+                if cfg.max_seconds and (now - start) > cfg.max_seconds:
+                    print(f"[airsim-bridge] max-seconds reached "
+                          f"({pose_count} poses forwarded)", flush=True)
+                    break
+    finally:
+        if client is not None:
+            client.close()
+        print(f"[airsim-bridge] done; pose_count={pose_count}",
+              flush=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

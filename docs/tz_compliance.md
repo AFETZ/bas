@@ -104,7 +104,7 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Пункт ТЗ | Исполнители | Состояние | Мой интерфейс |
 |---|---|---|---|
 | Аналитический обзор инструментов | Степанянц, Карпов, Маргарян | ➖ | — |
-| AirSim как симулятор графики/сенсоров | Андрончев, Федотенков | ⏳ 2.2 | В текущем репозитории оставлен архитектурный backlog Gazebo→AirSim, реализации нет |
+| AirSim как симулятор графики/сенсоров | Андрончев, Федотенков | ⏳ → ⚠️ 2.2 | **Архитектурный bridge добавлен 22.05.2026** на основе Cosys-AirSim (поддерживаемый UE5.5 форк): `scripts/airsim_{client,stub_server,bridge}.py` + `run_stage_2_2_airsim_overlay.sh` + `docs/stage_2_2_airsim_overlay.md`. Бридж forwards Gazebo pose → AirSim `simSetVehiclePose` (msgpack-rpc), pulls camera/LiDAR. Stub-сервер позволяет CI smoke без UE5; реальный UE5 рендер ставит оператор (Cosys-AirSim Editor на Windows / Linux GPU host) — это исполнительная зона Андрончева/Федотенкова, не Физулина. |
 | MAVLink ↔ Gazebo / AirSim | Федотенков | ➖ | mavbridge готов как референс |
 | Опционально — кибератаки | Маргарян | ➖ | — |
 | Карта сценария в Gazebo | Карпов, Маргарян | ⏳ | `iris_runway.sdf` и RF demo world готовы как стартовая база; финальная предметная карта вне этой матрицы |

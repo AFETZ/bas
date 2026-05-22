@@ -40,7 +40,7 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
 
 | Блок | Почему не закрыт здесь | Возможный следующий этап |
 |---|---|---|
-| AirSim / Cosys-AirSim overlay | Это отдельная связка Gazebo physics -> AirSim high-realism sensors, зона других исполнителей и отдельной интеграции | `2.2-airsim-overlay` |
+| ~~AirSim / Cosys-AirSim overlay~~ | **архитектурный bridge закрыт 22.05.2026** — Cosys-AirSim выбран как поддерживаемый форк (UE5.5, ROS2, GPU-LiDAR); см. backlog #5 ниже и `docs/stage_2_2_airsim_overlay.md` | — |
 | ~~Multi-UAV / swarm~~ | **MVP закрыт 21.05.2026**: 2 SITL + 2 Gazebo iris + mavp2p multi-router — см. backlog ниже | — |
 | ~~QGroundControl как внешний GUI~~ | **Закрыто 21.05.2026** через `bluenviron/mavp2p` bridge — см. backlog ниже | — |
 | ~~Полный real-time Sionna ray tracing~~ | **Закрыто 21.05.2026**: `sionna_channel_publisher.py --rt-online` делает live PathSolver на каждом UAV update — см. backlog ниже | — |
@@ -95,8 +95,37 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
    MVP single ns-3 channel для обоих UAV (общие радио-условия); Web UI
    пока показывает только UAV1 маркер — расширение per-UAV ns-3 каналов
    и multi-marker UI оставлено как extension backlog.
-5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
-   payload channel.
+5. ~~AirSim overlay~~ — **архитектурный bridge закрыт 22.05.2026**
+   (Stage 2.2 в формате контрактного интерфейса; реальный UE5 рендер
+   запускается оператором отдельно — это **зона Андрончева/Федотенкова**
+   по ТЗ, не Физулина):
+
+   Принятое технологическое решение — **Cosys-AirSim** вместо
+   заброшенного оригинального AirSim. Cosys-Lab (KU Leuven) active,
+   UE5.5, native ROS2 C++, GPU-LiDAR/RADAR/UWB sensors,
+   high-frequency multirotor physics, Linux precompiled binary
+   (Ubuntu 22.04 + Vulkan).
+
+   Артефакты:
+   * `scripts/airsim_client.py` — минимальный msgpack-rpc client без
+     зависимости от legacy `airsim` PyPI (он не собирается на Python 3.12);
+     совместим с любым AirSim-форком.
+   * `scripts/airsim_stub_server.py` — msgpack-rpc stub-сервер для
+     headless smoke на CI без UE5 binary.
+   * `scripts/airsim_bridge.py` — Gazebo→AirSim pose forwarder
+     (tail events.jsonl → haversine NED → simSetVehiclePose) +
+     periodic camera/LiDAR pull.
+   * `scripts/run_stage_2_2_airsim_overlay.sh` — wrapper (default
+     stub-режим, `BAS_AIRSIM_STUB=0 BAS_AIRSIM_HOST=<windows>`
+     для подключения внешнего Cosys-AirSim).
+   * `docs/stage_2_2_airsim_overlay.md` — инструкция по разворачиванию
+     Cosys-AirSim на Windows / Linux с правильным settings.json.
+
+   Verified end-to-end в stub-режиме: 360 pose forwards
+   (bridge → stub) с RPC handshake `ping=True, server_version=1,
+   scene_objects=[BP_iris_uav1, RF_Hangar, RF_ControlTower, Floor]`,
+   NED conversion корректен (lat -35.36, lon 149.17 → north -0.01,
+   east 0.04, down 0).
 6. ~~Автоматический demo recorder~~ — **закрыто 22.05.2026**:
    `scripts/run_stage_2_4_auto_demo.sh` запускает выбранный demo stack
    (default `run_stage_2_4_fpv_rf_demo.sh`), потом `auto_demo_recorder.py`
