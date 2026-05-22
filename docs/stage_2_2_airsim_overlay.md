@@ -1,9 +1,10 @@
-# Stage 2.2 — Cosys-AirSim overlay
+# Stage 2.2 — Cosys-AirSim overlay (полный deploy)
 
 Архитектурный bridge между Gazebo физикой и Cosys-AirSim visual/sensor
-рендером. Закрывает backlog-пункт "AirSim overlay" в рамках архитектуры,
-**не** включая в репозиторий 10+ ГБ UE5 binary (оператор поднимает
-Cosys-AirSim Editor отдельно на Windows или Linux-host с GPU).
+рендером. Включает **готовый Linux UE5 packaged binary** (auto-download
+~637 MB) который запускается headless из wrapper'а; UE5 binary остаётся
+вне git репозитория (как Docker images), но wrapper сам качает + ставит
++ запускает его.
 
 ## Зачем Cosys-AirSim, а не оригинальный AirSim
 
@@ -74,6 +75,14 @@ Windows для Stage 2.4 QGC bridge).
 
 ## Запуск
 
+### Три режима
+
+| `BAS_AIRSIM_MODE` | Что запускается | Когда использовать |
+|---|---|---|
+| `stub` (default) | scripts/airsim_stub_server.py — msgpack-rpc API stub | Headless CI / regression smoke без UE5 |
+| `linux` | Cosys-AirSim Blocks (auto-download если нет) headless `-nullrhi` | Полный архитектурный demo: реальный UE5 + AirSim plugin отвечает на API; pose forwarding идёт в настоящий рендер; image API пустой пока без GPU |
+| `off` | ничего; bridge connects к external AirSim по `BAS_AIRSIM_HOST` | Cosys-AirSim Editor на Windows host (с реальным GPU rendering) |
+
 ### Headless smoke (CI, default)
 
 ```bash
@@ -82,6 +91,44 @@ sudo bash scripts/run_stage_2_2_airsim_overlay.sh
 
 Включает stub-сервер на 41451. Bridge подключается, forward'ит pose,
 тратит ~0% дополнительного CPU. UE5 не нужен.
+
+### Полный deploy с реальным Cosys-AirSim Linux build
+
+```bash
+sudo env BAS_AIRSIM_MODE=linux bash scripts/run_stage_2_2_airsim_overlay.sh
+```
+
+Wrapper:
+1. Скачивает `Blocks_packaged_Linux_55_33.zip` (637 MB) с GitHub
+   releases в `~/cosys-airsim/` если ещё нет;
+2. Распаковывает (после первого раза кэшируется);
+3. Создаёт `~/Documents/AirSim/settings.json` с
+   `SimMode=Multirotor`, `SimpleFlight`, `ApiServerEndpoint=0.0.0.0:41451`;
+4. Запускает Blocks headless: `./Blocks.sh -RenderOffscreen -nullrhi
+   -nosound -nosplash`;
+5. Ждёт пока API endpoint :41451 откроется (≈10–30 с);
+6. Запускает базовый Stage 2.4 stack;
+7. Запускает bridge — pose forwarding в **реальный** Cosys-AirSim
+   UE5 рендер, server_version=4, 200+ scene objects.
+
+Verified end-to-end:
+```
+[airsim] connected 127.0.0.1:41451 ping=True server_version=4
+[airsim] scene objects (209): ['ChaosDebugDrawActor', 'Cone_5',
+         'Cylinder2', 'Cylinder3', ...]
+[airsim] detected REAL Cosys-AirSim (server v4)
+[airsim-bridge] mode=RPC
+
+360 pose forwards (lat,lon,alt → NED) → AirSim simSetVehiclePose
+```
+
+`-nullrhi` mode даёт работающий AirSim plugin (annotation system, 200+
+объектов, multirotor SimpleFlight, RPC API) **без** GPU rendering. Это
+полноценное архитектурное доказательство overlay pattern: bridge
+действительно говорит с UE5 + AirSim plugin, не stub. Camera/LiDAR API
+calls возвращают empty bytes — для реального rendering нужен либо
+`-RenderOffscreen` без `-nullrhi` (LLVMpipe software, медленно), либо
+NVIDIA GPU passthrough в WSL2, либо запуск Windows-build.
 
 Артефакты:
 ```

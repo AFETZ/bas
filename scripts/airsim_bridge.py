@@ -43,12 +43,24 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-# Импортируем наш минимальный RPC клиент.
+# Импортируем minimal RPC клиент (наш fallback).
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from airsim_client import (   # noqa: E402
     AirSimRpcClient, AirSimRpcError, Pose, Quaternionr, Vector3r,
 )
+
+# Опциональный официальный Cosys-AirSim client (~30 RPC methods, image
+# helpers, response unpacking). Установлен через
+# python_api_client_33.whl с GitHub releases. Используем для get_image
+# через стандартный response decoder (PNG/array). Без него — fallback
+# на наш минимальный client (только pose forwarding).
+try:
+    import cosysairsim as _cosys   # type: ignore
+    HAS_COSYS = True
+except Exception:
+    _cosys = None   # type: ignore
+    HAS_COSYS = False
 
 
 # AirSim default home — Canberra (та же что ArduPilot SITL default).
@@ -131,22 +143,30 @@ def tail_flight_events(events_path: Path, from_start: bool = False):
 
 
 def safe_connect_airsim(cfg: BridgeConfig) -> AirSimRpcClient | None:
-    """Try connect; вернуть None если AirSim не запущен (stub mode)."""
+    """Try connect; вернуть None если AirSim не запущен (stub mode).
+
+    Если установлен официальный `cosysairsim` package — используем его
+    для image decode и расширенных RPC методов. Иначе наш минимальный
+    msgpack-rpc client (pose forwarding + ping + scene listing).
+    """
     try:
         client = AirSimRpcClient(
             host=cfg.airsim_host, port=cfg.airsim_port,
             timeout_s=cfg.rpc_timeout_s,
         )
         client.connect()
-        # Минимальный handshake.
         pong = client.ping()
         version = client.get_server_version()
         print(f"[airsim] connected {cfg.airsim_host}:{cfg.airsim_port}"
-              f" ping={pong} server_version={version}", flush=True)
+              f" ping={pong} server_version={version}"
+              f" (cosysairsim_pkg={HAS_COSYS})", flush=True)
         try:
             scene = client.list_scene_objects()
             print(f"[airsim] scene objects ({len(scene)}): {scene[:6]}",
                   flush=True)
+            if version >= 4:
+                print(f"[airsim] detected REAL Cosys-AirSim (server v{version})",
+                      flush=True)
         except AirSimRpcError as exc:
             print(f"[airsim] scene listing failed (non-fatal): {exc}",
                   flush=True)
