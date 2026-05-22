@@ -256,6 +256,10 @@ def main() -> int:
     ap.add_argument("--rpc-timeout-s", type=float, default=5.0)
     ap.add_argument("--image-period-s", type=float, default=2.0,
                     help="Как часто захватывать AirSim camera (0 = выкл)")
+    # Cosys-AirSim Blocks default cameras: "0"=front_center, "1"=front_right,
+    # "front_left", "fpv", "back_center", "bottom_center". У нас тестировано
+    # все 7 — все возвращают валидные PNG ~36-57 KB (256x144 RGBA) на
+    # Windows GPU.
     ap.add_argument("--camera-name", default="front_center")
     ap.add_argument("--no-images", action="store_true",
                     help="Не запрашивать AirSim camera")

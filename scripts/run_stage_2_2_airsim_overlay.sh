@@ -39,6 +39,8 @@ AIRSIM_RUN_HOME="$(getent passwd "$AIRSIM_RUN_USER" 2>/dev/null | cut -d: -f6)"
 [ -z "$AIRSIM_RUN_HOME" ] && AIRSIM_RUN_HOME="/home/${AIRSIM_RUN_USER}"
 BAS_AIRSIM_INSTALL_DIR="${BAS_AIRSIM_INSTALL_DIR:-${AIRSIM_RUN_HOME}/cosys-airsim}"
 BAS_AIRSIM_BLOCKS_URL="${BAS_AIRSIM_BLOCKS_URL:-https://github.com/Cosys-Lab/Cosys-AirSim/releases/download/5.5-v3.3/Blocks_packaged_Linux_55_33.zip}"
+BAS_AIRSIM_BLOCKS_WIN_URL="${BAS_AIRSIM_BLOCKS_WIN_URL:-https://github.com/Cosys-Lab/Cosys-AirSim/releases/download/5.5-v3.3/Blocks_packaged_Windows_55_33.zip}"
+BAS_AIRSIM_WIN_INSTALL_DIR="${BAS_AIRSIM_WIN_INSTALL_DIR:-/mnt/c/Users/${AIRSIM_RUN_USER}/cosys-airsim}"
 BAS_AIRSIM_CAMERA="${BAS_AIRSIM_CAMERA:-front_center_cam}"
 BAS_AIRSIM_IMAGE_PERIOD_S="${BAS_AIRSIM_IMAGE_PERIOD_S:-2}"
 
@@ -79,6 +81,10 @@ cleanup() {
     [ -n "$BLOCKS_PID" ] && kill "$BLOCKS_PID" 2>/dev/null || true
     # Дополнительно: если Blocks форкнул child UE5 процессы — снести их.
     pkill -f "Blocks_packaged_Linux_55_33" 2>/dev/null || true
+    # Windows Blocks.exe — снести через taskkill (только если windows mode).
+    if [ "${BAS_AIRSIM_MODE:-}" = "windows" ]; then
+        cmd.exe /c "taskkill /F /IM Blocks.exe /T" 2>/dev/null || true
+    fi
     if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
         kill -INT "$STACK_PID" 2>/dev/null || true
         for _ in $(seq 1 30); do
@@ -178,6 +184,127 @@ start_linux_blocks() {
     return 1
 }
 
+# ---- Windows mode: real GPU rendering via WSL interop -------------------
+# WSL не имеет NVIDIA Vulkan ICD (DZN не поддерживает UE5 5.5 SM6 features).
+# Чтобы получить real image rendering, запускаем Windows binary напрямую
+# через cmd.exe, и bridge подключается на Windows host через Hyper-V
+# vEthernet gateway (172.x.x.1 → 0.0.0.0:41451 на Windows).
+# Требует ОДНОРАЗОВУЮ настройку firewall (см. docs).
+windows_host_ip() {
+    # Default route gateway = Windows host vEthernet IP в WSL2 NAT mode.
+    ip route show default 2>/dev/null | awk '/default/ {print $3; exit}'
+}
+
+install_windows_blocks() {
+    local install_dir="$BAS_AIRSIM_WIN_INSTALL_DIR"
+    local blocks_exe_win
+    blocks_exe_win="${install_dir}/Blocks_packaged_Windows_55_33/Windows/Blocks.exe"
+    if [ -f "$blocks_exe_win" ]; then
+        echo "[airsim] Cosys-AirSim Windows build already installed"
+        return 0
+    fi
+    echo "[airsim] downloading Cosys-AirSim Windows build (~556 MB) to ${install_dir}"
+    mkdir -p "$install_dir"
+    if ! curl -fsSL -o "${install_dir}/Blocks_packaged_Windows_55_33.zip" \
+            "$BAS_AIRSIM_BLOCKS_WIN_URL"; then
+        echo "  download failed; falling back to stub" >&2
+        return 1
+    fi
+    echo "[airsim] unzipping via PowerShell"
+    local win_zip_path
+    win_zip_path="$(wslpath -w "${install_dir}/Blocks_packaged_Windows_55_33.zip")"
+    local win_dest_path
+    win_dest_path="$(wslpath -w "${install_dir}")"
+    powershell.exe -Command "Expand-Archive -Path '${win_zip_path}' -DestinationPath '${win_dest_path}' -Force" \
+        2>&1 | tail -3
+    if [ -f "$blocks_exe_win" ]; then
+        echo "  installed: ${blocks_exe_win}"
+    else
+        echo "  Blocks.exe not found after unzip" >&2
+        return 1
+    fi
+}
+
+ensure_windows_airsim_settings() {
+    local win_user="${AIRSIM_RUN_USER}"
+    local win_docs="/mnt/c/Users/${win_user}/Documents/AirSim"
+    mkdir -p "$win_docs"
+    if [ ! -f "${win_docs}/settings.json" ]; then
+        cat > "${win_docs}/settings.json" <<EOF
+{
+  "SettingsVersion": 2.0,
+  "SimMode": "Multirotor",
+  "ClockType": "SteppableClock",
+  "ViewMode": "SpringArmChase",
+  "ApiServerEndpoint": "0.0.0.0:${BAS_AIRSIM_PORT}",
+  "Vehicles": {
+    "Copter": {
+      "VehicleType": "SimpleFlight",
+      "AutoCreate": true,
+      "Sensors": {
+        "front_center_cam": { "SensorType": 7, "Enabled": true }
+      }
+    }
+  }
+}
+EOF
+        echo "[airsim] wrote Windows settings.json to ${win_docs}"
+    fi
+}
+
+start_windows_blocks() {
+    local install_dir="$BAS_AIRSIM_WIN_INSTALL_DIR"
+    local blocks_exe_win
+    blocks_exe_win="${install_dir}/Blocks_packaged_Windows_55_33/Windows/Blocks.exe"
+    if [ ! -f "$blocks_exe_win" ]; then
+        echo "[airsim] Blocks.exe missing at $blocks_exe_win" >&2
+        return 1
+    fi
+    ensure_windows_airsim_settings
+
+    local win_blocks_path
+    win_blocks_path="$(wslpath -w "$blocks_exe_win")"
+    echo "[airsim] starting Windows Blocks.exe (real GPU)"
+    # `cmd.exe /c start /B` запускает .exe detached, без console window.
+    cmd.exe /c start /B "" "$win_blocks_path" -RenderOffscreen -ResX=640 -ResY=480 \
+        > "${LOG_DIR}/airsim_blocks_win.log" 2>&1 || true
+
+    # Wait для Blocks процесса (PowerShell сам найдёт).
+    local found_pid=""
+    for _ in $(seq 1 30); do
+        found_pid="$(powershell.exe -Command 'Get-Process Blocks -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id' 2>/dev/null | tr -d '\r' | head -1)"
+        if [ -n "$found_pid" ]; then
+            echo "  Blocks.exe started: Win-PID=${found_pid}"
+            break
+        fi
+        sleep 2
+    done
+
+    # Windows host IP для AirSim API access.
+    local win_ip
+    win_ip="$(windows_host_ip)"
+    if [ -n "$win_ip" ] && [ "$win_ip" != "0.0.0.0" ]; then
+        echo "  Windows host IP: ${win_ip}"
+        export BAS_AIRSIM_HOST="$win_ip"
+    fi
+
+    # Probe API endpoint.
+    for _ in $(seq 1 30); do
+        if timeout 2 bash -c "cat </dev/tcp/${BAS_AIRSIM_HOST}/${BAS_AIRSIM_PORT}" \
+                &>/dev/null; then
+            echo "  AirSim API reachable on ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT}"
+            return 0
+        fi
+        sleep 2
+    done
+    echo "  AirSim API not reachable on ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT}" >&2
+    echo "  Возможно блокирует Windows Firewall. ОДНОРАЗОВО запусти" >&2
+    echo "  на Windows (от админа PowerShell):" >&2
+    echo "    netsh advfirewall firewall add rule name=CosysAirSim41451 \\\\" >&2
+    echo "       dir=in action=allow protocol=TCP localport=${BAS_AIRSIM_PORT}" >&2
+    return 1
+}
+
 # ---- 1. AirSim startup according to mode ---------------------------------
 if [ "$BAS_AIRSIM_MODE" = "stub" ]; then
     if ss -tln 2>/dev/null | grep -q ":${BAS_AIRSIM_PORT}\b"; then
@@ -200,6 +327,9 @@ if [ "$BAS_AIRSIM_MODE" = "stub" ]; then
 elif [ "$BAS_AIRSIM_MODE" = "linux" ]; then
     install_linux_blocks
     start_linux_blocks
+elif [ "$BAS_AIRSIM_MODE" = "windows" ]; then
+    install_windows_blocks
+    start_windows_blocks
 elif [ "$BAS_AIRSIM_MODE" = "off" ]; then
     echo "[airsim-overlay] BAS_AIRSIM_MODE=off — assuming external AirSim at ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT}"
 else

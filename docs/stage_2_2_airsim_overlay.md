@@ -75,13 +75,14 @@ Windows для Stage 2.4 QGC bridge).
 
 ## Запуск
 
-### Три режима
+### Четыре режима
 
-| `BAS_AIRSIM_MODE` | Что запускается | Когда использовать |
+| `BAS_AIRSIM_MODE` | Что запускается | Image API |
 |---|---|---|
-| `stub` (default) | scripts/airsim_stub_server.py — msgpack-rpc API stub | Headless CI / regression smoke без UE5 |
-| `linux` | Cosys-AirSim Blocks (auto-download если нет) headless `-nullrhi` | Полный архитектурный demo: реальный UE5 + AirSim plugin отвечает на API; pose forwarding идёт в настоящий рендер; image API пустой пока без GPU |
-| `off` | ничего; bridge connects к external AirSim по `BAS_AIRSIM_HOST` | Cosys-AirSim Editor на Windows host (с реальным GPU rendering) |
+| `stub` (default) | scripts/airsim_stub_server.py — msgpack-rpc API stub | empty (CI smoke) |
+| `linux` | Cosys-AirSim Blocks Linux auto-download → headless `-nullrhi` | empty (WSL2 нет NVIDIA Vulkan ICD; DZN не поддерживает UE5 SM6) |
+| **`windows`** | **Cosys-AirSim Blocks.exe auto-download → cmd.exe interop, native Windows + RTX 5070 Ti GPU rendering** | ✅ **РЕАЛЬНЫЕ PNG** (verified 7 cameras: front_center, fpv, etc.) |
+| `off` | ничего; bridge connects к external AirSim на `BAS_AIRSIM_HOST` | зависит от того что у оператора |
 
 ### Headless smoke (CI, default)
 
@@ -139,7 +140,48 @@ logs/<run_id>/
   airsim_camera/                ← empty в stub (нет real renderer)
 ```
 
-### Реальный Cosys-AirSim на Windows
+### Полный deploy через `BAS_AIRSIM_MODE=windows` (рекомендованный для real GPU)
+
+```bash
+sudo env BAS_AIRSIM_MODE=windows bash scripts/run_stage_2_2_airsim_overlay.sh
+```
+
+Wrapper:
+1. Скачивает `Blocks_packaged_Windows_55_33.zip` (556 MB) в
+   `/mnt/c/Users/$USER/cosys-airsim/`
+2. Распаковывает через `Expand-Archive` (PowerShell)
+3. Создаёт `/mnt/c/Users/$USER/Documents/AirSim/settings.json` с
+   `ApiServerEndpoint=0.0.0.0:41451`
+4. Запускает `Blocks.exe` через `cmd.exe /c start /B` (детач)
+5. Determines Windows host IP (gateway = `ip route show default`,
+   обычно `172.30.16.1` в WSL2 NAT mode)
+6. Запускает bridge с `BAS_AIRSIM_HOST=<windows-ip>`
+
+**ОДНОРАЗОВАЯ настройка Windows Firewall** (если refused):
+
+В админ-PowerShell на Windows:
+```powershell
+New-NetFirewallRule -DisplayName "CosysAirSim 41451" -Direction Inbound `
+  -Action Allow -Protocol TCP -LocalPort 41451
+```
+
+или в WSL → admin cmd через RunAs:
+```bash
+powershell.exe -Command 'Start-Process cmd.exe -Verb RunAs -ArgumentList "/c","netsh advfirewall firewall add rule name=CosysAirSim41451 dir=in action=allow protocol=TCP localport=41451"'
+```
+
+Verified end-to-end (real Windows GPU rendering):
+```
+ping=True, server_version=4
+209 scene objects
+simGetImage "front_center" → 45718 bytes PNG (256×144 RGBA)
+simGetImage "0"             → 57074 bytes PNG
+simGetImage "fpv"           → 43252 bytes PNG
+simGetImage "back_center"   → 36686 bytes PNG
+simGetImage "bottom_center" → 39250 bytes PNG
+```
+
+### Manual install (alternative)
 
 1. Скачать precompiled binary с
    <https://github.com/Cosys-Lab/Cosys-AirSim/releases> (последний

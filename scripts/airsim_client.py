@@ -208,7 +208,13 @@ class AirSimRpcClient:
 
     def get_image(self, camera_name: str, image_type: int = 0,
                   vehicle_name: str = "") -> bytes:
-        """image_type: 0=Scene, 1=DepthPlanar, 2=DepthPerspective, ..."""
+        """image_type: 0=Scene, 1=DepthPlanar, 2=DepthPerspective, ...
+
+        Cosys-AirSim 3.3 RPC signature: simGetImage(camera_name, image_type,
+        vehicle_name) — 3 args. В default-Blocks сцене работающие camera_name:
+        "0", "1", "front_center", "front_left", "front_right", "fpv",
+        "back_center", "bottom_center".
+        """
         data = self._call(
             "simGetImage", camera_name, image_type, vehicle_name,
         )
