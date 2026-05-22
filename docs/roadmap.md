@@ -97,8 +97,17 @@ sudo bash scripts/run_stage_2_4_rf_demo.sh
    и multi-marker UI оставлено как extension backlog.
 5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
    payload channel.
-6. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
-   видео/скриншотов в один отчёт.
+6. ~~Автоматический demo recorder~~ — **закрыто 22.05.2026**:
+   `scripts/run_stage_2_4_auto_demo.sh` запускает выбранный demo stack
+   (default `run_stage_2_4_fpv_rf_demo.sh`), потом `auto_demo_recorder.py`
+   (Playwright + ffmpeg) выполняет жёсткую траекторию (GUIDED → ARM →
+   TAKEOFF → 5×GOTO с обходом ангара через LOS и NLOS → LAND → DISARM),
+   снимает screenshots в каждой waypoint, параллельно пишет MJPEG поток
+   с борта (`video/fpv.mjpeg.mp4` ~31MB/120с) и Playwright Web GCS
+   capture (`video/web_gcs.webm` ~8MB), генерирует `demo_report.md`
+   с timeline + ссылками на видео + ключевыми скриншотами. Verified
+   end-to-end: 10/10 steps OK, NLOS-кадр поймал RSSI=−87.9 dBm,
+   loss=62%, delay=111ms.
 5. AirSim overlay: перенос pose из Gazebo в AirSim и возврат сенсорных потоков в
    payload channel.
 6. Автоматический demo recorder: запуск сценария, браузер, Gazebo GUI и сбор
