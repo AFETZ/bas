@@ -45,3 +45,4 @@ mavproxy_home/
 docs/*.docx
 docs/*.pdf
 docs/*.pptx
+*.pt

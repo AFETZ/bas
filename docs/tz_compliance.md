@@ -42,7 +42,7 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 | Наземная часть ИССГР | Агрегация данных, цифровые двойники группы БАС и пространства, визуализация объектов | ✅ **Stage 3** — `/digital_twin` endpoint выдаёт единый GeoJSON FeatureCollection всех ИССГР объектов; визуализация через QGIS / leaflet / любой OGC API Features клиент |
 | Синхронизация БД | Автоматический запуск синхронизации, уровни детализации, пакеты 40/80 байт, multicast при поддержке каналов связи | Не реализовано — custom multicast protocol поверх UDP вне scope; у нас REST/HTTP |
 | Имитаторы ведомственных АСУ | REST API, OGC, создание/редактирование ГПИ во внутренней БД | ✅ **Stage 3** — `orchestrator/issgr/api.py` FastAPI с OGC API Features 1.0 (Core + GeoJSON + OpenAPI 3.0 + JSON conformance). `scripts/issgr_asu_client_demo.py` пример АСУ-клиента. POST /collections/{c}/items для создания через АСУ. |
-| Обработка видовых данных | Геопривязка, извлечение объектов/поверхностей, отождествление, покрытия, характерные точки | Частично рядом с видеопотоком, но без CV/геообработки |
+| Обработка видовых данных | Геопривязка, извлечение объектов/поверхностей, отождествление, покрытия, характерные точки | ✅ **Stage 3 CV** — `scripts/cv_detector.py` YOLOv8n детектор подписан на FPV `/camera.mjpg`. Geo-tagging через pinhole camera model + UAV pose + camera FOV ray-cast (pitch -45°, HFOV 80°). Detections POSTятся в ИССГР `/collections/sensor_readings/items` как SensorReading time-series. Annotated frames с bbox + pose overlay. Verified: 4 detections (1 bus + 3 persons) на COCO sample, geo-tagged с ENU offsets 6-12м от UAV. Docs `docs/stage_3_cv_detector.md`. |
 
 ## Личная зона Физулина А.В.
 
