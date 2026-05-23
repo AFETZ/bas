@@ -73,56 +73,64 @@ def _make_obstacle_polygon(
     ]])
 
 
-def seed_repository(repo: IssgrRepository) -> int:
-    """Default seed для RF demo сцены."""
+# Urban scene obstacle catalog — синхронизирован с
+# gazebo/worlds/iris_runway_urban.sdf и RF_OBSTACLES_URBAN в
+# gcs_web_ui_server.py. Поля: name, north_m, east_m, size_north_m,
+# size_east_m, height_m, material, issgr_class, uuid_suffix.
+URBAN_OBSTACLES = [
+    ("Hangar",            45.0,   0.0, 20.0, 32.0, 18.0, "metal",    IssgrClass.GEO_HANGAR,   "00000000-0000-0000-0000-000000000010"),
+    ("Control Tower",     82.0,  32.0,  9.0,  9.0, 24.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000011"),
+    ("Office tower",      60.0, -40.0, 15.0, 15.0, 40.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000020"),
+    ("Apartment block",   60.0,  40.0, 25.0, 15.0, 25.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000021"),
+    ("Warehouse",        100.0,   0.0, 30.0, 40.0, 12.0, "metal",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000022"),
+    ("Residential tower",120.0, -50.0, 12.0, 12.0, 60.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000023"),
+    ("Mall",             140.0,  50.0, 50.0, 30.0, 15.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000024"),
+    ("Commercial",        30.0,  60.0, 18.0, 10.0,  8.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000025"),
+]
+
+
+def seed_repository(repo: IssgrRepository, profile: str = "basic") -> int:
+    """Default seed.
+
+    profile=basic — RF demo: GCS + Hangar + Tower (back-compat).
+    profile=urban — Hangar + Tower + 6 multi-storey buildings + GCS.
+    """
+    import uuid as _uuid
     n_loaded = 0
 
     repo.upsert("gcs", DEFAULT_GCS)
     n_loaded += 1
 
-    # Hangar: 45N, 0E (от origin), 20×32×18м
     origin_lat, origin_lon = -35.363262, 149.165237
     deg_per_m_lat = 1.0 / 111_319.9
     deg_per_m_lon = 1.0 / (111_319.9 * 0.817)   # cos(-35.36) ≈ 0.817
 
-    hangar = Obstacle(
-        id=ObjectIdentifier(
-            domain="bas", system="fizulin-rig",
-            object_uuid=__import__("uuid").UUID("00000000-0000-0000-0000-000000000010"),
-        ),
-        name="Hangar",
-        issgr_class=IssgrClass.GEO_HANGAR,
-        geometry_polygon=_make_obstacle_polygon(
-            origin_lat + 45 * deg_per_m_lat,
-            origin_lon,
-            20.0, 32.0,
-        ),
-        height_m=18.0,
-        material="metal",
-        properties={"rf_signature": "high-reflectivity"},
-    )
-    repo.upsert("obstacles", hangar)
-    n_loaded += 1
+    catalog = URBAN_OBSTACLES if profile == "urban" else URBAN_OBSTACLES[:2]
+    for name, north, east, sn, se, h, mat, cls, uuid_suffix in catalog:
+        obstacle = Obstacle(
+            id=ObjectIdentifier(
+                domain="bas", system="fizulin-rig",
+                object_uuid=_uuid.UUID(uuid_suffix),
+            ),
+            name=name,
+            issgr_class=cls,
+            geometry_polygon=_make_obstacle_polygon(
+                origin_lat + north * deg_per_m_lat,
+                origin_lon + east * deg_per_m_lon,
+                sn, se,
+            ),
+            height_m=h,
+            material=mat,
+            properties={
+                "scene": profile,
+                "local_north_m": north,
+                "local_east_m": east,
+            },
+        )
+        repo.upsert("obstacles", obstacle)
+        n_loaded += 1
 
-    tower = Obstacle(
-        id=ObjectIdentifier(
-            domain="bas", system="fizulin-rig",
-            object_uuid=__import__("uuid").UUID("00000000-0000-0000-0000-000000000011"),
-        ),
-        name="Control Tower",
-        issgr_class=IssgrClass.GEO_TOWER,
-        geometry_polygon=_make_obstacle_polygon(
-            origin_lat + 82 * deg_per_m_lat,
-            origin_lon + 32 * deg_per_m_lon,
-            9.0, 9.0,
-        ),
-        height_m=24.0,
-        material="concrete",
-    )
-    repo.upsert("obstacles", tower)
-    n_loaded += 1
-
-    log.info("seeded %d ISSGR objects (1 GCS + 2 obstacles)", n_loaded)
+    log.info("seeded %d ISSGR objects (profile=%s)", n_loaded, profile)
     return n_loaded
 
 
@@ -198,6 +206,10 @@ def main() -> int:
                     help="JSONL persistence path (optional)")
     ap.add_argument("--no-seed", action="store_true",
                     help="Не loaded default GCS+obstacles")
+    ap.add_argument("--seed-profile",
+                    default=os.environ.get("BAS_ISSGR_SEED_PROFILE", "basic"),
+                    choices=["basic", "urban"],
+                    help="Какой набор статичных объектов seed-ить")
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -209,7 +221,7 @@ def main() -> int:
     repo = IssgrRepository(persist_path=persist_path)
 
     if not args.no_seed:
-        seed_repository(repo)
+        seed_repository(repo, profile=args.seed_profile)
 
     if args.events:
         events_path = Path(args.events).resolve()

@@ -67,28 +67,55 @@ RF_GCS = {
     "height_m": 1.5,
 }
 
-RF_OBSTACLES = [
-    {
-        "id": "hangar_blocker",
-        "name": "Hangar",
-        "north": 45.0,
-        "east": 0.0,
-        "size_north_m": 20.0,
-        "size_east_m": 32.0,
-        "height_m": 18.0,
-        "material": "metal",
-    },
-    {
-        "id": "control_tower",
-        "name": "Tower",
-        "north": 82.0,
-        "east": 32.0,
-        "size_north_m": 9.0,
-        "size_east_m": 9.0,
-        "height_m": 24.0,
-        "material": "concrete",
-    },
+RF_OBSTACLES_BASIC = [
+    {"id": "hangar_blocker", "name": "Hangar",
+     "north": 45.0, "east": 0.0,
+     "size_north_m": 20.0, "size_east_m": 32.0,
+     "height_m": 18.0, "material": "metal"},
+    {"id": "control_tower", "name": "Tower",
+     "north": 82.0, "east": 32.0,
+     "size_north_m": 9.0, "size_east_m": 9.0,
+     "height_m": 24.0, "material": "concrete"},
 ]
+
+# Stage 3 Urban scene — синхронизирован с gazebo/worlds/iris_runway_urban.sdf.
+# Координаты в local NED (north/east метры от UAV origin).
+RF_OBSTACLES_URBAN = [
+    # Existing RF demo obstacles (back-compat).
+    *RF_OBSTACLES_BASIC,
+    # Urban buildings.
+    {"id": "bldg_office_tower", "name": "Office tower",
+     "north": 60.0, "east": -40.0,
+     "size_north_m": 15.0, "size_east_m": 15.0,
+     "height_m": 40.0, "material": "concrete"},
+    {"id": "bldg_apartment", "name": "Apartment block",
+     "north": 60.0, "east": 40.0,
+     "size_north_m": 25.0, "size_east_m": 15.0,
+     "height_m": 25.0, "material": "brick"},
+    {"id": "bldg_warehouse", "name": "Warehouse",
+     "north": 100.0, "east": 0.0,
+     "size_north_m": 30.0, "size_east_m": 40.0,
+     "height_m": 12.0, "material": "metal"},
+    {"id": "bldg_residential", "name": "Residential tower",
+     "north": 120.0, "east": -50.0,
+     "size_north_m": 12.0, "size_east_m": 12.0,
+     "height_m": 60.0, "material": "concrete"},
+    {"id": "bldg_mall", "name": "Mall",
+     "north": 140.0, "east": 50.0,
+     "size_north_m": 50.0, "size_east_m": 30.0,
+     "height_m": 15.0, "material": "brick"},
+    {"id": "bldg_commercial_1", "name": "Commercial",
+     "north": 30.0, "east": 60.0,
+     "size_north_m": 18.0, "size_east_m": 10.0,
+     "height_m": 8.0, "material": "concrete"},
+]
+
+# Profile selector через env. По умолчанию — basic (back-compat для
+# существующих RF demo wrappers).
+_PROFILE = os.environ.get("BAS_RF_OBSTACLE_PROFILE", "basic").strip().lower()
+RF_OBSTACLES = (
+    RF_OBSTACLES_URBAN if _PROFILE == "urban" else RF_OBSTACLES_BASIC
+)
 
 MAV_FRAME_LOCAL_NED = 1
 POSITION_TARGET_LOCAL_NED_POS_ONLY_MASK = 3576
