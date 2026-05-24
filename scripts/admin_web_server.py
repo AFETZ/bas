@@ -58,6 +58,7 @@ WEB_DIR = REPO_ROOT / "web" / "admin"
 # Global runtime state.
 ISSGR_URL: str | None = None
 ONBOARD_DB: Any = None
+SYNC_STATS_URL: str | None = None
 ACTIVITY: deque = deque(maxlen=200)
 ORIGIN_LAT = -35.363262
 ORIGIN_LON = 149.165237
@@ -225,10 +226,20 @@ class AdminHandler(BaseHTTPRequestHandler):
             return self._send_json(tile_grid_geojson(n, e, sz))
 
         if path == "/api/admin/sync_stats":
-            # Placeholder — здесь интегрировать с live multicast sync_publisher
-            # если он экспортирует stats endpoint.
-            return self._send_json({"info": "not implemented",
-                                    "hint": "запустите sync_publisher с --stats-port"})
+            if not SYNC_STATS_URL:
+                return self._send_json({
+                    "info": "sync stats URL not configured",
+                    "hint": "запустите admin с --sync-stats-url=http://host:port/stats",
+                })
+            try:
+                with urllib.request.urlopen(SYNC_STATS_URL, timeout=2.0) as r:
+                    raw = r.read().decode("utf-8")
+                return self._send_json(json.loads(raw))
+            except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+                return self._send_json({
+                    "error": f"sync_publisher unreachable: {e}",
+                    "url": SYNC_STATS_URL,
+                }, status=502)
 
         if path == "/api/admin/activity":
             return self._send_json({"log": list(ACTIVITY)})
@@ -240,7 +251,7 @@ class AdminHandler(BaseHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
-    global ISSGR_URL, ONBOARD_DB
+    global ISSGR_URL, ONBOARD_DB, SYNC_STATS_URL
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8810)
@@ -248,6 +259,9 @@ def main() -> int:
                    help="ИССГР REST endpoint (e.g. http://127.0.0.1:8770)")
     p.add_argument("--onboard-db", type=Path,
                    help="SQLite file для on-board metrics tab")
+    p.add_argument("--sync-stats-url",
+                   help="Multicast publisher /stats endpoint "
+                        "(e.g. http://127.0.0.1:8811/stats)")
     args = p.parse_args()
 
     if args.issgr_url:
@@ -258,12 +272,16 @@ def main() -> int:
         log_activity("config", f"onboard={args.onboard_db}")
     elif args.onboard_db:
         print(f"[warn] onboard requested but OnBoardDB import failed")
+    if args.sync_stats_url:
+        SYNC_STATS_URL = args.sync_stats_url
+        log_activity("config", f"sync_stats={SYNC_STATS_URL}")
 
     server = ThreadingHTTPServer((args.host, args.port), AdminHandler)
     bind = server.server_address
     print(f"[admin] BAS Admin Dashboard at http://{bind[0]}:{bind[1]}/")
     print(f"        ISSGR proxy: {ISSGR_URL or '(none)'}")
     print(f"        On-board DB: {args.onboard_db or '(none)'}")
+    print(f"        Sync stats:  {SYNC_STATS_URL or '(none)'}")
     print(f"        Static: {WEB_DIR}")
     log_activity("startup", f"listen={bind[0]}:{bind[1]}")
     try:

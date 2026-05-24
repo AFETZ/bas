@@ -75,6 +75,9 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from airsim_client import (   # noqa: E402
     AirSimRpcClient, AirSimRpcError, Pose, Quaternionr, Vector3r,
 )
+from multirotor_dynamics import (   # noqa: E402
+    MultirotorDynamics, MultirotorParams, quat_to_euler_zyx,
+)
 
 
 # AirSim FDM JSON protocol magic numbers (из ArduPilot SIM_AirSim.cpp).
@@ -128,11 +131,18 @@ class FdmState:
 
 
 class JsonFdmBridge:
-    """ArduPilot JSON-FDM ↔ AirSim sync.
+    """ArduPilot JSON-FDM ↔ AirSim sync с реалистичной физикой.
 
-    Принимает servo PWM от SITL, опрашивает AirSim физику,
-    форматирует sensor packet обратно. Без AirSim — fallback на
-    тривиальный simulator который держит drone "висящим" (hover).
+    Принимает servo PWM от SITL → mixer + 6DOF integrator → sensor packet
+    обратно. Если AirSim подключён — синхронизирует визуал через
+    simSetVehiclePose. Если AirSim нет — физика всё равно реальная,
+    ArduCopter EKF сможет armiться и летать (закрывает требование
+    "real flight" для interface contract).
+
+    Внутренний симулятор: X-config quadrotor, mass=1.5kg, motor max 6N,
+    inertia diag 0.011/0.011/0.021, semi-implicit Euler @ SITL rate
+    (typically 1200Hz). Покрывает hover, climb, lateral translation,
+    yaw spin без отрыва от ground. Drag linear + angular для stability.
     """
 
     def __init__(
@@ -140,50 +150,55 @@ class JsonFdmBridge:
         fdm_out_port: int = DEFAULT_FDM_OUT_PORT,
         airsim: AirSimRpcClient | None = None,
         log_path: Path | None = None,
+        physics: MultirotorDynamics | None = None,
+        airsim_visual_sync: bool = True,
     ) -> None:
         self.fdm_in_port = fdm_in_port
         self.fdm_out_port = fdm_out_port
         self.airsim = airsim
         self.log_path = log_path
+        self.physics = physics or MultirotorDynamics()
+        self.airsim_visual_sync = airsim_visual_sync
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.bind(("0.0.0.0", fdm_in_port))
         self._sock.settimeout(0.1)
         self._state = FdmState()
         self._t_start = time.time()
+        self._t_last_step = self._t_start
         self._sitl_addr: tuple[str, int] | None = None
         self._frame_count = 0
         self._stop = threading.Event()
+        self._t_last_airsim_visual = 0.0
 
-    def _query_airsim_state(self) -> None:
-        """Pull pose from AirSim → обновляет self._state."""
-        if not self.airsim:
+    def _sync_state_from_physics(self) -> None:
+        """Copy physics state → FdmState (для response к SITL)."""
+        ps = self.physics.state
+        self._state.x_north = ps.pos_ned[0]
+        self._state.y_east  = ps.pos_ned[1]
+        self._state.z_down  = ps.pos_ned[2]
+        self._state.vx_north = ps.vel_ned[0]
+        self._state.vy_east  = ps.vel_ned[1]
+        self._state.vz_down  = ps.vel_ned[2]
+        yaw, pitch, roll = quat_to_euler_zyx(ps.quat)
+        self._state.yaw = yaw
+        self._state.pitch = pitch
+        self._state.roll = roll
+        self._state.gyro = ps.omega_body
+        self._state.accel_body = ps.accel_body
+
+    def _push_airsim_visual(self) -> None:
+        """Send физика-derived pose в AirSim для visual overlay."""
+        if not self.airsim or not self.airsim_visual_sync:
             return
+        ps = self.physics.state
+        pose = Pose(
+            position=Vector3r(x=ps.pos_ned[0], y=ps.pos_ned[1],
+                              z=ps.pos_ned[2]),
+            orientation=Quaternionr(w=ps.quat[0], x=ps.quat[1],
+                                    y=ps.quat[2], z=ps.quat[3]),
+        )
         try:
-            ms = self.airsim.call("getMultirotorState", "")
-            if isinstance(ms, dict):
-                k = ms.get("kinematics_estimated", {})
-                pos = k.get("position", {})
-                ori = k.get("orientation", {})
-                lv = k.get("linear_velocity", {})
-                av = k.get("angular_velocity", {})
-                self._state.x_north = float(pos.get("x_val", 0))
-                self._state.y_east = float(pos.get("y_val", 0))
-                self._state.z_down = float(pos.get("z_val", 0))
-                # quaternion → euler (roll/pitch/yaw, ZYX intrinsic).
-                qw, qx, qy, qz = (float(ori.get(k, 0)) for k in
-                                  ("w_val", "x_val", "y_val", "z_val"))
-                self._state.roll = math.atan2(
-                    2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy))
-                self._state.pitch = math.asin(
-                    max(-1.0, min(1.0, 2 * (qw * qy - qz * qx))))
-                self._state.yaw = math.atan2(
-                    2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
-                self._state.vx_north = float(lv.get("x_val", 0))
-                self._state.vy_east = float(lv.get("y_val", 0))
-                self._state.vz_down = float(lv.get("z_val", 0))
-                self._state.gyro = (float(av.get("x_val", 0)),
-                                    float(av.get("y_val", 0)),
-                                    float(av.get("z_val", 0)))
+            self.airsim.call("simSetVehiclePose", pose.to_msgpack(), True, "")
         except (AirSimRpcError, OSError):
             pass
 
@@ -219,10 +234,12 @@ class JsonFdmBridge:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
     def run(self) -> None:
-        """Main loop: receive PWM packets, query AirSim, respond."""
+        """Main loop: receive PWM, integrate physics, respond с sensor state."""
         print(f"[jsonfdm] listening on UDP :{self.fdm_in_port}, "
               f"responding to :{self.fdm_out_port}")
-        last_airsim_poll = 0.0
+        print(f"[jsonfdm] physics: m={self.physics.params.mass_kg}kg "
+              f"max_thrust={self.physics.params.motor_thrust_max_n}N/motor "
+              f"hover_pwm≈{self.physics.hover_pwm_estimate}")
         while not self._stop.is_set():
             try:
                 data, addr = self._sock.recvfrom(2048)
@@ -240,21 +257,40 @@ class JsonFdmBridge:
             self._frame_count += 1
             pwm = msg.get("pwm", [])
 
-            # Limit AirSim polling rate (PWM comes @ 1200Hz from SITL).
+            # Real-time dt от wall clock (SITL может посылать с
+            # переменной задержкой; physics integrate с реальным dt
+            # для стабильности).
             now = time.time()
-            if now - last_airsim_poll > 0.05:   # 20Hz refresh
-                self._query_airsim_state()
-                last_airsim_poll = now
+            dt = now - self._t_last_step
+            self._t_last_step = now
+            # Clamp dt: первый кадр и большие паузы — safety.
+            dt = max(0.0001, min(0.05, dt))
 
+            # Step physics.
+            self.physics.step(pwm, dt)
+            self._sync_state_from_physics()
+
+            # Send sensor packet к SITL.
             self._emit_response()
 
+            # AirSim visual update — throttle до ~20Hz, не каждый кадр.
+            if (self.airsim_visual_sync and self.airsim
+                    and now - self._t_last_airsim_visual > 0.05):
+                self._push_airsim_visual()
+                self._t_last_airsim_visual = now
+
             if self._frame_count == 1 or self._frame_count % 240 == 0:
-                # First frame + ~1Hz thereafter (SITL шлёт 1200Hz).
                 self._log("frame", {
                     "frame_count": self._frame_count,
                     "pwm_first8": pwm[:8] if pwm else [],
                     "pos": [self._state.x_north, self._state.y_east,
                             self._state.z_down],
+                    "vel": [self._state.vx_north, self._state.vy_east,
+                            self._state.vz_down],
+                    "att_deg": [math.degrees(self._state.roll),
+                                math.degrees(self._state.pitch),
+                                math.degrees(self._state.yaw)],
+                    "on_ground": self.physics.state.on_ground,
                 })
 
     def stop(self) -> None:

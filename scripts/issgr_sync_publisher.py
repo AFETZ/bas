@@ -125,6 +125,9 @@ def main() -> int:
     ap.add_argument("--max-seconds", type=float, default=0.0)
     ap.add_argument("--log-file", default="",
                     help="Сохранять все sent packets (hex) в файл")
+    ap.add_argument("--stats-port", type=int, default=0,
+                    help="Если задан, поднять HTTP GET-only endpoint /stats "
+                         "на этом порту для admin dashboard / monitoring")
     args = ap.parse_args()
 
     logging.basicConfig(
@@ -141,6 +144,50 @@ def main() -> int:
     start = time.time()
     seq_map: dict[str, int] = {}
     last_packets = {"L1": 0, "L2": 0, "HEARTBEAT": 0}
+    last_tick_n_l1 = 0
+    last_tick_n_l2 = 0
+    last_tick_t = time.time()
+
+    # Optional /stats HTTP endpoint для admin dashboard.
+    stats_server = None
+    if args.stats_port:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import json as _json
+        import threading as _threading
+
+        class _StatsHandler(BaseHTTPRequestHandler):
+            def log_message(self, *_a, **_kw): pass
+            def do_GET(self) -> None:
+                if self.path != "/stats":
+                    self.send_error(404); return
+                body = _json.dumps({
+                    "ok": True,
+                    "node_id": args.node_id,
+                    "endpoint": f"{args.group}:{args.port}",
+                    "ttl": args.ttl,
+                    "interval_s": args.interval,
+                    "uptime_s": time.time() - start,
+                    "issgr_url": args.issgr_url,
+                    "totals": last_packets,
+                    "last_tick": {
+                        "n_l1": last_tick_n_l1,
+                        "n_l2": last_tick_n_l2,
+                        "ts": last_tick_t,
+                    },
+                    "tracked_objects": len(seq_map),
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+
+        stats_server = ThreadingHTTPServer(("127.0.0.1", args.stats_port),
+                                            _StatsHandler)
+        _threading.Thread(target=stats_server.serve_forever,
+                          kwargs={"poll_interval": 0.5}, daemon=True).start()
+        log.info("stats endpoint: http://127.0.0.1:%d/stats", args.stats_port)
 
     try:
         while True:
@@ -199,6 +246,9 @@ def main() -> int:
 
             log.info("tick: HEARTBEAT=1 L1=%d L2=%d (totals: %s)",
                      n_l1, n_l2, last_packets)
+            last_tick_n_l1 = n_l1
+            last_tick_n_l2 = n_l2
+            last_tick_t = time.time()
 
             elapsed = time.time() - tick_start
             sleep_s = max(0.0, args.interval - elapsed)
@@ -213,6 +263,9 @@ def main() -> int:
         publisher.close()
         if log_fp is not None:
             log_fp.close()
+        if stats_server is not None:
+            stats_server.shutdown()
+            stats_server.server_close()
 
     return 0
 
