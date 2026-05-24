@@ -23,6 +23,7 @@ from .models import (
     ObjectIdentifier, PointGeometry, PolygonGeometry, Pose,
     SensorReading, UAV, Waypoint,
 )
+from .onboard import CompositeMetrics, OnBoardDB
 from .repository import IssgrRepository
 from .serializers import to_geojson_feature, to_geojson_feature_collection
 from .sync import (
@@ -38,6 +39,8 @@ __all__ = [
     "LineStringGeometry", "Mission", "ObjectIdentifier", "Obstacle",
     "PointGeometry", "PolygonGeometry", "Pose", "SensorReading", "UAV",
     "Waypoint", "to_geojson_feature", "to_geojson_feature_collection",
+    # On-board persistence
+    "CompositeMetrics", "OnBoardDB",
     # Multicast sync
     "AutoPublisher", "L1Packet", "L2Packet", "MulticastPublisher",
     "MulticastSubscriber", "decode_packet", "encode_heartbeat",
