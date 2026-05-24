@@ -3,7 +3,7 @@
 ![Stages](https://img.shields.io/badge/stages-1.0--2.4_+_backlog-success)
 ![License](https://img.shields.io/badge/license-research-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux/WSL2-orange)
-![DeepWiki_EngLang](https://deepwiki.com/AFETZ/bas)
+AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
 
 Воспроизводимый исследовательский стенд для моделирования БАС с фокусом на
 **каналы связи, радиофизику и ручное управление**. Закрывает зону Физулина
