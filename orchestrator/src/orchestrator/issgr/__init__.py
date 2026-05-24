@@ -23,6 +23,11 @@ from .models import (
     ObjectIdentifier, PointGeometry, PolygonGeometry, Pose,
     SensorReading, UAV, Waypoint,
 )
+from .large_map import (
+    EARTH_RADIUS_M, IndexEntry, SpatialIndex, TileBounds, TileGrid,
+    TileId, latlon_to_local_ned, local_ned_to_latlon,
+    sionna_cache_key, tiles_to_preload,
+)
 from .onboard import CompositeMetrics, OnBoardDB
 from .repository import IssgrRepository
 from .serializers import to_geojson_feature, to_geojson_feature_collection
@@ -41,6 +46,10 @@ __all__ = [
     "Waypoint", "to_geojson_feature", "to_geojson_feature_collection",
     # On-board persistence
     "CompositeMetrics", "OnBoardDB",
+    # Large-map adaptation (>20×20 km)
+    "EARTH_RADIUS_M", "IndexEntry", "SpatialIndex", "TileBounds", "TileGrid",
+    "TileId", "latlon_to_local_ned", "local_ned_to_latlon",
+    "sionna_cache_key", "tiles_to_preload",
     # Multicast sync
     "AutoPublisher", "L1Packet", "L2Packet", "MulticastPublisher",
     "MulticastSubscriber", "decode_packet", "encode_heartbeat",

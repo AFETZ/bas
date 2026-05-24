@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BAS Admin Dashboard</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">BAS</span>
+      <span class="subtitle">Admin Dashboard</span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="issgr">ИССГР Collections</button>
+      <button class="tab" data-tab="multi">Multi-UAV</button>
+      <button class="tab" data-tab="onboard">On-board Metrics</button>
+      <button class="tab" data-tab="tilemap">Tile Map (>20×20 km)</button>
+      <button class="tab" data-tab="sync">Multicast Sync</button>
+    </nav>
+    <div class="status">
+      <span class="pill" id="api-pill">API</span>
+      <span class="pill" id="now-pill">—</span>
+    </div>
+  </header>
+
+  <main class="content">
+    <!-- ========== Overview ========== -->
+    <section id="tab-overview" class="tab-panel active">
+      <h2>System Overview</h2>
+      <div class="grid grid-4">
+        <div class="card" id="kpi-collections">
+          <div class="kpi-label">ИССГР Collections</div>
+          <div class="kpi-value">—</div>
+        </div>
+        <div class="card" id="kpi-uavs">
+          <div class="kpi-label">UAVs registered</div>
+          <div class="kpi-value">—</div>
+        </div>
+        <div class="card" id="kpi-obstacles">
+          <div class="kpi-label">Obstacles</div>
+          <div class="kpi-value">—</div>
+        </div>
+        <div class="card" id="kpi-onboard-rows">
+          <div class="kpi-label">On-board total rows</div>
+          <div class="kpi-value">—</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Endpoints</h3>
+        <table id="endpoints-table" class="dense">
+          <thead><tr><th>Service</th><th>URL</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Activity (last 60s)</h3>
+        <pre id="activity-log">—</pre>
+      </div>
+    </section>
+
+    <!-- ========== ИССГР Collections ========== -->
+    <section id="tab-issgr" class="tab-panel">
+      <h2>ИССГР OGC API Features</h2>
+      <p class="muted">REST-прокси к <code>/collections</code> на <code id="issgr-url">—</code></p>
+      <div class="card">
+        <div class="toolbar">
+          <select id="issgr-collection-select">
+            <option value="uavs">uavs</option>
+            <option value="obstacles">obstacles</option>
+            <option value="gcs">gcs</option>
+            <option value="missions">missions</option>
+            <option value="sensor_readings">sensor_readings</option>
+          </select>
+          <button id="issgr-refresh">Refresh</button>
+          <span class="muted" id="issgr-count">—</span>
+        </div>
+        <table class="dense" id="issgr-items-table">
+          <thead><tr><th>id</th><th>name</th><th>geometry type</th><th>coords</th><th>properties</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== Multi-UAV ========== -->
+    <section id="tab-multi" class="tab-panel">
+      <h2>Multi-UAV</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>UAV roster</h3>
+          <table class="dense" id="uavs-roster">
+            <thead><tr><th>sysid</th><th>name</th><th>mode</th><th>armed</th><th>alt (m)</th><th>battery (V)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Live positions</h3>
+          <div id="multi-map" style="height:380px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== On-board Metrics ========== -->
+    <section id="tab-onboard" class="tab-panel">
+      <h2>On-board Database (SQLite)</h2>
+      <div class="grid grid-4">
+        <div class="card" id="ob-uav"><div class="kpi-label">uav_state rows</div><div class="kpi-value">—</div></div>
+        <div class="card" id="ob-sensor"><div class="kpi-label">sensor_readings</div><div class="kpi-value">—</div></div>
+        <div class="card" id="ob-mission"><div class="kpi-label">missions</div><div class="kpi-value">—</div></div>
+        <div class="card" id="ob-composite"><div class="kpi-label">composite_state</div><div class="kpi-value">—</div></div>
+      </div>
+      <div class="card">
+        <h3>Latest composite metrics</h3>
+        <table class="dense" id="composite-table">
+          <thead><tr><th>sysid</th><th>metric</th><th>value</th><th>extra</th><th>age (s)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== Tile Map ========== -->
+    <section id="tab-tilemap" class="tab-panel">
+      <h2>Tile Grid (>20×20 km adaptation)</h2>
+      <div class="card">
+        <div class="toolbar">
+          <label>Tile size m: <input type="number" id="tile-size-m" value="2000" min="500" max="10000" step="500"></label>
+          <label>Tiles N: <input type="number" id="tile-n" value="10" min="1" max="50"></label>
+          <label>Tiles E: <input type="number" id="tile-e" value="10" min="1" max="50"></label>
+          <button id="tile-render">Render grid</button>
+          <span class="muted" id="tile-stats">—</span>
+        </div>
+        <div id="tile-map" style="height:560px;"></div>
+      </div>
+    </section>
+
+    <!-- ========== Multicast Sync ========== -->
+    <section id="tab-sync" class="tab-panel">
+      <h2>Multicast Sync Status</h2>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Local node</h3>
+          <table class="dense">
+            <tr><th>Endpoint</th><td><code id="sync-endpoint">239.10.10.10:5500</code></td></tr>
+            <tr><th>TTL</th><td>1 (admin-local)</td></tr>
+            <tr><th>Packet sizes</th><td>L1=40B (POSITION) / L2=80B (SENSOR)</td></tr>
+            <tr><th>Wire format</th><td>FNV-1a hashes + CRC-16/CCITT-FALSE</td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Publisher stats (placeholder)</h3>
+          <p class="muted">Подключите live sync_publisher → /api/admin/sync_stats для real-time данных.</p>
+          <pre id="sync-stats">—</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+  <script src="app.js"></script>
+</body>
+</html>
