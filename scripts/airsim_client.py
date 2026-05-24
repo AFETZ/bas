@@ -141,6 +141,13 @@ class AirSimRpcClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    def call(self, method: str, *args: Any) -> Any:
+        """Public alias for _call — generic msgpack-rpc method invocation.
+
+        Используется когда нужен RPC method без typed wrapper (например
+        Cosys-AirSim-specific simSpawnObject / simDestroyObject)."""
+        return self._call(method, *args)
+
     def _call(self, method: str, *args: Any) -> Any:
         with self._lock:
             self.connect()

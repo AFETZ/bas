@@ -42,7 +42,9 @@ MSGPACK_TYPE_RESPONSE = 1
 STATE_LOCK = threading.Lock()
 LAST_POSE: dict[str, Any] = {}
 POSE_HISTORY: list[dict[str, Any]] = []
+SPAWN_HISTORY: list[dict[str, Any]] = []
 POSE_LOG_PATH: Path | None = None
+SPAWN_LOG_PATH: Path | None = None
 
 
 def _emit_pose_log(record: dict[str, Any]) -> None:
@@ -67,8 +69,50 @@ def dispatch(method: str, args: list[Any]) -> Any:
     if method == "getClientVersion":
         return 1
     if method == "simListSceneObjects":
-        # Mock сцена: iris + ground plane + два obstacle'а как в RF demo.
-        return ["BP_iris_uav1", "RF_Hangar", "RF_ControlTower", "Floor"]
+        # Mock сцена: iris + ground plane + два obstacle'а как в RF demo
+        # + любые spawned objects из текущей session.
+        base = ["BP_iris_uav1", "RF_Hangar", "RF_ControlTower", "Floor"]
+        with STATE_LOCK:
+            spawned = [s.get("object_name", "?") for s in SPAWN_HISTORY]
+        return base + spawned
+    if method == "simSpawnObject":
+        # args = [object_name, asset_name, pose, scale, physics_enabled, is_blueprint]
+        # Cosys-AirSim returns object_name (string) на успех.
+        if not args:
+            return ""
+        rec = {
+            "wall_time": time.time(),
+            "object_name": args[0] if len(args) > 0 else "",
+            "asset_name": args[1] if len(args) > 1 else "",
+            "pose": args[2] if len(args) > 2 else None,
+            "scale": args[3] if len(args) > 3 else None,
+            "physics_enabled": args[4] if len(args) > 4 else False,
+            "is_blueprint": args[5] if len(args) > 5 else False,
+        }
+        with STATE_LOCK:
+            SPAWN_HISTORY.append(rec)
+        if SPAWN_LOG_PATH is not None:
+            import json
+            try:
+                with SPAWN_LOG_PATH.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+            except OSError:
+                pass
+        return rec["object_name"]
+    if method == "simDestroyObject":
+        # args = [object_name]
+        if not args:
+            return False
+        target = args[0]
+        with STATE_LOCK:
+            before = len(SPAWN_HISTORY)
+            SPAWN_HISTORY[:] = [s for s in SPAWN_HISTORY
+                                if s.get("object_name") != target]
+            removed = before - len(SPAWN_HISTORY)
+        return removed > 0
+    if method == "simListAssets":
+        # Минимальный asset list (типичный для Cosys-AirSim Blocks scene).
+        return ["Cube", "Cylinder", "Sphere", "Cone", "Plane"]
     if method == "getMultirotorState":
         with STATE_LOCK:
             pos = LAST_POSE.get("position", {"x_val": 0.0, "y_val": 0.0, "z_val": 0.0})
@@ -172,26 +216,32 @@ class _ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 
 def main() -> int:
-    global POSE_LOG_PATH
+    global POSE_LOG_PATH, SPAWN_LOG_PATH
 
     ap = argparse.ArgumentParser(description="AirSim msgpack-rpc stub server")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=41451)
     ap.add_argument("--pose-log",
                     help="NDJSON путь для записи всех simSetVehiclePose")
+    ap.add_argument("--spawn-log",
+                    help="NDJSON путь для записи всех simSpawnObject")
     args = ap.parse_args()
 
     if args.pose_log:
         POSE_LOG_PATH = Path(args.pose_log)
         POSE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # Truncate.
         POSE_LOG_PATH.write_text("")
+    if args.spawn_log:
+        SPAWN_LOG_PATH = Path(args.spawn_log)
+        SPAWN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SPAWN_LOG_PATH.write_text("")
 
     server = _ThreadedTCPServer((args.host, args.port), _RPCHandler)
     bind_host, bind_port = server.server_address[:2]
     print(f"[stub] AirSim stub listening on {bind_host}:{bind_port}",
           flush=True)
-    print(f"[stub] pose log: {POSE_LOG_PATH or '<disabled>'}", flush=True)
+    print(f"[stub] pose log:  {POSE_LOG_PATH or '<disabled>'}", flush=True)
+    print(f"[stub] spawn log: {SPAWN_LOG_PATH or '<disabled>'}", flush=True)
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
