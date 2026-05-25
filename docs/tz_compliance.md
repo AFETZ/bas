@@ -128,6 +128,52 @@ Stage 2.4 закрыт live Web GCS UI, smoke-прогоном через MAVPro
 RF/LOS demo с препятствиями, RSSI/loss/delay графиком; личная зона Физулина по
 этой матрице — **100%**.
 
+## Master demo — все модули one-shot
+
+`scripts/run_master_demo.sh` поднимает все работающие модули и показывает
+live integration в браузере через Admin Dashboard. Verified
+end-to-end на 60-second run:
+
+```
+==> [1/14]  ИССГР node-A :8770       (urban seed: 8 obstacles)
+==> [2/14]  ИССГР node-B :8771       (replica для multicast sync)
+==> [3/14]  OnBoardDB SQLite + composite engine (sysid=1, 5Hz)
+==> [4/14]  Multicast publisher (node-A → 239.10.10.10:5500) + /stats
+==> [5/14]  Multicast subscriber  (multicast → node-B POST)
+==> [6/14]  AirSim stub server (msgpack-rpc :41451)
+==> [7/14]  AirSim scene populate (26 obstacles spawn via simSpawnObject)
+==> [8/14]  ArduPilot↔AirSim JsonFdmBridge (X-config 6DOF physics)
+==> [9/14]  Synthetic SITL emulator (PWM frames @ 50 Hz)
+==> [10/14] Cyber defense monitor (MAVLink :14559 + RF channel)
+            + scheduled attacks @ t+30/38/45 (GPS spoof / cmd inject / RF jam)
+==> [11/14] Real Sionna cached tile compute (4 tiles из iris_runway map)
+==> [12/14] Admin Dashboard :8810 (6 tabs, live)
+==> [13/14] Browser auto-open
+==> [14/14] Demo running 60s...
+
+[t+ 60s] node-A: uavs=1 obs=8 | node-B: uavs=1 (synced)
+         sync: HB=52 L1=52 (multicast packets delivered)
+         onboard_rows=800 (SQLite time-series growing)
+         cyber_alerts=85 (3 attacks detected by monitor)
+```
+
+Все 14 модулей запускаются параллельно, health-check'аются, и работают
+60+ секунд без падений. См. артефакты в `logs/master_demo_<ts>/`.
+
+## Ограничения
+
+Все **не-production** аспекты текущей реализации — в `docs/LIMITATIONS.md`.
+По каждому пункту разобрано: что работает, что нет, как обойти/расширить.
+Ключевые ограничения:
+
+| Категория | Что НЕ production | Workaround |
+|---|---|---|
+| ArduPilot SITL end-to-end | ArduCopter не установлен в текущем venv → JsonFdmBridge тестируется synthetic SITL emulator вместо real `sim_vehicle.py` | Установить ArduPilot из исходников (1 GB + 30 мин) |
+| Sionna RT live mode | Mitsuba CUDA OptiX недоступен на WSL2 по default → используется pre-computed `radio_maps/iris_runway.npz` (real Sionna output) | Linux native с GPU + `MITSUBA_VARIANT=cuda_ad_mono` |
+| AirSim custom UE5 map | Spawn primitives (Cube/Cylinder), не realistic building meshes | UE5 Editor + blueprint actors + `is_blueprint=True` |
+| ИССГР "кварк/MongoDB/Minio" из PDF | Функциональный эквивалент через Pydantic + SQLite | Repository pattern swap на PyMongo + Minio |
+| Real cyber pentest | Defensive research simulator на synthetic MAVLink | Real testing требует authorized hardware |
+
 ## Актуальный остаток
 
 По личной зоне Физулина после сверки с новыми исходниками незакрытых пунктов в
