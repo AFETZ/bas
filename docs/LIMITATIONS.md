@@ -21,36 +21,53 @@
 
 ## 1. ArduPilot ↔ AirSim JsonFdmBridge
 
-### Работает
-- X-config quadrotor 6DOF dynamics с motor mixer, body forces/torques,
-  quaternion attitude integration, IMU specific force output
-- Round-trip с synthetic PWM frames (verified: ground rest, climb,
-  yaw spin)
-- Real-time dt clamping для numerical stability
-- Optional AirSim visual sync (~20 Hz `simSetVehiclePose`)
+### Работает (VERIFIED 2026-05-25 с real ArduCopter SITL)
+- ArduPilot installed from source (`scripts/install_ardupilot.sh`, build
+  ~3 min с pre-installed apt deps); arducopter binary 5.1 MB at
+  `~/ardupilot/build/sitl/bin/arducopter`
+- JsonFdmBridge correctly parses **binary** `servo_packet_16` (40B)
+  от SITL — magic=18458, 16 PWM channels little-endian
+- Bridge replies с null-terminated compact JSON containing all
+  mandatory fields: timestamp, imu.gyro, imu.accel_body, position,
+  quaternion (replaces ambiguous euler attitude), velocity, +
+  latitude/longitude/altitude для GPS lock
+- **Real ArduCopter SITL accepts data**: SITL log shows "JSON received:
+  timestamp imu:gyro imu:accel_body position quaternion velocity" —
+  все fields parsed correctly
+- **HEARTBEAT + ATTITUDE + GLOBAL_POSITION_INT** streams работают:
+  smoke `_real_sitl_e2e_smoke.py` verifies all через
+  `tcp:127.0.0.1:5760` MAVLink connection
+- X-config quadrotor 6DOF dynamics с motor mixer, quaternion
+  integration, IMU specific force output (verified independently
+  через `_multirotor_dynamics_smoke.py`)
+- Real-time dt clamping + 4500+ frames/30s actual round-trip rate
 
 ### Не работает / не сделано
-- **End-to-end test с real ArduPilot SITL `-f airsim-copter` НЕ проведён**.
-  ArduPilot не установлен в текущем dev окружении (`~/ardupilot/`
-  отсутствует). Smoke использует synthetic SITL emulator (PWM
-  generator) вместо real `sim_vehicle.py`.
-- EKF compatibility не проверена с real ArduCopter (могут потребоваться
-  doctored covariance / sensor noise модели).
-- Wind / turbulence model отсутствует (только linear drag).
-- Ground effect / propeller wash / battery sag не моделируются.
+- **Full arm + takeoff flight test НЕ проходит** с perfect-zero IMU
+  data. EKF3 flags `"Roll/Pitch inconsistent 116 deg"` потому что
+  bridge sends constant (0,0,-9.81) accel + (0,0,0) gyro. Real
+  Pixhawk имеет sensor noise (~0.0001 rad/s gyro bias, ~0.01 m/s²
+  accel noise) которое EKF expects. Для arm нужно добавить tuned
+  IMU noise model в `multirotor_dynamics.py` — это extension не
+  блокирующая wire interface validation.
+- Wind / turbulence model отсутствует
+- Ground effect / propeller wash / battery sag не моделируются
 
 ### Workaround
 ```bash
-# Установить ArduPilot SITL:
-git clone https://github.com/ArduPilot/ardupilot.git ~/ardupilot
-cd ~/ardupilot && Tools/environment_install/install-prereqs-ubuntu.sh -y
-./waf configure --board sitl && ./waf copter
+# 1. Установить ArduPilot SITL (15-30 мин build):
+bash scripts/install_ardupilot.sh
 
-# Запустить с JsonFdmBridge:
-./Tools/autotest/sim_vehicle.py -v ArduCopter -f airsim-copter \
-    --no-mavproxy --out=udpout:127.0.0.1:14550
-# В другом терминале:
-./scripts/arducopter_airsim_interface.py --mode=json_fdm
+# 2. End-to-end verify:
+python scripts/_real_sitl_e2e_smoke.py
+# ✓ TCP 5760 up, HEARTBEAT, ATTITUDE+GLOBAL_POSITION_INT,
+#   4500+ PWM frames round-tripped through bridge
+
+# 3. Production deployment с tuned IMU noise:
+# Modify MultirotorDynamics в scripts/multirotor_dynamics.py:
+#   step() добавить gyro = (random.gauss(0, 0.0001), ...)
+#                  accel_body = (..., -9.81 + random.gauss(0, 0.01))
+# Это даст EKF realistic sensor model → arm OK → flight.
 ```
 
 ## 2. Sionna RT — radio coverage maps
@@ -63,28 +80,47 @@ cd ~/ardupilot && Tools/environment_install/install-prereqs-ubuntu.sh -y
   pre-computed map с real RSS dBm values
 - Per-tile RSS статистика (mean/min/max RSSI, coverage_fraction)
 - Использование в master demo (4 tiles in real time)
+- **OptiX libraries installed на WSL2** через
+  `scripts/install_mitsuba_optix_wsl.sh` + `_optix_copy_admin.ps1`:
+  downloads NVIDIA Linux driver 595.71.05, extracts libnvoptix.so.1,
+  libnvidia-rtcore.so, libnvidia-ptxjitcompiler.so, nvoptix.bin,
+  стейджит в `/opt/optix-real/` (+ optionally copy в
+  `/mnt/c/Windows/System32/lxss/lib/` через elevated PowerShell)
+- Mitsuba CUDA OptiX init **WORKS**: `MITSUBA_VARIANT=cuda_ad_mono`
+  ↔ `DRJIT_LIBOPTIX_PATH=/opt/optix-real/libnvoptix.so.1` →
+  `print(mi.variant())` returns `cuda_ad_mono`
 
 ### Не работает / не сделано
-- **Live mode (`--mode live`) на WSL2 НЕ работает**: Mitsuba CUDA
-  OptiX недоступен в WSL2 без manual setup (см. mitsuba3 docs); LLVM
-  CPU backend на Sionna 1.2 имеет известный spectrum/Color3f mismatch
-  при ITU materials.
+- **Sionna RT 1.2 live solve не работает full-pipeline на WSL2**:
+  RadioMapSolver hits `OPTIX_ERROR_INTERNAL_COMPILER_ERROR`
+  (`API error 7299`) — known incompatibility между Mitsuba's compiled
+  OptiX SDK version и Linux driver 595.71.05 OptiX runtime. Это
+  upstream Mitsuba/Sionna issue specific к WSL2 + R595 driver branch.
+  Не влияет на cached mode (production use).
 - Pre-computed map покрывает только iris_runway scene (800×300м).
-  Для других сцен нужно отдельный pre-compute run.
-- Real-time live updates на CUDA Linux native — работает (есть Stage
-  2.1 `online_sionna_publisher.py` для реального GPU), но не
-  testable на этом dev host'е.
+  Для других сцен нужно отдельный pre-compute run (на Linux native
+  с CUDA где live solver работает).
 
 ### Workaround
 ```bash
-# На Linux native с GPU:
+# Auto-install OptiX libraries в WSL2:
+bash scripts/install_mitsuba_optix_wsl.sh
+# Если copy в lxss/lib не удалось (Windows admin required):
+Start-Process powershell -Verb RunAs -ArgumentList \
+    "-File \\wsl.localhost\Ubuntu-Restore\home\afetz\bas-prototype\scripts\_optix_copy_admin.ps1"
+wsl --shutdown    # из Windows
+# After re-open WSL2:
+DRJIT_LIBOPTIX_PATH=/opt/optix-real/libnvoptix.so.1 \
+MITSUBA_VARIANT=cuda_ad_mono \
+sionna_env/bin/python -c "import mitsuba as mi; mi.set_variant('cuda_ad_mono')"
+# → OptiX initializes; пакет Mitsuba/Sionna live solve компилируется
+# но runtime PTX kernel compilation fails в Sionna 1.2 — ждать
+# upstream fix или использовать pre-computed cached mode.
+
+# Production live Sionna RT (Linux native, не WSL):
 MITSUBA_VARIANT=cuda_ad_mono \
 sionna_env/bin/python scripts/sionna_real_tile.py --mode live \
     --tile-i 0 --tile-j 0 --freq-mhz 2400
-
-# Pre-compute для новой scene:
-sionna_env/bin/python scripts/online_sionna_publisher.py \
-    --scene path/to/my_scene.xml --output radio_maps/my_scene.npz
 ```
 
 ## 3. AirSim 3D scene

@@ -56,7 +56,9 @@ def main() -> int:
         pub.sendto((json.dumps(packet) + "\n").encode(), ("127.0.0.1", FDM_IN))
         try:
             data, _ = sitl_sock.recvfrom(2048)
-            r = json.loads(data.decode())
+            # Strip trailing null(s) (ArduPilot SIM_JSON expects \0 terminator).
+            text = data.rstrip(b"\x00").decode().strip()
+            r = json.loads(text)
             responses.append(r)
             return r
         except (socket.timeout, json.JSONDecodeError):
@@ -87,14 +89,20 @@ def main() -> int:
     assert alt > 2.0, f"didn't climb above 2m: alt={alt}"
 
     # --- Phase 3: yaw spin via differential motor thrust ---
-    yaw_before = responses[-1]["attitude"][2]
+    def _yaw_from_quat(q):
+        w, x, y, z = q
+        import math
+        siny = 2 * (w * z + x * y)
+        cosy = 1 - 2 * (y * y + z * z)
+        return math.atan2(siny, cosy)
+    yaw_before = _yaw_from_quat(responses[-1]["quaternion"])
     print(f"\n[Phase 3] yaw spin: M1+M2 (CCW)↑ M3+M4 (CW)↓ × 100 ticks")
     print(f"    yaw_before = {yaw_before:.3f} rad")
     for fc in range(240, 340):
         _send([hover_pwm + 300, hover_pwm + 300,
                hover_pwm + 100, hover_pwm + 100] + [1500] * 12, fc)
         time.sleep(0.005)
-    yaw_after = responses[-1]["attitude"][2]
+    yaw_after = _yaw_from_quat(responses[-1]["quaternion"])
     yaw_delta = yaw_after - yaw_before
     print(f"    yaw_after  = {yaw_after:.3f} rad")
     print(f"    Δyaw       = {yaw_delta:+.3f} rad ({yaw_delta * 180 / 3.14159:+.1f}°)")
@@ -109,10 +117,10 @@ def main() -> int:
     print(f"\nTotal: 340 PWM frames sent, {len(responses)} sensor responses")
     assert len(responses) >= 300, f"too few responses: {len(responses)}"
     for r in responses:
-        for k in ("timestamp", "imu", "position", "attitude", "velocity"):
+        for k in ("timestamp", "imu", "position", "quaternion", "velocity"):
             assert k in r, f"response missing {k}: {r}"
         assert len(r["position"]) == 3
-        assert len(r["attitude"]) == 3
+        assert len(r["quaternion"]) == 4
         assert len(r["velocity"]) == 3
 
     print(f"Log @ {LOG_PATH} ({LOG_PATH.stat().st_size}B)")

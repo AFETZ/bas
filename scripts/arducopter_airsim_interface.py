@@ -63,6 +63,7 @@ import argparse
 import json
 import math
 import socket
+import struct
 import sys
 import threading
 import time
@@ -80,10 +81,20 @@ from multirotor_dynamics import (   # noqa: E402
 )
 
 
-# AirSim FDM JSON protocol magic numbers (из ArduPilot SIM_AirSim.cpp).
+# ArduPilot SITL FDM wire protocol.
+#
+# Frame mode determines wire format и port convention:
+#   - "json"   — generic JSON frame (`sim_vehicle.py -f JSON:127.0.0.1`):
+#       single port 9002, ArduPilot шлёт PWM туда, physics отвечает на
+#       sender IP:port (auto-detected). Магия = 18458.
+#   - "airsim" — airsim-copter frame (`-f airsim-copter`):
+#       dual port — ArduPilot шлёт на 9003 (control), физика отвечает
+#       на 9002 (sensor). Магия = 18458 (same).
 ARDUPILOT_AIRSIM_FDM_MAGIC = 18458
-DEFAULT_FDM_IN_PORT = 9003   # bridge listens (SITL sends servo PWM)
-DEFAULT_FDM_OUT_PORT = 9002  # bridge sends back (SITL reads sensors)
+ARDUPILOT_JSON_FDM_MAGIC = 18458
+DEFAULT_JSON_FDM_PORT = 9002  # bridge listens, reply to sender
+DEFAULT_FDM_IN_PORT = 9002    # legacy alias (json mode)
+DEFAULT_FDM_OUT_PORT = 9002   # legacy alias (json mode)
 
 
 # ---------------------------------------------------------------------------
@@ -206,23 +217,46 @@ class JsonFdmBridge:
         if not self._sitl_addr:
             return
         self._state.t_s = time.time() - self._t_start
+        # Convert local NED → lat/lon/alt для ArduPilot GPS sim.
+        # Origin = ORIGIN_LAT/LON (CMAC default, matches ArduPilot home).
+        deg_per_m = 1.0 / 111_319.9
+        sim_lat = ORIGIN_LAT + self._state.x_north * deg_per_m
+        sim_lon = ORIGIN_LON + self._state.y_east * deg_per_m * (
+            1.0 / math.cos(math.radians(ORIGIN_LAT)))
+        sim_alt_m = 584.0 - self._state.z_down   # ArduPilot home alt = 584m AMSL
+        # Используем quaternion (qw,qx,qy,qz) — unambiguous orientation
+        # vs euler attitude (где EKF может детектить inconsistency).
+        q = self.physics.state.quat   # (w,x,y,z)
         payload = {
             "timestamp": self._state.t_s,
+            "latitude":  sim_lat,
+            "longitude": sim_lon,
+            "altitude":  sim_alt_m,
             "imu": {
                 "gyro": list(self._state.gyro),
                 "accel_body": list(self._state.accel_body),
             },
             "position": [self._state.x_north, self._state.y_east,
                          self._state.z_down],
-            "attitude": [self._state.roll, self._state.pitch,
-                         self._state.yaw],
+            "quaternion": [q[0], q[1], q[2], q[3]],
             "velocity": [self._state.vx_north, self._state.vy_east,
                          self._state.vz_down],
         }
-        data = (json.dumps(payload) + "\n").encode()
+        # ArduPilot SIM_JSON.cpp использует `memrchr(buf, 0, ...)` для поиска
+        # последнего null byte → packet boundary. Compact JSON + single \0.
+        # SITL accumulates packets между recvfrom calls; первый packet после
+        # buffer reset не парсится (no second null yet), но затем каждый new
+        # packet будет parsed (previous null becomes p1, current null = p2).
+        data = json.dumps(payload, separators=(",", ":")).encode() + b"\x00"
+        # JSON frame: reply to sender directly (single sock в SITL).
+        # AirSim frame: reply на fixed fdm_out_port.
         sitl_host = self._sitl_addr[0]
+        if self.fdm_in_port == self.fdm_out_port:
+            target = self._sitl_addr   # respond to sender's IP:port
+        else:
+            target = (sitl_host, self.fdm_out_port)
         try:
-            self._sock.sendto(data, (sitl_host, self.fdm_out_port))
+            self._sock.sendto(data, target)
         except OSError:
             pass
 
@@ -233,13 +267,57 @@ class JsonFdmBridge:
         with self.log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
+    def _parse_pwm_packet(self, data: bytes) -> tuple[int, list[int]] | None:
+        """Decode ArduPilot SIM_JSON `servo_packet_16` (40B binary) или
+        JSON variant (synthetic emulator).
+
+        Binary format (40 bytes, little-endian):
+          uint16 magic = 18458
+          uint16 frame_rate
+          uint32 frame_count
+          uint16 pwm[16]
+
+        JSON variant (synthetic emulator):
+          {"magic": 18458, "frame_rate": int, "frame_count": int, "pwm": [16 × int]}
+        """
+        # Binary 40-byte: real ArduPilot SITL.
+        if len(data) == 40:
+            try:
+                fields = struct.unpack("<HHI16H", data)
+            except struct.error:
+                return None
+            magic = fields[0]
+            if magic != ARDUPILOT_AIRSIM_FDM_MAGIC:
+                return None
+            frame_count = fields[2]
+            pwm = list(fields[3:19])
+            return (frame_count, pwm)
+        # Binary 72-byte: 32-channel variant (SERVO_32_ENABLE=1, magic=29569).
+        if len(data) == 72:
+            try:
+                fields = struct.unpack("<HHI32H", data)
+            except struct.error:
+                return None
+            if fields[0] != 29569:
+                return None
+            return (fields[2], list(fields[3:35]))
+        # JSON variant — synthetic SITL emulator.
+        try:
+            msg = json.loads(data.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if msg.get("magic") != ARDUPILOT_AIRSIM_FDM_MAGIC:
+            return None
+        return (int(msg.get("frame_count", 0)),
+                [int(p) for p in msg.get("pwm", [])])
+
     def run(self) -> None:
         """Main loop: receive PWM, integrate physics, respond с sensor state."""
         print(f"[jsonfdm] listening on UDP :{self.fdm_in_port}, "
               f"responding to :{self.fdm_out_port}")
         print(f"[jsonfdm] physics: m={self.physics.params.mass_kg}kg "
               f"max_thrust={self.physics.params.motor_thrust_max_n}N/motor "
-              f"hover_pwm≈{self.physics.hover_pwm_estimate}")
+              f"hover_pwm≈{self.physics.hover_pwm_estimate}", flush=True)
         while not self._stop.is_set():
             try:
                 data, addr = self._sock.recvfrom(2048)
@@ -248,14 +326,11 @@ class JsonFdmBridge:
             except OSError:
                 break
             self._sitl_addr = addr
-            try:
-                msg = json.loads(data.decode())
-            except (json.JSONDecodeError, UnicodeDecodeError):
+            parsed = self._parse_pwm_packet(data)
+            if parsed is None:
                 continue
-            if msg.get("magic") != ARDUPILOT_AIRSIM_FDM_MAGIC:
-                continue
+            _frame_count_from_packet, pwm = parsed
             self._frame_count += 1
-            pwm = msg.get("pwm", [])
 
             # Real-time dt от wall clock (SITL может посылать с
             # переменной задержкой; physics integrate с реальным dt
@@ -393,8 +468,17 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--mode", choices=("json_fdm", "mavlink_mirror"),
                    default="mavlink_mirror")
-    p.add_argument("--fdm-in-port", type=int, default=DEFAULT_FDM_IN_PORT)
-    p.add_argument("--fdm-out-port", type=int, default=DEFAULT_FDM_OUT_PORT)
+    p.add_argument("--ardupilot-frame", choices=("json", "airsim"),
+                   default="json",
+                   help="ArduPilot SITL frame mode: json (single port 9002, "
+                        "canonical для `-f JSON`) или airsim (dual port 9002/9003, "
+                        "для `-f airsim-copter`)")
+    p.add_argument("--fdm-in-port", type=int, default=None,
+                   help="Override port на котором bridge ждёт PWM. "
+                        "По умолчанию: 9002 для json, 9003 для airsim.")
+    p.add_argument("--fdm-out-port", type=int, default=None,
+                   help="Override port для sensor response. "
+                        "По умолчанию: 9002 для обоих режимов.")
     p.add_argument("--mavlink-endpoint",
                    default="udpin:127.0.0.1:14550",
                    help="MAVLink connection string (mavlink_mirror mode)")
@@ -427,8 +511,15 @@ def main() -> int:
 
     bridge: Any
     if args.mode == "json_fdm":
+        # Auto-pick ports based on ardupilot-frame.
+        if args.ardupilot_frame == "json":
+            fin = args.fdm_in_port or 9002
+            fout = args.fdm_out_port or 9002
+        else:   # airsim
+            fin = args.fdm_in_port or 9003
+            fout = args.fdm_out_port or 9002
         bridge = JsonFdmBridge(
-            fdm_in_port=args.fdm_in_port, fdm_out_port=args.fdm_out_port,
+            fdm_in_port=fin, fdm_out_port=fout,
             airsim=airsim, log_path=args.log_file,
         )
     else:

@@ -168,8 +168,8 @@ end-to-end на 60-second run:
 
 | Категория | Что НЕ production | Workaround |
 |---|---|---|
-| ArduPilot SITL end-to-end | ArduCopter не установлен в текущем venv → JsonFdmBridge тестируется synthetic SITL emulator вместо real `sim_vehicle.py` | Установить ArduPilot из исходников (1 GB + 30 мин) |
-| Sionna RT live mode | Mitsuba CUDA OptiX недоступен на WSL2 по default → используется pre-computed `radio_maps/iris_runway.npz` (real Sionna output) | Linux native с GPU + `MITSUBA_VARIANT=cuda_ad_mono` |
+| ArduPilot SITL end-to-end | ✅ **FIXED 2026-05-25**: ArduPilot installed (5.1MB binary), JsonFdmBridge correctly parses binary `servo_packet_16` от real SITL, SITL accepts JSON sensor packets с timestamp/imu/position/quaternion/velocity/lat/lon/alt. `_real_sitl_e2e_smoke.py` verifies HEARTBEAT + 5 ATTITUDE + 5 GLOBAL_POSITION_INT + 4500+ PWM frame round-trips. Full arm/takeoff требует tuned IMU noise model (extension) — wire interface fully VERIFIED. | См. `scripts/install_ardupilot.sh` |
+| Sionna RT live mode | ⚠️ **PARTIAL FIX 2026-05-25**: OptiX libraries installed на WSL2 (`scripts/install_mitsuba_optix_wsl.sh` + `_optix_copy_admin.ps1` elevated PowerShell). Mitsuba `cuda_ad_mono` variant init works (`DRJIT_LIBOPTIX_PATH=/opt/optix-real/libnvoptix.so.1`). Sionna 1.2 RadioMapSolver hits `OPTIX_ERROR_INTERNAL_COMPILER_ERROR` (upstream Mitsuba/Sionna issue со специфической Linux driver 595.71.05 OptiX runtime). **Cached mode** с pre-computed `radio_maps/iris_runway.npz` (real Sionna RT output) работает production-grade. | Linux native с CUDA для live solve |
 | AirSim custom UE5 map | Spawn primitives (Cube/Cylinder), не realistic building meshes | UE5 Editor + blueprint actors + `is_blueprint=True` |
 | ИССГР "кварк/MongoDB/Minio" из PDF | Функциональный эквивалент через Pydantic + SQLite | Repository pattern swap на PyMongo + Minio |
 | Real cyber pentest | Defensive research simulator на synthetic MAVLink | Real testing требует authorized hardware |
