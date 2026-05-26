@@ -90,37 +90,36 @@ python scripts/_real_sitl_e2e_smoke.py
   ↔ `DRJIT_LIBOPTIX_PATH=/opt/optix-real/libnvoptix.so.1` →
   `print(mi.variant())` returns `cuda_ad_mono`
 
+### Работает (FIXED 2026-05-26): Sionna live mode на WSL2 ✅
+- `apt install libnvidia-gl-595` (matches Linux driver 595.71.05) provides:
+  - `/usr/lib/x86_64-linux-gnu/libnvoptix.so.595.71.05` (49MB, full OptiX)
+  - `/usr/lib/x86_64-linux-gnu/libnvidia-rtcore.so.595.71.05` (42MB)
+  - `/usr/share/nvidia/nvoptix.bin` (48MB OptiX kernel weights)
+- WSL2 libcuda.so.1 priority через `LD_LIBRARY_PATH=/usr/lib/wsl/lib`
+- Full libnvoptix через `LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnvoptix.so.595.71.05`
+  (bypass WSL 10KB stub libnvoptix loader)
+- Sionna correct variant = `cuda_ad_mono_polarized` (NOT `cuda_ad_mono` —
+  Sionna ITU BSDF needs Jones matrix, не Color1f scalar spectrum)
+- Wrapper `scripts/run_sionna_live.sh` инкапсулирует все 3 env vars
+- **Verified**: `bash scripts/run_sionna_live.sh real_tile --tile-i 0 --freq-mhz 2400`
+  → backend: sionna_live, mean_rssi_dbm: -67.25, compute_s: 20.84 (5×5 cells)
+
 ### Не работает / не сделано
-- **Sionna RT 1.2 live solve не работает full-pipeline на WSL2**:
-  RadioMapSolver hits `OPTIX_ERROR_INTERNAL_COMPILER_ERROR`
-  (`API error 7299`) — known incompatibility между Mitsuba's compiled
-  OptiX SDK version и Linux driver 595.71.05 OptiX runtime. Это
-  upstream Mitsuba/Sionna issue specific к WSL2 + R595 driver branch.
-  Не влияет на cached mode (production use).
-- Pre-computed map покрывает только iris_runway scene (800×300м).
-  Для других сцен нужно отдельный pre-compute run (на Linux native
-  с CUDA где live solver работает).
+- Live solve медленный на WSL (~20s per 5×5 tile с max_depth=2). На Linux
+  native CUDA OptiX 10-20× быстрее. Для production pre-compute использовать
+  cached mode (`radio_maps/iris_runway.npz`).
 
 ### Workaround
 ```bash
-# Auto-install OptiX libraries в WSL2:
-bash scripts/install_mitsuba_optix_wsl.sh
-# Если copy в lxss/lib не удалось (Windows admin required):
-Start-Process powershell -Verb RunAs -ArgumentList \
-    "-File \\wsl.localhost\Ubuntu-Restore\home\afetz\bas-prototype\scripts\_optix_copy_admin.ps1"
-wsl --shutdown    # из Windows
-# After re-open WSL2:
-DRJIT_LIBOPTIX_PATH=/opt/optix-real/libnvoptix.so.1 \
-MITSUBA_VARIANT=cuda_ad_mono \
-sionna_env/bin/python -c "import mitsuba as mi; mi.set_variant('cuda_ad_mono')"
-# → OptiX initializes; пакет Mitsuba/Sionna live solve компилируется
-# но runtime PTX kernel compilation fails в Sionna 1.2 — ждать
-# upstream fix или использовать pre-computed cached mode.
+# 1. Install canonical OptiX libs:
+sudo apt install libnvidia-gl-595
 
-# Production live Sionna RT (Linux native, не WSL):
-MITSUBA_VARIANT=cuda_ad_mono \
-sionna_env/bin/python scripts/sionna_real_tile.py --mode live \
-    --tile-i 0 --tile-j 0 --freq-mhz 2400
+# 2. Run live tile через wrapper:
+bash scripts/run_sionna_live.sh real_tile --tile-i 0 --tile-j 0 \
+    --tile-size-m 100 --cell-size-m 20 --freq-mhz 2400
+
+# 3. Custom Sionna script:
+bash scripts/run_sionna_live.sh -- python my_script.py
 ```
 
 ## 3. AirSim 3D scene

@@ -172,7 +172,14 @@ def _ensure_live_loaded(scene_path: Path) -> tuple[Any, Any]:
     if key in _LIVE_SCENE:
         return _LIVE_SCENE[key]
     import mitsuba as mi
-    variant = os.environ.get("MITSUBA_VARIANT", "cuda_ad_mono")
+    # Sionna RT requires POLARIZED variant (Jones matrix) — `cuda_ad_mono`
+    # gives Color1f mismatch при ITU material BSDF sample.
+    # WSL2 setup requires:
+    #   LD_LIBRARY_PATH=/usr/lib/wsl/lib (для libcuda WSL native)
+    #   LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libnvoptix.so.595.71.05
+    #   DRJIT_LIBOPTIX_PATH=/usr/lib/x86_64-linux-gnu/libnvoptix.so.595.71.05
+    # (см. scripts/run_sionna_live.sh wrapper).
+    variant = os.environ.get("MITSUBA_VARIANT", "cuda_ad_mono_polarized")
     mi.set_variant(variant)
     from sionna import rt   # noqa: WPS433
     scene = rt.load_scene(str(scene_path))
