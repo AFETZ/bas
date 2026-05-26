@@ -109,6 +109,27 @@ sudo env BAS_STAGE24_FORCE_ARM=1 bash scripts/run_stage_2_4_fpv_rf_demo.sh
 Это была проблема Stage 1.8 до коммита `22e8622`. Решено через
 `MAV_CMD_MISSION_START` (CommandLong 300).
 
+### Stage 4 `_real_sitl_e2e_smoke.py` не стартует
+
+Проверь локальный ArduPilot binary:
+
+```bash
+test -x ~/ardupilot/build/sitl/bin/arducopter || bash scripts/install_ardupilot.sh
+```
+
+Если порт `5760` занят, останови старые SITL/bridge процессы:
+
+```bash
+ps -eo pid,args | rg '[a]rducopter|[a]rducopter_airsim_interface'
+pkill -f 'arducopter --model json' || true
+pkill -f 'arducopter_airsim_interface.py.*json_fdm' || true
+```
+
+Ожидаемый успешный финал: `ARMED: True`, takeoff delta >0.5m,
+max PWM > hover. Если `GLOBAL_POSITION_INT` невалидный, смотри
+`/tmp/_real_sitl_smoke_*/sitl.log` и `bridge.log`: чаще всего причина в
+сломанных JSON-FDM fields или в том, что bridge не видит `servo_packet_16`.
+
 ## GPU / Sionna RT / AirSim
 
 ### `Could not initialize OptiX`

@@ -21,7 +21,7 @@
 
 ## 1. ArduPilot ↔ AirSim JsonFdmBridge
 
-### Работает (VERIFIED 2026-05-25 с real ArduCopter SITL)
+### Работает (VERIFIED 2026-05-26 с real ArduCopter SITL)
 - ArduPilot installed from source (`scripts/install_ardupilot.sh`, build
   ~3 min с pre-installed apt deps); arducopter binary 5.1 MB at
   `~/ardupilot/build/sitl/bin/arducopter`
@@ -46,7 +46,8 @@
   `_real_sitl_e2e_smoke.py` launches real `arducopter --model json`,
   waits valid global position, switches `STABILIZE`, force-arms, sends
   RC throttle, observes motor PWM > hover in bridge log and
-  `GLOBAL_POSITION_INT.relative_alt` climb >0.5m
+  `GLOBAL_POSITION_INT.relative_alt` climb >0.5m. Latest local proof:
+  `ARMED=True`, takeoff delta `0.60m`, max PWM `1858`
 
 ### Не работает / не сделано
 - Wind / turbulence model отсутствует

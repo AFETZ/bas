@@ -170,6 +170,66 @@ Output: `demo_report.md` + `video/web_gcs.webm` + `video/fpv.mjpeg.mp4` +
 
 Verified: 10/10 trajectory steps, NLOS-кадр поймал RSSI=−87.9 dBm, loss=62%.
 
+## Phase 3 — ИССГР + urban scene
+
+### Stage 3.0 — Urban Gazebo scene
+
+`gazebo/worlds/iris_runway_urban.sdf` добавляет 6 multi-storey buildings,
+дороги, деревья, streetlights и vehicles поверх runway/RF сцены. ИССГР
+`--seed-profile urban` публикует obstacle objects в REST API; Web GCS умеет
+показать urban obstacle profile.
+
+Docs: [stage_3_urban_scene.md](stage_3_urban_scene.md).
+Wrapper: `scripts/run_stage_3_urban_demo.sh`.
+
+### Stage 3.1 — ИССГР API / sync / on-board / CV
+
+Stage 3 закрывает грантовый контур ИССГР вокруг симулятора:
+- FastAPI OGC API Features endpoint и `/digital_twin`;
+- multicast compact sync node-A → node-B;
+- on-board SQLite DB + composite metrics;
+- CV detector, FPV detections и geo-tagging в ИССГР.
+
+Docs:
+- [stage_3_issgr_api.md](stage_3_issgr_api.md)
+- [stage_3_issgr_sync.md](stage_3_issgr_sync.md)
+- [stage_3_issgr_onboard.md](stage_3_issgr_onboard.md)
+- [stage_3_cv_detector.md](stage_3_cv_detector.md)
+
+## Phase 4 — simulator interfaces + production backlog
+
+### Stage 4 — ArduPilot ↔ AirSim JSON-FDM / MAVLink bridges
+
+Контрактный interface layer между ArduPilot SITL, Gazebo, AirSim и GCS.
+
+Артефакты:
+- `scripts/arducopter_airsim_interface.py` — `JsonFdmBridge` + `MavlinkMirrorBridge`;
+- `scripts/multirotor_dynamics.py` — X-config quadrotor 6DOF dynamics;
+- `scripts/mavlink_sim_router.py` — MAVLink 1→N fanout router;
+- `scripts/run_stage_4_sim_bridges_demo.sh` — smoke/router/mirror/full modes;
+- `scripts/_real_sitl_e2e_smoke.py` — real ArduCopter `--model json` ARM+takeoff proof.
+
+Verified 2026-05-26:
+- JSON-FDM smoke: 340 PWM frames, climb phase >2 м, yaw rotation, all sensor
+  packets valid;
+- real SITL e2e: `HEARTBEAT`, valid `GLOBAL_POSITION_INT`, PWM round-trip,
+  `STABILIZE → ARM`, RC throttle takeoff, relative altitude climb >0.5 м,
+  max PWM 1858.
+
+Docs:
+- [stage_4_arducopter_airsim_interface.md](stage_4_arducopter_airsim_interface.md)
+- [stage_4_mavlink_sim_router.md](stage_4_mavlink_sim_router.md)
+
+### Stage 4 backlog — закрытые production extensions
+
+Дополнительные Stage 4 модули, которые теперь являются рабочими artifact'ами,
+а не набросками архитектуры:
+- AirSim scene map: [stage_4_airsim_scene_map.md](stage_4_airsim_scene_map.md)
+- cyber attack + defense simulator: [stage_4_cyber_attacks.md](stage_4_cyber_attacks.md)
+- large-map tiling/indexing: [stage_4_large_map.md](stage_4_large_map.md)
+- admin dashboard: [stage_4_admin_web_interface.md](stage_4_admin_web_interface.md)
+- parallel compute pool: [stage_4_parallel_compute.md](stage_4_parallel_compute.md)
+
 ## Резюме
 
 | Stage | Commit | Status |
@@ -188,5 +248,8 @@ Verified: 10/10 trajectory steps, NLOS-кадр поймал RSSI=−87.9 dBm, l
 | 2.4 QGC | `fc87b61` | ✅ |
 | 2.4 Auto Demo | `2621447` | ✅ |
 | ns-3 sionnaTargetFlow | `766ff47` | ✅ |
+| 3.x ИССГР + urban/CV/on-board/sync | multiple | ✅ |
+| 4.x sim bridges + real JSON-FDM SITL | `5f354ec` | ✅ |
+| 4.x backlog extensions | multiple | ✅ |
 
 См. [CHANGELOG.md](../CHANGELOG.md) для полной хронологии.

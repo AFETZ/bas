@@ -1,13 +1,14 @@
 # BAS Prototype — стенд моделирования беспилотных авиационных систем
 
-![Stages](https://img.shields.io/badge/stages-1.0--2.4_+_backlog-success)
+![Stages](https://img.shields.io/badge/stages-1.0--4_verified-success)
 ![License](https://img.shields.io/badge/license-research-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux/WSL2-orange)
 AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
 
 Воспроизводимый исследовательский стенд для моделирования БАС с фокусом на
-**каналы связи, радиофизику и ручное управление**. Закрывает зону Физулина
-А.В. по гранту ПВАТС УЛ САПР (15/15 пунктов ТЗ + 7/7 backlog).
+**каналы связи, радиофизику, ручное управление и интерфейсы симуляторов**.
+Закрывает зону Физулина А.В. по гранту ПВАТС УЛ САПР
+(15/15 пунктов ТЗ + Stage 3/4 интеграционный backlog).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -20,6 +21,7 @@ AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
 │                                                              ↕          │
 │                                                          Cosys-AirSim   │
 │                                                          (overlay, UE5) │
+│                    JsonFdmBridge: PWM → 6DOF + IMU/GPS → ArduPilot     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -33,6 +35,8 @@ AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
 | **QGroundControl** | `sudo bash scripts/run_stage_2_4_qgc_demo.sh` | Web GCS + QGC одновременно через mavp2p MAVLink router |
 | **Multi-UAV** | `sudo bash scripts/run_stage_2_4_multi_uav_demo.sh` | 2 SITL + 2 iris в Gazebo + единый mavp2p router |
 | **AirSim overlay** | `sudo env BAS_AIRSIM_MODE=windows bash scripts/run_stage_2_2_airsim_overlay.sh` | Real GPU rendering на Windows Cosys-AirSim, bridge через WSL interop |
+| **Stage 4 bridges** | `bash scripts/run_stage_4_sim_bridges_demo.sh smoke` | MAVLink fanout + JSON-FDM bridge smoke, 340 PWM frames, climb/yaw physics |
+| **Real SITL JSON-FDM** | `.venv/bin/python scripts/_real_sitl_e2e_smoke.py` | Real ArduCopter `--model json`, HEARTBEAT/GPS, `STABILIZE→ARM`, RC takeoff >0.5 м |
 | **MAVROS smoke** | `sudo bash scripts/run_stage_1_8_mavros.sh baseline_wifi` | ROS2/MAVROS бэкенд: 7/7 waypoints AUTO mission |
 | **WiFi vs LoRa** | `sudo bash scripts/run_stage_1_6_compare.sh` | Side-by-side report двух профилей сети |
 
@@ -127,6 +131,9 @@ flowchart LR
 | 2.4 RF | Obstacles + live RSSI/loss/delay графики | ✅ | — |
 | **2.4 QGC** | **QGroundControl bridge через mavp2p** | ✅ | [stage_2_4_qgc_setup.md](docs/stage_2_4_qgc_setup.md) |
 | **2.4 Auto demo** | **Playwright + ffmpeg auto-recorder** | ✅ | [STAGES.md](docs/STAGES.md#stage-24-auto-demo) |
+| **3.x** | **Urban scene + ИССГР API/sync/on-board/CV** | ✅ | [STAGES.md](docs/STAGES.md#phase-3--иссгр--urban-scene) |
+| **4.x** | **ArduPilot↔AirSim JSON-FDM, MAVLink router, real SITL ARM+takeoff** | ✅ | [stage_4_arducopter_airsim_interface.md](docs/stage_4_arducopter_airsim_interface.md) |
+| **4.x backlog** | **AirSim scene map, cyber defense, large maps, admin UI, parallel compute** | ✅ | [docs/tz_compliance.md](docs/tz_compliance.md#чужая-зона-не-физулин) |
 
 Полные результаты по ТЗ: [docs/tz_compliance.md](docs/tz_compliance.md).
 Backlog roadmap: [docs/roadmap.md](docs/roadmap.md).
@@ -139,7 +146,9 @@ Backlog roadmap: [docs/roadmap.md](docs/roadmap.md).
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | Готовые команды для каждого demo сценария |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Полная архитектура: топология netns, ns-3 каналы, IPC paths |
 | [docs/DEMOS.md](docs/DEMOS.md) | Каталог всех `scripts/run_stage_*.sh` обёрток с env переменными |
-| [docs/STAGES.md](docs/STAGES.md) | Краткое описание всех stages 1.0–2.4 + backlog |
+| [docs/STAGES.md](docs/STAGES.md) | Краткое описание всех stages 1.0–4.x + закрытый backlog |
+| [docs/stage_4_arducopter_airsim_interface.md](docs/stage_4_arducopter_airsim_interface.md) | Real ArduPilot JSON-FDM bridge, 6DOF dynamics, ARM+takeoff proof |
+| [docs/stage_4_mavlink_sim_router.md](docs/stage_4_mavlink_sim_router.md) | MAVLink fanout router для Gazebo/AirSim/GCS |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Частые проблемы (firewall, GPU, ns-3 build, WSL2) |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Соглашения по веткам, commit messages, code style |
 | [docs/architecture.md](docs/architecture.md) | Историческая высокоуровневая схема (для отчёта) |
@@ -178,7 +187,11 @@ bas-prototype/
 │   ├── run_stage_2_4_rt_online_demo.sh
 │   ├── run_stage_2_2_airsim_overlay.sh
 │   ├── airsim_{client,stub_server,bridge}.py
+│   ├── arducopter_airsim_interface.py  ← Stage 4 JSON-FDM + MAVLink mirror
+│   ├── multirotor_dynamics.py          ← X-config 6DOF + IMU noise/bias
+│   ├── _real_sitl_e2e_smoke.py         ← real ArduPilot ARM + takeoff proof
 │   ├── sionna_channel_publisher.py    ← offline lookup + --rt-online live RT
+│   ├── debug/                         ← ad-hoc local diagnostics
 │   └── bootstrap.sh                   ← one-command system setup
 ├── web/gcs/                    ← Web GCS UI (HTML + CSS + JS)
 ├── video/                      ← GStreamer pipelines (sender, receiver, fpv_mjpeg)
@@ -215,6 +228,7 @@ logs/<run_id>/
 ├── demo_report.md           ← assembled demo report (auto demo)
 ├── sionna_rt_publisher.log  ← online RT (если включён)
 ├── airsim_pose_forward.jsonl ← bridge pose forwards (AirSim mode)
+├── bridge_frames.jsonl      ← Stage 4 JSON-FDM PWM/sensor frames (если включён)
 └── airsim_camera/           ← AirSim camera frames (Windows mode)
 ```
 

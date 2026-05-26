@@ -112,7 +112,41 @@ sudo bash scripts/run_stage_2_2_airsim_overlay.sh
 sudo env BAS_AIRSIM_MODE=off BAS_AIRSIM_HOST=<ip> bash scripts/run_stage_2_2_airsim_overlay.sh
 ```
 
+### 🔁 Stage 4 ArduPilot JSON-FDM bridge
+
+```bash
+# Fast CI-grade bridge smoke: router + JSON-FDM physics loop
+bash scripts/run_stage_4_sim_bridges_demo.sh smoke
+
+# Real ArduCopter SITL closed-loop: wire protocol + ARM + takeoff
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+```
+
+Что проверяется во втором прогоне:
+- запускается real `~/ardupilot/build/sitl/bin/arducopter --model json:127.0.0.1`;
+- `JsonFdmBridge` принимает binary `servo_packet_16` PWM и отвечает sensor JSON;
+- MAVLink TCP `:5760` отдаёт `HEARTBEAT`, `ATTITUDE`, valid `GLOBAL_POSITION_INT`;
+- `STABILIZE → force ARM → RC throttle` приводит к climb >0.5 м и PWM > hover.
+
+Если binary ещё нет:
+```bash
+bash scripts/install_ardupilot.sh
+```
+
 ## Acceptance smoke тесты (для CI)
+
+### Stage 4 — ArduPilot ↔ AirSim JSON-FDM / MAVLink bridges
+
+```bash
+bash scripts/run_stage_4_sim_bridges_demo.sh smoke
+# Router smoke + JSON-FDM smoke:
+#   340 PWM frames sent, sensor responses valid,
+#   climb phase >2m, yaw phase rotates vehicle
+
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+# Requires local ArduPilot binary.
+# Expected proof: ARMED=True, Takeoff delta >0.5m, Max PWM > hover.
+```
 
 ### Stage 1.5.2 — mission AUTO + camera + RTP video
 

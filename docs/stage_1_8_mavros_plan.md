@@ -196,17 +196,17 @@ WSL2 для Reliable topics.
 matchает publisher Durability `VOLATILE`. Нужно явно `durability=VOLATILE`
 в QoSProfile или просто `qos_profile_sensor_data` preset.
 
-## TODO для финиша 1.8
+## Закрыто в финальной реализации 1.8
 
-1. Заменить `qos_sensor` на `rclpy.qos.qos_profile_sensor_data`
-   (preset с правильными BEST_EFFORT+VOLATILE+keep_last(5) policies).
-2. Verify mission upload (`/mavros/mission/push` service) — нужен
-   `start_index=0` и waypoint list с корректными `frame=GLOBAL_REL_ALT`,
-   `command=22/16/21` (TAKEOFF/WAYPOINT/LAND).
-3. Verify arming через `/mavros/cmd/arming` — на SITL без RC нужен
-   `MAV_CMD_RUN_PREARM_CHECKS` или параметр `ARMING_CHECK=0`.
-4. Verify `landed_state==1` (MAV_LANDED_STATE_ON_GROUND) для
-   `is_complete=True`.
+1. `qos_sensor` заменён на sensor-data compatible QoS.
+2. Mission upload через `/mavros/mission/push` verified: корректные
+   `GLOBAL_REL_ALT` waypoints и `start_index=0`.
+3. Force-arm выполнен через `CommandLong` magic `21196`.
+4. AUTO mission стартует через `MAV_CMD_MISSION_START`.
+5. Завершение определяется по armed-transition/landed detection.
+
+Acceptance: `scripts/run_stage_1_8_mavros.sh baseline_wifi` — 7/7 waypoints,
+AUTO mode, mission landed, distance ≈253 м.
 
 ## Архитектура (после довода)
 

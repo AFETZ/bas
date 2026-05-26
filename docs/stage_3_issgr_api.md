@@ -275,17 +275,20 @@ curl -s http://127.0.0.1:8770/openapi.json | jq '.paths | keys'
     operational_situation  count=1  (1 mission)
 ```
 
-## Что **не** реализовано (вне Stage 3 scope)
+## Границы API модуля и соседние Stage 3 реализации
 
-- **Синхронизация БД с multicast** (40/80 byte packets) — это часть полной
-  ИССГР спецификации, требует custom protocol поверх UDP/IP. У нас REST/HTTP.
-- **Persistent SQL backend** — сейчас in-memory + JSONL snapshot. Для production
-  нужен PostGIS / MongoDB.
+- **Синхронизация БД с multicast** реализована отдельно в
+  [stage_3_issgr_sync.md](stage_3_issgr_sync.md): compact 40/80-byte UDP
+  packets, CRC, gap detection и REST resync.
+- **On-board persistent DB** реализована отдельно в
+  [stage_3_issgr_onboard.md](stage_3_issgr_onboard.md): SQLite WAL,
+  time-series, sensor readings и composite metrics. Сам REST API остаётся
+  in-memory + JSONL snapshot; для production backend нужен PostGIS / MongoDB.
 - **Authentication / authorization** — endpoints open. Для production нужен
   OpenID Connect + RBAC (можно через fastgeoapi).
-- **CV-обработка видовых данных** — отдельный backlog. Endpoint для POST
-  CV detections готов (используется в АСУ-клиенте demo), но сам детектор
-  не реализован.
+- **CV-обработка видовых данных** реализована отдельно в
+  [stage_3_cv_detector.md](stage_3_cv_detector.md): YOLOv8n, FPV frames,
+  geo-tagging и POST detections в ИССГР API.
 - **WMS/WCS/WMTS** — у нас только OGC API Features. WMS/WMTS для raster
   слоёв (radio maps) — отдельный модуль.
 

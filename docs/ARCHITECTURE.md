@@ -42,6 +42,12 @@ flowchart TB
         AirSimBridge[airsim_bridge.py<br/>msgpack-rpc]
     end
 
+    subgraph SimBridge["Stage 4 sim bridges"]
+        JsonFDM[JsonFdmBridge<br/>PWM ↔ sensor JSON]
+        MultiDyn[multirotor_dynamics.py<br/>X-config 6DOF + IMU noise]
+        MavFanout[mavlink_sim_router.py<br/>MAVLink fanout]
+    end
+
     subgraph Out["Evidence"]
         EventsJSONL[events.jsonl]
         NS3Events[ns3_events.jsonl]
@@ -66,6 +72,11 @@ flowchart TB
     Gazebo -->|pose events| AirSimBridge
     AirSimBridge --> AirSim
     AirSim -->|simGetImage| AirSimBridge
+    SITL1 <-. JSON-FDM 9002/9003 .-> JsonFDM
+    JsonFDM --> MultiDyn
+    JsonFDM -. optional visual sync .-> AirSim
+    SITL1 -. MAVLink .-> MavFanout
+    MavFanout -. GCS/Gazebo/AirSim/file .-> AirSimBridge
     SionnaRT --> NS3Ctrl
     SionnaRT --> NS3Pload
     NS3LoRa --> SITL1
@@ -245,6 +256,38 @@ sysid'ами.
 [host] airsim_bridge.py → logs/<run>/airsim_camera/frame_NNN.bin
 ```
 
+### ArduPilot JSON-FDM closed-loop (Stage 4)
+
+```
+[host] JsonFdmBridge
+   ↑ UDP :9003  binary servo_packet_16 from ArduPilot
+   │            magic=18458, frame_rate/frame_count, 16 PWM channels
+   │
+[host] multirotor_dynamics.py
+   ↓ X-config motor mixer + forces/torques + quaternion integration
+   ↓ IMU specific force + gyro, white noise + bias drift
+   ↓ ground-contact support force: accel_body_z ≈ -9.81 on ground
+   │
+[host] JsonFdmBridge
+   ↓ UDP :9002  null-terminated JSON sensor packet
+                timestamp, imu, position, quaternion, velocity, GPS fields
+
+[host] arducopter --model json:127.0.0.1
+   ↓ MAVLink TCP :5760
+[host] _real_sitl_e2e_smoke.py
+   ↓ HEARTBEAT + valid GLOBAL_POSITION_INT
+   ↓ STABILIZE → force ARM → RC throttle
+   ✓ relative_alt climb >0.5m, bridge PWM > hover
+```
+
+Это отдельный closed-loop путь от Gazebo. Он нужен для проверки самого
+ArduPilot ↔ AirSim/JSON-FDM interface contract: физика живёт в bridge,
+AirSim может подключаться как visual/sensor overlay, а ArduPilot получает
+сенсорный поток по canonical JSON-FDM pattern.
+
+Важно: noisy IMU values публикуются наружу, но интегратор использует
+`omega_body_true` / `accel_body_true`; шум не накапливается обратно в physics.
+
 ## Lifecycle процессов
 
 ### Запуск (run_stage_2_4_*_demo.sh wrapper)
@@ -290,6 +333,7 @@ sysid'ами.
 | Что | Где синхронизируется |
 |---|---|
 | Gazebo FDM ↔ SITL | UDP 127.0.0.1:9002/9003 (JSON FDM) — каждые ~1 мс |
+| Stage 4 JsonFdmBridge ↔ SITL | UDP 127.0.0.1:9002/9003, binary `servo_packet_16` in + JSON sensor out |
 | SITL ↔ MAVLink client | TCP 5760, single-client; либо mavp2p multi |
 | ns-3 ↔ network stack | TapBridge UseLocal mode, real-time scheduler |
 | Sionna live ↔ ns-3 | `/tmp/bas_stage24_rt.json` polling 100мс |
@@ -304,6 +348,8 @@ sysid'ами.
 - [stage_2_4_manual_gcs.md](stage_2_4_manual_gcs.md) — детали Web GCS + MAVProxy
 - [stage_2_4_qgc_setup.md](stage_2_4_qgc_setup.md) — детали QGC bridge
 - [stage_2_2_airsim_overlay.md](stage_2_2_airsim_overlay.md) — детали AirSim
+- [stage_4_arducopter_airsim_interface.md](stage_4_arducopter_airsim_interface.md) — JSON-FDM + real SITL ARM/takeoff
+- [stage_4_mavlink_sim_router.md](stage_4_mavlink_sim_router.md) — MAVLink fanout router
 - [stage_2_1_sionna_plan.md](stage_2_1_sionna_plan.md) — Sionna RT pipeline
 - [stage_1_8_mavros_plan.md](stage_1_8_mavros_plan.md) — MAVROS backend
 - [stage_1_7_lora_serial_plan.md](stage_1_7_lora_serial_plan.md) — LoRa Serial

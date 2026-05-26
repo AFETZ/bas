@@ -255,9 +255,10 @@ tail -3 logs/<run_id>/airsim_stub_pose.jsonl
   high-frequency physics engine. В overlay-режиме мы передаём
   готовую pose из Gazebo через `simSetVehiclePose` — AirSim **не**
   делает свою физику, только renders. Это и есть "overlay" pattern.
-  Для альтернативного "AirSim как physics" use case — переключать
-  ArduPilot SITL на `--model AirSim` (а не наш `--model JSON` для
-  Gazebo), это уже другая архитектурная конфигурация.
+  Для альтернативного closed-loop physics use case используйте Stage 4
+  `JsonFdmBridge`: ArduPilot `--model json:127.0.0.1` → internal X-config
+  6DOF dynamics → IMU/GPS/quaternion JSON обратно в SITL. Это отдельный
+  путь от Gazebo overlay и verified real ARM+takeoff smoke'ом.
 - **Sensor sync**: AirSim camera/LiDAR в overlay режиме рендерится
   в pose который ставит bridge; задержка bridge ↔ AirSim определяет
   jitter сенсорных данных. Для real-time SLAM это критично, для

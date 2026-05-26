@@ -14,7 +14,7 @@
 | Режим | Транспорт | Когда применять |
 |---|---|---|
 | **mavlink_mirror** (default) | MAVLink (`udpin:127.0.0.1:14550`) | ArduPilot SITL уже запущен и эмиттит MAVLink, AirSim используется как **visual/sensor overlay**. Физику считает ArduPilot, AirSim — рендерит ту же pose. |
-| **json_fdm** | UDP JSON 9002/9003 (ArduPilot pattern) | ArduPilot SITL запущен с `-f airsim-copter`. Bridge закрывает physics loop: PWM in → AirSim-based dynamics → IMU/GPS out обратно SITL. |
+| **json_fdm** | UDP 9002/9003 (ArduPilot SIM_JSON pattern) | ArduPilot SITL запущен с `--model json:127.0.0.1`. Bridge закрывает physics loop: binary PWM in → internal X-config 6DOF dynamics → IMU/GPS/quaternion JSON out обратно SITL. AirSim подключается опционально как visual overlay. |
 
 ### Wire format — JSON-FDM (canonical ArduPilot pattern)
 
@@ -22,7 +22,17 @@
 master). Bridge поднимает UDP listener на port 9003 и отправляет ответы
 на 9002.
 
-**SITL → bridge** (newline-separated JSON):
+**SITL → bridge** для real ArduPilot (`servo_packet_16`, 40 bytes,
+little-endian):
+
+| Поле | Тип | Что |
+|---|---|---|
+| `magic` | `uint16` | `18458` |
+| `frame_rate` | `uint16` | synthetic SITL rate |
+| `frame_count` | `uint32` | synthetic clock tick |
+| `pwm[16]` | `uint16[16]` | servo/motor outputs |
+
+Synthetic smoke также поддерживает JSON-вариант того же payload:
 
 ```json
 {
@@ -37,17 +47,20 @@ master). Bridge поднимает UDP listener на port 9003 и отправл
 `pwm` — 16 channels servo output (1000…2000μs PPM). На multicopter
 первые 4 канала = motor outputs.
 
-**bridge → SITL** (newline-separated JSON):
+**bridge → SITL** (null-terminated compact JSON):
 
 ```json
 {
   "timestamp": 12.345,
+  "latitude": -35.363262,
+  "longitude": 149.165237,
+  "altitude": 584.0,
   "imu": {
     "gyro": [roll_rate, pitch_rate, yaw_rate],
     "accel_body": [ax, ay, az]
   },
   "position": [x_north, y_east, z_down],
-  "attitude": [roll, pitch, yaw],
+  "quaternion": [qw, qx, qy, qz],
   "velocity": [vx, vy, vz]
 }
 ```
@@ -84,16 +97,16 @@ Bridge подписывается на любой MAVLink endpoint (`udpin:HOST:
 ┌──────────────────────────────────────────────────────────────────────┐
 │ json_fdm mode (canonical closed-loop)                                │
 │                                                                      │
-│   ArduPilot SITL (frame=airsim-copter) ┐                             │
-│      writes 16ch PWM JSON              │ UDP :9003                   │
+│   ArduPilot SITL (--model json)        ┐                             │
+│      writes servo_packet_16 binary     │ UDP :9003                   │
 │      reads sensor JSON                 │                             │
 │                                         ▼                            │
 │                                       bridge                         │
 │                                         │ ▲                          │
-│                                         │ │ simGetMultirotorState    │
+│                                         │ │ internal 6DOF dynamics   │
 │                                         ▼ │                          │
 │                                       AirSim :41451                  │
-│                                       (UE5 physics + sensors)        │
+│                                       (optional visual overlay)      │
 │                                         ▲                            │
 │                                         │ sensor JSON (IMU/GPS/baro) │
 │                                         │ UDP :9002 → SITL           │
@@ -106,7 +119,9 @@ Bridge подписывается на любой MAVLink endpoint (`udpin:HOST:
 | Файл | Что |
 |---|---|
 | `scripts/arducopter_airsim_interface.py` | `JsonFdmBridge` + `MavlinkMirrorBridge` + CLI |
+| `scripts/multirotor_dynamics.py` | X-config 6DOF quadrotor dynamics + IMU noise/bias |
 | `scripts/_arducopter_airsim_smoke.py` | CI smoke: JSON-FDM round-trip без real SITL |
+| `scripts/_real_sitl_e2e_smoke.py` | Real ArduCopter `--model json` + ARM + RC takeoff verification |
 | `scripts/run_stage_4_sim_bridges_demo.sh` | Demo wrapper (smoke / mirror / full modes) |
 | `docs/stage_4_arducopter_airsim_interface.md` | Этот файл |
 
@@ -119,9 +134,22 @@ bash scripts/run_stage_4_sim_bridges_demo.sh smoke
 ```
 
 Проверяет:
-- JSON-FDM round-trip: 50 PWM frames → 50 sensor responses (100% match)
-- Все response packets содержат timestamp/imu/position/attitude/velocity
-- Gravity vector корректен (accel_body[2] = -9.81 m/s² в hover mode)
+- JSON-FDM round-trip: 340 PWM frames → 340 sensor responses
+- Phase 1 motors-off удерживает ground contact (`z_down≈0`)
+- Phase 2 PWM above hover даёт climb >2 м
+- Phase 3 differential thrust даёт yaw rotation
+- Все response packets содержат timestamp/imu/position/quaternion/velocity
+
+### Real SITL e2e (wire + ARM + takeoff)
+
+```bash
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+```
+
+Проверяет real `~/ardupilot/build/sitl/bin/arducopter --model json:127.0.0.1`:
+binary `servo_packet_16` parsing, sensor JSON response, MAVLink `HEARTBEAT`,
+valid `GLOBAL_POSITION_INT`, `STABILIZE → ARM`, RC throttle takeoff,
+motor PWM > hover, relative altitude climb >0.5 м.
 
 ### Mirror mode (AirSim stub + bridge без SITL)
 

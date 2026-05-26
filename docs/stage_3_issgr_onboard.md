@@ -168,8 +168,9 @@ SQL
 2. SQLite WAL mode переживает power-cut с минимальным data loss
    (последние ≤1s транзакций);
 3. retention 1ч — диск используется ~10MB max на типичный mission;
-4. Composite metrics доступны через REST endpoint автопилоту (TODO:
-   FastAPI wrapper над `OnBoardDB`).
+4. Composite metrics доступны локальному companion process и Stage 4 Admin
+   Dashboard; для автопилотного REST-клиента можно добавить тонкий FastAPI
+   wrapper над `OnBoardDB`.
 
 ## Pattern source
 

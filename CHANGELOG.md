@@ -5,6 +5,20 @@
 
 ## [Unreleased]
 
+### Stage 4 JSON-FDM real SITL verification
+- `scripts/multirotor_dynamics.py`: X-config 6DOF dynamics, ground-contact
+  IMU support force, IMU white noise + bias drift, true-vs-measured state.
+- `scripts/arducopter_airsim_interface.py`: parses real ArduPilot binary
+  `servo_packet_16`, uses `frame_rate/frame_count` sim-time, publishes
+  GPS/quaternion/IMU sensor JSON.
+- `_real_sitl_e2e_smoke.py`: real `arducopter --model json`, `HEARTBEAT`,
+  valid `GLOBAL_POSITION_INT`, `STABILIZE → ARM`, RC throttle takeoff >0.5m.
+- Debug one-off helpers organized under `scripts/debug/`.
+
+### Stage 3/4 docs refresh
+- README, QUICKSTART, DEMOS, STAGES, ARCHITECTURE, INSTALL, TROUBLESHOOTING,
+  LIMITATIONS, roadmap and ТЗ matrix now describe Stage 3/4 current state.
+
 ### Documentation overhaul
 - Полный комплект docs: README + INSTALL + QUICKSTART + ARCHITECTURE +
   DEMOS + STAGES + TROUBLESHOOTING + CONTRIBUTING
@@ -138,10 +152,11 @@
 
 ## Backlog
 
-Все 7 backlog-пунктов из `docs/roadmap.md` закрыты в этой сессии (Май 2026).
-Остающиеся "не реализовано" — ИССГР объектная БД / REST API / CV-обработка
-видовых данных — это **внешняя рамка полного гранта**, шире текущего
-моделирующего стенда. См. [docs/tz_compliance.md](docs/tz_compliance.md).
+Все 7 backlog-пунктов из `docs/roadmap.md` закрыты в мае 2026. Stage 3
+добавил ИССГР API/sync/on-board/CV, Stage 4 добавил simulator bridges,
+AirSim scene map, cyber defense, large maps, admin dashboard и parallel
+compute. Остающееся вне scope — HIL/field tests, production deployment и
+полный общегрантовый delivery pack по всем исполнителям.
 
 ## Лицензии сторонних компонентов
 

@@ -133,7 +133,23 @@ Verify:
 docker run --rm bas/ns3:dev /work/ns3-src/build/scratch/ns3.40-two_channel-optimized --help
 ```
 
-## Tier 6 — Cosys-AirSim (опционально, для Stage 2.2 overlay)
+## Tier 6 — ArduPilot source SITL binary (для Stage 4 JSON-FDM e2e)
+
+Обычные Docker/Gazebo demos используют контейнерный SITL. Для real
+`_real_sitl_e2e_smoke.py` нужен локальный `arducopter` binary:
+
+```bash
+bash scripts/install_ardupilot.sh
+
+# Verify binary exists
+test -x ~/ardupilot/build/sitl/bin/arducopter
+```
+
+Stage 4 e2e smoke сам запускает `arducopter --model json:127.0.0.1`,
+поднимает `JsonFdmBridge`, проверяет MAVLink telemetry, force-arm и RC
+takeoff.
+
+## Tier 7 — Cosys-AirSim (опционально, для Stage 2.2 overlay)
 
 Wrapper делает auto-download при первом запуске. Если хочешь pre-download:
 
@@ -170,7 +186,7 @@ mv python_api_client_33.whl cosysairsim-3.3-py3-none-any.whl   # fix PEP 427 и�
 
 Детальная инструкция: [stage_2_2_airsim_overlay.md](stage_2_2_airsim_overlay.md).
 
-## Tier 7 — Verify install
+## Tier 8 — Verify install
 
 ```bash
 # 1. Stub-режим (без Docker, без UE5)
@@ -190,6 +206,14 @@ sudo bash scripts/_smoke_radio.sh
 # 4. Full headless smoke
 sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
 # ~3 мин: создаст video_rx.mp4 + report.md с 7/7 waypoints
+
+# 5. Stage 4 bridge smoke (без Docker/Gazebo)
+bash scripts/run_stage_4_sim_bridges_demo.sh smoke
+# Должно вывести: router smoke OK + JSON-FDM climb/yaw physics OK
+
+# 6. Stage 4 real ArduPilot JSON-FDM e2e (требует Tier 6)
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+# Должно вывести: ARMED=True, Takeoff delta >0.5m, Max PWM > hover
 ```
 
 ## WSL2 particulars

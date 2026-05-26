@@ -5,13 +5,14 @@
 Закрывает interface contract двумя сценариями:
 
   (A) JSON-FDM mode (canonical ArduPilot pattern):
-      ArduPilot SITL launched с `-f airsim-copter` отправляет 16-channel
-      servo PWM как JSON UDP packets на airsim_fdm_in_port (default 9003).
-      Bridge принимает их, делает minimal mixer (motor speeds → forces),
-      опрашивает AirSim `simGetMultirotorState` для ground truth pose,
-      и формирует sensor packet (IMU/GPS/baro) который шлёт обратно
-      на airsim_fdm_out_port (default 9002) к SITL. Это даёт closed
-      loop ArduPilot SITL ↔ AirSim physics без AirSim PX4 mode.
+      ArduPilot SITL launched с `--model json:127.0.0.1` отправляет
+      binary `servo_packet_16` PWM frames (magic=18458, frame_rate,
+      frame_count, 16 PWM channels). Bridge принимает их, считает
+      X-config 6DOF quadrotor dynamics через `multirotor_dynamics.py`,
+      и формирует null-terminated sensor JSON (IMU/GPS/quaternion/
+      velocity) обратно к SITL. Это даёт closed-loop ArduPilot SITL
+      без Gazebo; AirSim может подключаться опционально как visual
+      overlay через `simSetVehiclePose`.
 
   (B) MAVLink mirror mode (default, простой):
       Bridge подписывается на ArduPilot SITL MAVLink endpoint (по
@@ -22,13 +23,14 @@
       от orchestrator events.jsonl — работает с любым ArduPilot SITL
       напрямую).
 
-Bridge — interface contract. Конкретная физика остаётся в ArduPilot
-SITL (sim 6DOF) или в AirSim (UE5 native physics) — bridge только
-синхронизирует state.
+Bridge — interface contract. В `mavlink_mirror` физика остаётся в уже
+запущенном SITL/Gazebo стеке; в `json_fdm` физика находится внутри bridge
+(`MultirotorDynamics`) и verified real ArduCopter ARM+takeoff smoke'ом.
 
 Wire protocol (JSON-FDM mode):
 
-  SITL → bridge (port 9003, ArduPilot pattern):
+  SITL → bridge (real ArduPilot: 40B binary servo_packet_16; synthetic
+  smoke may send the same fields as JSON):
   {
       "magic": 18458,
       "frame_rate": 1200,
@@ -40,9 +42,12 @@ Wire protocol (JSON-FDM mode):
   bridge → SITL (port 9002, response):
   {
       "timestamp": 12.345,
+      "latitude": -35.363262,
+      "longitude": 149.165237,
+      "altitude": 584.0,
       "imu": {"gyro": [0,0,0], "accel_body": [0,0,-9.81]},
       "position": [x_north, y_east, z_down],
-      "attitude": [roll, pitch, yaw],
+      "quaternion": [qw, qx, qy, qz],
       "velocity": [vx, vy, vz]
   }
 
@@ -52,10 +57,10 @@ Usage:
       --mavlink-endpoint=udpin:127.0.0.1:14550 \
       --airsim-host=127.0.0.1 --airsim-port=41451
 
-  # JSON-FDM (canonical, требует SITL launch с -f airsim-copter):
+  # JSON-FDM (canonical, требует SITL launch с --model json:127.0.0.1):
   # Для текущей physics модели ArduCopter должен быть FRAME_TYPE=1 (X).
   ./arducopter_airsim_interface.py --mode=json_fdm \
-      --fdm-in-port=9003 --fdm-out-port=9002 \
+      --ardupilot-frame=json --fdm-in-port=9002 --fdm-out-port=9002 \
       --airsim-host=127.0.0.1
 """
 from __future__ import annotations
@@ -85,7 +90,7 @@ from multirotor_dynamics import (   # noqa: E402
 # ArduPilot SITL FDM wire protocol.
 #
 # Frame mode determines wire format и port convention:
-#   - "json"   — generic JSON frame (`sim_vehicle.py -f JSON:127.0.0.1`):
+#   - "json"   — generic JSON frame (`arducopter --model json:127.0.0.1`):
 #       single port 9002, ArduPilot шлёт PWM туда, physics отвечает на
 #       sender IP:port (auto-detected). Магия = 18458.
 #   - "airsim" — airsim-copter frame (`-f airsim-copter`):

@@ -195,6 +195,49 @@ sudo env BAS_AIRSIM_MODE=off BAS_AIRSIM_HOST=<ip> \
 - `airsim_blocks.log` или `airsim_blocks_win.log` — UE5 stdout/stderr
 - `airsim_camera/frame_NNN.bin` — захваченные кадры (только Windows mode)
 
+## Stage 4 sim bridges
+
+### `run_stage_4_sim_bridges_demo.sh`
+
+Контрактные bridge'и для зоны ArduPilot/Gazebo/AirSim:
+- MAVLink fanout router: один MAVLink source → GCS/Gazebo/AirSim/file sinks.
+- ArduPilot ↔ AirSim JSON-FDM: PWM in → X-config 6DOF dynamics → IMU/GPS out.
+- MAVLink mirror: `GLOBAL_POSITION_INT` + `ATTITUDE` → `simSetVehiclePose`.
+
+```bash
+# CI smoke: router smoke + JSON-FDM physics smoke
+bash scripts/run_stage_4_sim_bridges_demo.sh smoke
+
+# Только fanout router, ожидает MAVLink на :14550
+bash scripts/run_stage_4_sim_bridges_demo.sh router
+
+# AirSim stub + MAVLink mirror bridge
+bash scripts/run_stage_4_sim_bridges_demo.sh mirror
+
+# SITL + router + mirror bridge + AirSim stub, если sim_vehicle.py найден
+SIM_VEHICLE=~/ardupilot/Tools/autotest/sim_vehicle.py \
+    bash scripts/run_stage_4_sim_bridges_demo.sh full
+```
+
+Артефакты: `logs/stage_4_sim_bridges_<ts>/router_smoke.log`,
+`arducopter_airsim_smoke.log`, `router_capture.mav`, `mirror_bridge.jsonl`,
+`airsim_pose.jsonl`.
+
+### `_real_sitl_e2e_smoke.py`
+
+Полный real ArduCopter SITL closed-loop через JSON-FDM. Это не просто
+wire-smoke: скрипт запускает `arducopter --model json:127.0.0.1`, ждёт
+валидный MAVLink telemetry stream, переводит Copter в `STABILIZE`, force-arm'ит
+и даёт RC throttle до видимого набора высоты.
+
+```bash
+bash scripts/install_ardupilot.sh          # если arducopter binary ещё нет
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+```
+
+Ожидаемый proof: `HEARTBEAT`, valid `GLOBAL_POSITION_INT`, bridge PWM
+round-trip, `ARMED: True`, takeoff delta >0.5 м, max PWM > hover.
+
 ## Manual / debug
 
 ### `run_stage_2_4_operator_ui.sh`
@@ -215,6 +258,10 @@ sudo env BAS_AIRSIM_MODE=off BAS_AIRSIM_HOST=<ip> \
 | `_inspect_last_run.sh` | Печать ключевых строк из последнего report.md |
 | `_show_last_stage15.sh` | tail logs last stage 1.5.* |
 | `_show_mission_15.sh` | Mission events из logs |
+
+Новые одноразовые probes живут в `scripts/debug/`. Не используйте их как
+публичные demo entrypoints, пока они не перенесены обратно в `scripts/` и не
+описаны здесь.
 
 ## Структура wrapper'а (как написать свой)
 
