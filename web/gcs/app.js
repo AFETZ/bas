@@ -169,7 +169,9 @@ function updateMap(s) {
     return;
   }
   const p = localToSvg(local.north, local.east);
-  el("drone").setAttribute("transform", `translate(${p.x} ${p.y})`);
+  const heading = Number(s.heading_deg);
+  const rotation = Number.isFinite(heading) ? heading : 0;
+  el("drone").setAttribute("transform", `translate(${p.x} ${p.y}) rotate(${rotation})`);
   updateRfOverlay(s, p);
   // Trail только если позиция реально поменялась — иначе при стоянии
   // на месте trail копит дублирующиеся точки и path ничего не показывает.
@@ -335,16 +337,16 @@ el("center-map").addEventListener("click", () => {
 });
 
 el("rf-clear")?.addEventListener("click", async () => {
-  el("goto-north").value = 25;
-  el("goto-east").value = -45;
-  await post("/api/goto", { north: 25, east: -45 });
+  el("goto-north").value = -25;
+  el("goto-east").value = 35;
+  await post("/api/goto", { north: -25, east: 35 });
   await refresh();
 });
 
 el("rf-nlos")?.addEventListener("click", async () => {
-  el("goto-north").value = 80;
-  el("goto-east").value = 45;
-  await post("/api/goto", { north: 80, east: 45 });
+  el("goto-north").value = 40;
+  el("goto-east").value = 90;
+  await post("/api/goto", { north: 40, east: 90 });
   await refresh();
 });
 

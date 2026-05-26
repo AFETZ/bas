@@ -62,51 +62,56 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = REPO_ROOT / "web/gcs"
 
 RF_GCS = {
-    "north": 0.0,
-    "east": -60.0,
+    "north": -60.0,
+    "east": 0.0,
     "height_m": 1.5,
 }
 
+# Gazebo/SDF poses are ENU: x=east, y=north, z=up. The Web GCS, MAVLink
+# LOCAL_POSITION_NED and RF model use local NED: north/east/down. Keep the
+# catalog below in NED after transposing SDF x/y, otherwise the radar overlay
+# is rotated relative to the real Gazebo scene.
 RF_OBSTACLES_BASIC = [
     {"id": "hangar_blocker", "name": "Hangar",
-     "north": 45.0, "east": 0.0,
-     "size_north_m": 20.0, "size_east_m": 32.0,
+     "north": 0.0, "east": 45.0,
+     "size_north_m": 32.0, "size_east_m": 20.0,
      "height_m": 18.0, "material": "metal"},
     {"id": "control_tower", "name": "Tower",
-     "north": 82.0, "east": 32.0,
+     "north": 32.0, "east": 82.0,
      "size_north_m": 9.0, "size_east_m": 9.0,
      "height_m": 24.0, "material": "concrete"},
 ]
 
 # Stage 3 Urban scene — синхронизирован с gazebo/worlds/iris_runway_urban.sdf.
-# Координаты в local NED (north/east метры от UAV origin).
+# Координаты в local NED (north/east метры от UAV origin), уже после ENU→NED
+# transpose из SDF pose/size.
 RF_OBSTACLES_URBAN = [
     # Existing RF demo obstacles (back-compat).
     *RF_OBSTACLES_BASIC,
     # Urban buildings.
     {"id": "bldg_office_tower", "name": "Office tower",
-     "north": 60.0, "east": -40.0,
+     "north": -40.0, "east": 60.0,
      "size_north_m": 15.0, "size_east_m": 15.0,
      "height_m": 40.0, "material": "concrete"},
     {"id": "bldg_apartment", "name": "Apartment block",
-     "north": 60.0, "east": 40.0,
-     "size_north_m": 25.0, "size_east_m": 15.0,
+     "north": 40.0, "east": 60.0,
+     "size_north_m": 15.0, "size_east_m": 25.0,
      "height_m": 25.0, "material": "brick"},
     {"id": "bldg_warehouse", "name": "Warehouse",
-     "north": 100.0, "east": 0.0,
-     "size_north_m": 30.0, "size_east_m": 40.0,
+     "north": 0.0, "east": 100.0,
+     "size_north_m": 40.0, "size_east_m": 30.0,
      "height_m": 12.0, "material": "metal"},
     {"id": "bldg_residential", "name": "Residential tower",
-     "north": 120.0, "east": -50.0,
+     "north": -50.0, "east": 120.0,
      "size_north_m": 12.0, "size_east_m": 12.0,
      "height_m": 60.0, "material": "concrete"},
     {"id": "bldg_mall", "name": "Mall",
-     "north": 140.0, "east": 50.0,
-     "size_north_m": 50.0, "size_east_m": 30.0,
+     "north": 50.0, "east": 140.0,
+     "size_north_m": 30.0, "size_east_m": 50.0,
      "height_m": 15.0, "material": "brick"},
     {"id": "bldg_commercial_1", "name": "Commercial",
-     "north": 30.0, "east": 60.0,
-     "size_north_m": 18.0, "size_east_m": 10.0,
+     "north": 60.0, "east": 30.0,
+     "size_north_m": 10.0, "size_east_m": 18.0,
      "height_m": 8.0, "material": "concrete"},
 ]
 

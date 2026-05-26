@@ -40,16 +40,15 @@
 - X-config quadrotor 6DOF dynamics с motor mixer, quaternion
   integration, IMU specific force output (verified independently
   через `_multirotor_dynamics_smoke.py`)
-- Real-time dt clamping + 4500+ frames/30s actual round-trip rate
+- ArduPilot JSON synthetic-clock timing uses `servo_packet.frame_rate`
+  / `frame_count`, not wall-clock UDP cadence
+- **Full real SITL ARM + takeoff verified**:
+  `_real_sitl_e2e_smoke.py` launches real `arducopter --model json`,
+  waits valid global position, switches `STABILIZE`, force-arms, sends
+  RC throttle, observes motor PWM > hover in bridge log and
+  `GLOBAL_POSITION_INT.relative_alt` climb >0.5m
 
 ### Не работает / не сделано
-- **Full arm + takeoff flight test НЕ проходит** с perfect-zero IMU
-  data. EKF3 flags `"Roll/Pitch inconsistent 116 deg"` потому что
-  bridge sends constant (0,0,-9.81) accel + (0,0,0) gyro. Real
-  Pixhawk имеет sensor noise (~0.0001 rad/s gyro bias, ~0.01 m/s²
-  accel noise) которое EKF expects. Для arm нужно добавить tuned
-  IMU noise model в `multirotor_dynamics.py` — это extension не
-  блокирующая wire interface validation.
 - Wind / turbulence model отсутствует
 - Ground effect / propeller wash / battery sag не моделируются
 
@@ -58,16 +57,10 @@
 # 1. Установить ArduPilot SITL (15-30 мин build):
 bash scripts/install_ardupilot.sh
 
-# 2. End-to-end verify:
-python scripts/_real_sitl_e2e_smoke.py
-# ✓ TCP 5760 up, HEARTBEAT, ATTITUDE+GLOBAL_POSITION_INT,
-#   4500+ PWM frames round-tripped through bridge
-
-# 3. Production deployment с tuned IMU noise:
-# Modify MultirotorDynamics в scripts/multirotor_dynamics.py:
-#   step() добавить gyro = (random.gauss(0, 0.0001), ...)
-#                  accel_body = (..., -9.81 + random.gauss(0, 0.01))
-# Это даст EKF realistic sensor model → arm OK → flight.
+# 2. End-to-end verify (wire + ARM + takeoff):
+.venv/bin/python scripts/_real_sitl_e2e_smoke.py
+# ✓ valid GLOBAL_POSITION_INT, bridge PWM round-trip,
+#   ARMED=True, Takeoff delta >0.5m, motor PWM > hover
 ```
 
 ## 2. Sionna RT — radio coverage maps

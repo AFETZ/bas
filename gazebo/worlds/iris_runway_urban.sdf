@@ -12,8 +12,8 @@
     * 2 parked vehicles (boxes на дорогах)
     * iris_with_gimbal — onboard камера для FPV + ardupilot FDM (port 9002)
 
-  Сцена покрывает ~200×200м вокруг origin (0,0). UAV спавнится у южного края
-  runway, летит на север через urban area.
+  Сцена покрывает ~200×200м вокруг origin (0,0). Gazebo/SDF world frame is
+  ENU: x=east, y=north, z=up; Web GCS converts these coordinates to local NED.
 
   Не использует внешние meshes — всё на primitives, нет dependency на model:// uri
   кроме runway + iris_with_gimbal (стандартные ardupilot_gazebo).
@@ -236,7 +236,7 @@
     </model>
 
     <!-- =============== ROADS ============================================== -->
-    <!-- Main avenue: north-south through scene -->
+    <!-- Main avenue in SDF X direction (east-west in ENU) -->
     <model name="road_main_ns">
       <static>true</static>
       <pose>80 0 0.005 0 0 0</pose>
@@ -251,7 +251,7 @@
       </link>
     </model>
 
-    <!-- Cross street north: east-west -->
+    <!-- Cross street at north=120m in SDF Y direction -->
     <model name="road_cross_n">
       <static>true</static>
       <pose>120 0 0.006 0 0 0</pose>
@@ -266,7 +266,7 @@
       </link>
     </model>
 
-    <!-- Cross street south -->
+    <!-- Cross street at north=40m in SDF Y direction -->
     <model name="road_cross_s">
       <static>true</static>
       <pose>40 0 0.006 0 0 0</pose>

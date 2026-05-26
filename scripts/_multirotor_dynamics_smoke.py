@@ -12,6 +12,9 @@
   8. Hover stability: PWM=hover для 5000 steps → alt drift < 0.1m
   9. Free fall: PWM=1000 для 1 sec → vz ≈ 9.81 m/s, pos ≈ 4.9m down
   10. Climb acceleration: PWM=hover+const → accel ≈ expected
+  11. IMU noise model: configured gyro/accel std is reflected in samples
+  12. Truth vs measured gyro: noisy output does not feed physics
+  13. Ground contact IMU: motors off on ground → accelerometer sees -g
 """
 import math
 import sys
@@ -59,13 +62,11 @@ def main() -> int:
     assert abs(tau[2]) > 0.001, f"tau_z too small: {tau[2]}"
 
     # --- 4. Asymmetric → roll/pitch torque ---
-    # Front motors (M1, M3) high → nose up → pitch -y (pitch down means tau_y>0).
-    # tau_y = ((t2 + t4) - (t1 + t3)) * eff — when front motors low → +tau_y (nose down).
-    # Так что для nose-up (M1, M3 high) → -tau_y.
-    print("\n[4] Front motors high (M1+M3=high, M2+M4=low) → tau_y < 0 (nose up)")
+    # Front motors (M1, M3) high → +body-y torque in ArduPilot/SITL X geometry.
+    print("\n[4] Front motors high (M1+M3=high, M2+M4=low) → tau_y > 0")
     f, tau = mix_motors([1800, 1300, 1800, 1300], p)
-    print(f"    tau_y = {tau[1]:.4f} Nm (expect negative)")
-    assert tau[1] < -0.01, f"expected negative tau_y, got {tau[1]}"
+    print(f"    tau_y = {tau[1]:.4f} Nm (expect positive)")
+    assert tau[1] > 0.01, f"expected positive tau_y, got {tau[1]}"
 
     # --- 5. Quaternion identity ---
     print("\n[5] Identity quaternion: (1,0,0,0) rotation = identity")
@@ -100,11 +101,17 @@ def main() -> int:
     print(f"    yaw = {yaw:.4f} rad (expected 1.0)")
     assert abs(yaw - 1.0) < 0.001, f"yaw drift: {yaw}"
 
+    # Helper: disable IMU noise для repeatable physics tests.
+    def _noiseless() -> MultirotorDynamics:
+        d = MultirotorDynamics()
+        d.params.sensor_noise.enable = False
+        return d
+
     # --- 8. Hover stability ---
     # Hover PWM имеет integer-rounding ошибку (PWM=1613 vs ideal 1612.5).
     # Тест: при правильно подобранной float thrust → acceleration ≈ 0.
     print("\n[8] Hover acceleration check — ideal thrust = weight → accel ≈ 0")
-    dyn = MultirotorDynamics()
+    dyn = _noiseless()
     # Установить vehicle в воздухе с нулевой скоростью.
     dyn.state.pos_ned = (0, 0, -10)   # 10m up
     dyn.state.vel_ned = (0, 0, 0)
@@ -125,7 +132,7 @@ def main() -> int:
 
     # --- 9. Free fall: PWM=1000, no thrust ---
     print("\n[9] Free fall — PWM=1000 для 1s")
-    dyn = MultirotorDynamics()
+    dyn = _noiseless()
     dyn.state.pos_ned = (0, 0, -10)   # start 10m up
     for _ in range(1000):
         dyn.step([1000] * 4, 0.001)
@@ -138,7 +145,7 @@ def main() -> int:
 
     # --- 10. Climb acceleration: thrust = 2× weight → 1g excess up ---
     print("\n[10] Excess thrust = weight → 1g excess upward")
-    dyn = MultirotorDynamics()
+    dyn = _noiseless()
     weight_n = dyn.params.mass_kg * GRAVITY_NED[2]
     target_thrust_n = 2 * weight_n   # 2x weight: net 1g up
     # PWM per motor: thrust_per_motor = target/4 = weight/2.
@@ -155,6 +162,61 @@ def main() -> int:
     # specific force в hover = -g; в 2g climb = -2g.
     # Допуск ±2 m/s² потому что есть drag на v.
     assert -22 < accel_imu_z < -15, f"accel z wrong: {accel_imu_z}"
+
+    # --- 11. IMU noise model: σ_gyro, σ_accel, bias drift ---
+    print("\n[11] IMU noise model — std verification (10000 samples при hover)")
+    dyn = MultirotorDynamics(rng_seed=42)
+    sn = dyn.params.sensor_noise
+    print(f"    config: gyro_white_std={sn.gyro_white_std} rad/s, "
+          f"accel_white_std={sn.accel_white_std} m/s²")
+    # Step множество раз в hover, собрать IMU outputs.
+    weight_n = dyn.params.mass_kg * GRAVITY_NED[2]
+    per_motor_n = weight_n / 4.0
+    pwm_float = 1000.0 + (per_motor_n / dyn.params.motor_thrust_max_n) * 1000.0
+    dyn.state.pos_ned = (0, 0, -10)
+    gyro_samples_z = []
+    accel_samples_z = []
+    for _ in range(10000):
+        dyn.step([pwm_float] * 4, 0.001)
+        gyro_samples_z.append(dyn.state.omega_body[2])
+        accel_samples_z.append(dyn.state.accel_body[2])
+    # Std должен быть ~σ (несколько процентов tolerance).
+    g_mean = sum(gyro_samples_z) / len(gyro_samples_z)
+    g_std = math.sqrt(sum((g - g_mean)**2 for g in gyro_samples_z)
+                       / len(gyro_samples_z))
+    a_mean = sum(accel_samples_z) / len(accel_samples_z)
+    a_std = math.sqrt(sum((a - a_mean)**2 for a in accel_samples_z)
+                       / len(accel_samples_z))
+    print(f"    gyro_z:  mean={g_mean:+.5f} rad/s, std={g_std:.5f} "
+          f"(expect ~{sn.gyro_white_std})")
+    print(f"    accel_z: mean={a_mean:+.3f} m/s², std={a_std:.3f} "
+          f"(expect ~{sn.accel_white_std})")
+    # Std should be within ±30% of config (bias walk вносит небольшой extra).
+    assert 0.7 * sn.gyro_white_std < g_std < 1.5 * sn.gyro_white_std, \
+        f"gyro std out of range: {g_std}"
+    assert 0.7 * sn.accel_white_std < a_std < 1.5 * sn.accel_white_std, \
+        f"accel std out of range: {a_std}"
+
+    # --- 12. Truth vs measured ---
+    print("\n[12] Ground truth accessor (omega_body_true vs omega_body)")
+    dyn = MultirotorDynamics(rng_seed=123)
+    dyn.state.pos_ned = (0, 0, -10)
+    for _ in range(100):
+        dyn.step([pwm_float] * 4, 0.001)
+    print(f"    truth gyro_z = {dyn.state.omega_body_true[2]:+.6f}")
+    print(f"    noisy gyro_z = {dyn.state.omega_body[2]:+.6f}")
+    # Truth should be ≈0 in hover; noisy can deviate.
+    assert abs(dyn.state.omega_body_true[2]) < 0.001, \
+        f"truth gyro should be ~0 in hover: {dyn.state.omega_body_true[2]}"
+
+    # --- 13. Ground contact IMU: stopped on ground should not look like free fall ---
+    print("\n[13] Ground contact IMU — motors off on ground → accel_body_z ≈ -g")
+    dyn = _noiseless()
+    dyn.step([1000] * 4, 0.001)
+    print(f"    on_ground={dyn.state.on_ground}  accel_body_z={dyn.state.accel_body[2]:.3f}")
+    assert dyn.state.on_ground, "vehicle should remain on ground"
+    assert -10.2 < dyn.state.accel_body[2] < -9.4, \
+        f"ground IMU should see support force near -g, got {dyn.state.accel_body[2]}"
 
     print("\nALL CHECKS PASSED")
     return 0

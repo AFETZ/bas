@@ -242,6 +242,8 @@ class TelemetryState:
             if "relative_alt" in fields:
                 alt_m = fields["relative_alt"] / 1000.0
                 self._set_relative_alt(alt_m)
+            if "hdg" in fields and 0 <= fields["hdg"] < 65535:
+                self.last_heading_deg = fields["hdg"] / 100.0
 
         for match in re.finditer(r"VFR_HUD\s*\{[^}]*\}", clean):
             self.position_visible = True

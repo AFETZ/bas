@@ -49,10 +49,11 @@ def main() -> int:
 
     pub = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     responses: list[dict] = []
+    frame_rate_hz = 200
 
     def _send(pwm: list, fc: int) -> dict | None:
         packet = {"magic": ARDUPILOT_AIRSIM_FDM_MAGIC,
-                  "frame_rate": 1200, "frame_count": fc, "pwm": pwm}
+                  "frame_rate": frame_rate_hz, "frame_count": fc, "pwm": pwm}
         pub.sendto((json.dumps(packet) + "\n").encode(), ("127.0.0.1", FDM_IN))
         try:
             data, _ = sitl_sock.recvfrom(2048)

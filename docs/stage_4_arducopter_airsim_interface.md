@@ -177,12 +177,15 @@ production используйте один из них:
 
 ## Ограничения
 
-1. **JSON-FDM mode**: ArduPilot ожидает sensor packets с правильной
-   физикой (gyro/accel integration), иначе EKF откажется arm'иться.
-   Текущая реализация — hover stub (zeros gyro, gravity-only accel).
-   Для real flight нужно implement minimal multirotor dynamics
-   (motor mixer → forces → integrate momentum). Это — следующий
-   итерационный шаг в зоне Федотенкова А.А.
+1. **JSON-FDM mode**: реализована минимальная real-flight физика:
+   X-frame motor mixer, forces/torques, quaternion integration,
+   ground-contact IMU support force (`accel_body≈-g` on ground),
+   IMU white noise + bias drift, and ArduPilot synthetic-clock timing
+   from `servo_packet.frame_rate/frame_count`. Smoke
+   `_real_sitl_e2e_smoke.py` verifies real SITL wire protocol,
+   `STABILIZE → ARM`, RC throttle takeoff, motor PWM > hover, and
+   relative altitude climb >0.5m. Для production-accurate flight всё
+   ещё нужны richer aerodynamics (wind, ground effect, battery sag).
 
 2. **MAVLink mirror**: pose forwarding throttled на ~10 Hz (хватает
    для visual overlay; для high-fidelity sensor simulation нужно >50 Hz

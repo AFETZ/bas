@@ -21,33 +21,37 @@
 | Parked vehicles | 2 | car body 4.2×1.7×1.2м + roof |
 | UAV | 1 | iris_with_gimbal (камера, ardupilot FDM port 9002) |
 
-Сцена покрывает ~200×200м вокруг origin (0,0). UAV спавнится на южном
-краю, летит на север через urban area.
+Сцена покрывает ~200×200м вокруг origin (0,0). По фактической Gazebo ENU
+геометрии основная застройка находится восточнее точки старта.
 
 ## Координаты (local NED, метры от UAV origin)
 
+Координаты ниже в UI/MAVLink local NED: `N` = north, `E` = east. В SDF они
+лежат как ENU (`x=east`, `y=north`), поэтому при сверке с
+`iris_runway_urban.sdf` нужно читать `pose x y` как `E N`.
+
 ```
-                    Mall (140,50, 50×30×15м)
-            Residential tower (120,-50, 12×12×60м)
+                    Mall (N=50,E=140, 30×50×15м)
+            Residential tower (N=-50,E=120, 12×12×60м)
                     │
-        Warehouse (100,0, 30×40×12м)
+        Warehouse (N=0,E=100, 40×30×12м)
                     │
-              Tree06 (90, 25)
+              Tree06 (N=25,E=150)
                     │
-        Tower (82,32, 9×9×24м)              Commercial (30,60, 18×10×8м)
+        Tower (N=32,E=82, 9×9×24м)              Commercial (N=60,E=30, 10×18×8м)
                     │
-        Office (60,-40)    Apartment (60,40)
+        Office (N=-40,E=60)    Apartment (N=40,E=60)
                     │
-        Hangar (45,0, 20×32×18м)
+        Hangar (N=0,E=45, 32×20×18м)
                     │
-              Streetlight (40, ±5)
+              Streetlight (N=±5,E=40)
                     │
-        Vehicle (80, ±12 — на дороге)
+        Vehicle (N=±12,E=80 — на дороге)
                     │
-    Tree (15, ±30)
+    Tree (N=±30,E=15..25)
                     │
 ══════ UAV spawn (0,0) ══════
-              GCS mast (0,-60)
+              GCS mast (N=-60,E=0)
 ```
 
 ## Файлы

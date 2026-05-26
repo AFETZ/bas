@@ -21,10 +21,10 @@ Attitude: quaternion (w, x, y, z); euler ZYX intrinsic (yaw-pitch-roll).
    (M1 front-right CCW, M2 rear-left CCW, M3 front-left CW, M4 rear-right CW)
 
 ArduCopter X-frame motor ordering (`AP_Motors`):
-  ch1 = M1 = front-right, CCW   (-pitch contrib +, -roll contrib +)
-  ch2 = M2 = rear-left,   CCW   (+pitch contrib +, +roll contrib +)
-  ch3 = M3 = front-left,  CW    (-pitch contrib +, +roll contrib +)
-  ch4 = M4 = rear-right,  CW    (+pitch contrib +, -roll contrib +)
+  ch1 = M1 = front-right, CCW   (roll -, pitch +, yaw +)
+  ch2 = M2 = rear-left,   CCW   (roll +, pitch -, yaw +)
+  ch3 = M3 = front-left,  CW    (roll +, pitch +, yaw -)
+  ch4 = M4 = rear-right,  CW    (roll -, pitch -, yaw -)
 
 Thrust always positive along body -z (up).
 Yaw torque: CCW motors generate +yaw torque (right-hand rule about body +z down → CCW spin = -yaw in body frame; depends on convention; используем стандартный CCW=+yaw).
@@ -52,10 +52,31 @@ Specific force (accel что чувствует акселерометр) = (F_b
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 
 
 GRAVITY_NED = (0.0, 0.0, 9.81)   # NED, +z = down
+
+
+@dataclass
+class SensorNoiseParams:
+    """IMU sensor noise model for realistic ArduPilot SITL sensor data.
+
+    EKF convergence прежде всего требует физически корректный gravity/support
+    vector (на земле accelerometer ≈ -g, не free-fall). Noise/bias drift здесь
+    не маскируют physics bugs, а делают sensor stream ближе к Pixhawk-class IMU:
+
+      INS_GYR_NOISE  ≈ 0.015 rad/s (EK3_GYRO_P_NSE default)
+      INS_ACC_NOISE  ≈ 0.35 m/s²   (EK3_ACC_P_NSE default)
+
+    Используем conservative значения, чтобы не вносить лишнюю instability.
+    """
+    gyro_white_std: float = 0.005          # rad/s — белый шум на каждый sample
+    accel_white_std: float = 0.05          # m/s²  — белый шум
+    gyro_bias_walk_std: float = 0.0001     # rad/s/√s — random walk bias drift
+    accel_bias_walk_std: float = 0.001     # m/s²/√s
+    enable: bool = True                    # disable для unit tests
 
 
 @dataclass
@@ -75,6 +96,8 @@ class MultirotorParams:
     drag_linear: float = 0.10
     # Angular drag coefficient (Nm·s/rad).
     drag_angular: float = 0.001
+    # IMU noise/bias drift для realistic SITL sensor output.
+    sensor_noise: SensorNoiseParams = field(default_factory=SensorNoiseParams)
 
 
 def quat_normalize(q: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
@@ -189,10 +212,10 @@ def mix_motors(
     # Левая сторона (M2, M3) поднимает левую → roll вправо (+x).
     tau_x = ((t2 + t3) - (t1 + t4)) * eff
 
-    # Pitch torque (body y = right): rear motors (M2, M4) поднимают зад → нос вниз → pitch +y = pitch down means: nose ↓
-    # Front motors (M1, M3) поднимают нос → nose ↑ = pitch -y (nose up = negative pitch_down).
-    # tau_y > 0 = pitch down (nose down).
-    tau_y = ((t2 + t4) - (t1 + t3)) * eff
+    # Pitch torque matches ArduPilot/SITL X-frame geometry:
+    # r × F for front motors (M1, M3) gives +body-y torque; rear motors
+    # (M2, M4) give -body-y torque.
+    tau_y = ((t1 + t3) - (t2 + t4)) * eff
 
     # Yaw torque (body z = down): CCW motors дают reaction torque вокруг
     # их оси rotation. Если ротор crутится CCW (вид сверху), реакция на
@@ -211,13 +234,24 @@ def mix_motors(
 # ---------------------------------------------------------------------------
 @dataclass
 class DynamicsState:
-    """13D state vector."""
+    """13D state vector + IMU readings (с noise если включён).
+
+    Поля `accel_body` и `omega_body` published из `step()` — содержат
+    measured values (с noise + bias drift) которые попадают в EKF.
+    Чистая physics state (без noise) — в `accel_body_true` и `omega_body_true`.
+    """
     pos_ned: tuple[float, float, float] = (0.0, 0.0, 0.0)
     vel_ned: tuple[float, float, float] = (0.0, 0.0, 0.0)
     quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
     omega_body: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    accel_body: tuple[float, float, float] = (0.0, 0.0, -9.81)   # IMU specific force, hover default
+    accel_body: tuple[float, float, float] = (0.0, 0.0, -9.81)
     on_ground: bool = True
+    # Ground truth (без noise) — для logging/comparison.
+    omega_body_true: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    accel_body_true: tuple[float, float, float] = (0.0, 0.0, -9.81)
+    # Bias drift state (random walk per axis).
+    gyro_bias: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    accel_bias: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 class MultirotorDynamics:
@@ -225,20 +259,54 @@ class MultirotorDynamics:
 
     state.pos_ned, vel_ned — мир NED.
     state.quat — body→world rotation.
-    state.omega_body — angular rate в body frame.
+    state.omega_body — angular rate в body frame **с noise** (IMU output).
+    state.omega_body_true — true angular rate (без noise).
     """
 
     def __init__(self, params: MultirotorParams | None = None,
-                 ground_z_down: float = 0.0) -> None:
+                 ground_z_down: float = 0.0,
+                 rng_seed: int | None = None) -> None:
         self.params = params or MultirotorParams()
         self.state = DynamicsState()
         self.ground_z_down = ground_z_down
         self._t = 0.0
         self._weight_n = self.params.mass_kg * GRAVITY_NED[2]
+        self._rng = random.Random(rng_seed)
 
     def reset(self) -> None:
         self.state = DynamicsState()
         self._t = 0.0
+
+    def _apply_imu_noise(
+        self, gyro_true: tuple[float, float, float],
+        accel_true: tuple[float, float, float], dt: float,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Apply Gaussian white noise + random walk bias к IMU outputs.
+
+        Возвращает (noisy_gyro, noisy_accel) — что должно попасть в EKF.
+        Updates self.state.gyro_bias / accel_bias в place.
+        """
+        sn = self.params.sensor_noise
+        if not sn.enable:
+            return gyro_true, accel_true
+        # Bias random walk: Δbias = σ_walk · √dt · N(0,1).
+        sqrt_dt = math.sqrt(max(dt, 1e-9))
+        gb = self.state.gyro_bias
+        ab = self.state.accel_bias
+        new_gb = tuple(gb[i] + sn.gyro_bias_walk_std * sqrt_dt * self._rng.gauss(0, 1)
+                       for i in range(3))
+        new_ab = tuple(ab[i] + sn.accel_bias_walk_std * sqrt_dt * self._rng.gauss(0, 1)
+                       for i in range(3))
+        self.state.gyro_bias = new_gb
+        self.state.accel_bias = new_ab
+        # Output = true + bias + white_noise.
+        noisy_gyro = tuple(gyro_true[i] + new_gb[i]
+                          + sn.gyro_white_std * self._rng.gauss(0, 1)
+                          for i in range(3))
+        noisy_accel = tuple(accel_true[i] + new_ab[i]
+                           + sn.accel_white_std * self._rng.gauss(0, 1)
+                           for i in range(3))
+        return noisy_gyro, noisy_accel
 
     def step(self, pwm: list[float], dt: float) -> None:
         """One physics tick — integrate state forward на dt seconds."""
@@ -261,17 +329,6 @@ class MultirotorDynamics:
         )
         accel_world = tuple(f / p.mass_kg for f in f_world_total)
 
-        # Specific force (что чувствует акселерометр) = (f_world_excluding_gravity) в body frame.
-        # accel_imu_body = R⁻¹ · (a_world - g_world) but в hover a_world=0 и g=(0,0,g)
-        # → accel_imu_body = -R⁻¹·g_world. Standard: accel_imu = R_world_to_body · (a_world - g_world)
-        a_minus_g = (
-            accel_world[0] - GRAVITY_NED[0],
-            accel_world[1] - GRAVITY_NED[1],
-            accel_world[2] - GRAVITY_NED[2],
-        )
-        accel_imu_body = quat_rotate_world_to_body(self.state.quat, a_minus_g)
-        self.state.accel_body = accel_imu_body
-
         # Integrate velocity (semi-implicit).
         new_vel = tuple(self.state.vel_ned[i] + accel_world[i] * dt
                         for i in range(3))
@@ -286,8 +343,26 @@ class MultirotorDynamics:
             new_vel = (new_vel[0] * 0.5, new_vel[1] * 0.5, min(0.0, new_vel[2]))
             on_ground = True
 
+        # Specific force (что чувствует акселерометр) = R⁻¹ · (a_world - g).
+        # Важно: на земле ground reaction отменяет downward acceleration.
+        # Без этого стоящий аппарат выглядит как free-fall (accel≈0), и
+        # ArduPilot AHRS/DCM не может стабильно выровнять roll/pitch.
+        accel_world_for_imu = accel_world
+        if on_ground and accel_world[2] > 0.0:
+            accel_world_for_imu = (accel_world[0], accel_world[1], 0.0)
+        a_minus_g = (
+            accel_world_for_imu[0] - GRAVITY_NED[0],
+            accel_world_for_imu[1] - GRAVITY_NED[1],
+            accel_world_for_imu[2] - GRAVITY_NED[2],
+        )
+        accel_imu_body_true = quat_rotate_world_to_body(self.state.quat, a_minus_g)
+        # True (без noise) — потребляется physics logging / SITL sensor path.
+        self.state.accel_body_true = accel_imu_body_true
+
         # Angular dynamics. ω̇ = I⁻¹ · (τ - ω × (I·ω)) — Euler's equation.
-        wx, wy, wz = self.state.omega_body
+        # ВАЖНО: использовать TRUE omega для физики (не noisy IMU output),
+        # иначе noise компаундится через time → divergence.
+        wx, wy, wz = self.state.omega_body_true
         Ix, Iy, Iz = p.inertia_xx, p.inertia_yy, p.inertia_zz
         # Gyroscopic precession ω × Iω.
         gyro_torque = (
@@ -311,15 +386,24 @@ class MultirotorDynamics:
             wz + omega_dot[2] * dt,
         )
 
-        # Integrate quaternion.
+        # Integrate quaternion (используя TRUE new_omega).
         new_quat = quat_integrate(self.state.quat, new_omega, dt)
 
-        # Commit.
+        # Commit physics state (true).
         self.state.pos_ned = new_pos
         self.state.vel_ned = new_vel
         self.state.quat = new_quat
-        self.state.omega_body = new_omega
+        self.state.omega_body_true = new_omega
         self.state.on_ground = on_ground
+
+        # Apply IMU noise model — published omega_body/accel_body — то что
+        # EKF "видит" через датчик. Не feed-back в physics dynamics.
+        noisy_gyro, noisy_accel = self._apply_imu_noise(
+            new_omega, self.state.accel_body_true, dt,
+        )
+        self.state.omega_body = noisy_gyro
+        self.state.accel_body = noisy_accel
+
         self._t += dt
 
     @property
@@ -336,7 +420,8 @@ class MultirotorDynamics:
 
 
 __all__ = [
-    "MultirotorParams", "DynamicsState", "MultirotorDynamics",
+    "MultirotorParams", "SensorNoiseParams",
+    "DynamicsState", "MultirotorDynamics",
     "pwm_to_thrust", "mix_motors",
     "quat_normalize", "quat_rotate_body_to_world",
     "quat_rotate_world_to_body", "quat_to_euler_zyx", "quat_integrate",

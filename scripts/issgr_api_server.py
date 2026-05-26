@@ -75,17 +75,18 @@ def _make_obstacle_polygon(
 
 # Urban scene obstacle catalog — синхронизирован с
 # gazebo/worlds/iris_runway_urban.sdf и RF_OBSTACLES_URBAN в
-# gcs_web_ui_server.py. Поля: name, north_m, east_m, size_north_m,
-# size_east_m, height_m, material, issgr_class, uuid_suffix.
+# gcs_web_ui_server.py. Gazebo/SDF pose/size are ENU (x=east, y=north);
+# поля ниже уже переведены в local NED: name, north_m, east_m,
+# size_north_m, size_east_m, height_m, material, issgr_class, uuid_suffix.
 URBAN_OBSTACLES = [
-    ("Hangar",            45.0,   0.0, 20.0, 32.0, 18.0, "metal",    IssgrClass.GEO_HANGAR,   "00000000-0000-0000-0000-000000000010"),
-    ("Control Tower",     82.0,  32.0,  9.0,  9.0, 24.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000011"),
-    ("Office tower",      60.0, -40.0, 15.0, 15.0, 40.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000020"),
-    ("Apartment block",   60.0,  40.0, 25.0, 15.0, 25.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000021"),
-    ("Warehouse",        100.0,   0.0, 30.0, 40.0, 12.0, "metal",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000022"),
-    ("Residential tower",120.0, -50.0, 12.0, 12.0, 60.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000023"),
-    ("Mall",             140.0,  50.0, 50.0, 30.0, 15.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000024"),
-    ("Commercial",        30.0,  60.0, 18.0, 10.0,  8.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000025"),
+    ("Hangar",              0.0,  45.0, 32.0, 20.0, 18.0, "metal",    IssgrClass.GEO_HANGAR,   "00000000-0000-0000-0000-000000000010"),
+    ("Control Tower",      32.0,  82.0,  9.0,  9.0, 24.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000011"),
+    ("Office tower",      -40.0,  60.0, 15.0, 15.0, 40.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000020"),
+    ("Apartment block",    40.0,  60.0, 15.0, 25.0, 25.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000021"),
+    ("Warehouse",           0.0, 100.0, 40.0, 30.0, 12.0, "metal",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000022"),
+    ("Residential tower", -50.0, 120.0, 12.0, 12.0, 60.0, "concrete", IssgrClass.GEO_TOWER,    "00000000-0000-0000-0000-000000000023"),
+    ("Mall",               50.0, 140.0, 30.0, 50.0, 15.0, "brick",    IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000024"),
+    ("Commercial",         60.0,  30.0, 10.0, 18.0,  8.0, "concrete", IssgrClass.GEO_BUILDING, "00000000-0000-0000-0000-000000000025"),
 ]
 
 

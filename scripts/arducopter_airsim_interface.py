@@ -53,6 +53,7 @@ Usage:
       --airsim-host=127.0.0.1 --airsim-port=41451
 
   # JSON-FDM (canonical, требует SITL launch с -f airsim-copter):
+  # Для текущей physics модели ArduCopter должен быть FRAME_TYPE=1 (X).
   ./arducopter_airsim_interface.py --mode=json_fdm \
       --fdm-in-port=9003 --fdm-out-port=9002 \
       --airsim-host=127.0.0.1
@@ -176,6 +177,7 @@ class JsonFdmBridge:
         self._state = FdmState()
         self._t_start = time.time()
         self._t_last_step = self._t_start
+        self._last_servo_frame_count: int | None = None
         self._sitl_addr: tuple[str, int] | None = None
         self._frame_count = 0
         self._stop = threading.Event()
@@ -216,7 +218,7 @@ class JsonFdmBridge:
     def _emit_response(self) -> None:
         if not self._sitl_addr:
             return
-        self._state.t_s = time.time() - self._t_start
+        self._state.t_s = self.physics.t
         # Convert local NED → lat/lon/alt для ArduPilot GPS sim.
         # Origin = ORIGIN_LAT/LON (CMAC default, matches ArduPilot home).
         deg_per_m = 1.0 / 111_319.9
@@ -267,7 +269,7 @@ class JsonFdmBridge:
         with self.log_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-    def _parse_pwm_packet(self, data: bytes) -> tuple[int, list[int]] | None:
+    def _parse_pwm_packet(self, data: bytes) -> tuple[int, int, list[int]] | None:
         """Decode ArduPilot SIM_JSON `servo_packet_16` (40B binary) или
         JSON variant (synthetic emulator).
 
@@ -289,9 +291,10 @@ class JsonFdmBridge:
             magic = fields[0]
             if magic != ARDUPILOT_AIRSIM_FDM_MAGIC:
                 return None
+            frame_rate = int(fields[1])
             frame_count = fields[2]
             pwm = list(fields[3:19])
-            return (frame_count, pwm)
+            return (frame_rate, frame_count, pwm)
         # Binary 72-byte: 32-channel variant (SERVO_32_ENABLE=1, magic=29569).
         if len(data) == 72:
             try:
@@ -300,7 +303,7 @@ class JsonFdmBridge:
                 return None
             if fields[0] != 29569:
                 return None
-            return (fields[2], list(fields[3:35]))
+            return (int(fields[1]), fields[2], list(fields[3:35]))
         # JSON variant — synthetic SITL emulator.
         try:
             msg = json.loads(data.decode())
@@ -308,7 +311,8 @@ class JsonFdmBridge:
             return None
         if msg.get("magic") != ARDUPILOT_AIRSIM_FDM_MAGIC:
             return None
-        return (int(msg.get("frame_count", 0)),
+        return (int(msg.get("frame_rate", 1200)),
+                int(msg.get("frame_count", 0)),
                 [int(p) for p in msg.get("pwm", [])])
 
     def run(self) -> None:
@@ -329,16 +333,26 @@ class JsonFdmBridge:
             parsed = self._parse_pwm_packet(data)
             if parsed is None:
                 continue
-            _frame_count_from_packet, pwm = parsed
+            frame_rate, frame_count_from_packet, pwm = parsed
             self._frame_count += 1
 
-            # Real-time dt от wall clock (SITL может посылать с
-            # переменной задержкой; physics integrate с реальным dt
-            # для стабильности).
+            # Use ArduPilot's synthetic simulation clock, not wall-clock UDP
+            # cadence. With `-S`, SITL may exchange packets thousands of times
+            # faster than real time; feeding wall dt back into IMU timestamping
+            # makes AHRS/DCM diverge from the JSON quaternion.
             now = time.time()
-            dt = now - self._t_last_step
             self._t_last_step = now
-            # Clamp dt: первый кадр и большие паузы — safety.
+            nominal_dt = 1.0 / max(frame_rate, 1)
+            if self._last_servo_frame_count is None:
+                dt = nominal_dt
+            else:
+                delta_frames = frame_count_from_packet - self._last_servo_frame_count
+                if delta_frames <= 0 or delta_frames > frame_rate:
+                    dt = nominal_dt
+                else:
+                    dt = delta_frames / max(frame_rate, 1)
+            self._last_servo_frame_count = frame_count_from_packet
+            # Clamp dt: duplicated frames and large pauses are safety-handled.
             dt = max(0.0001, min(0.05, dt))
 
             # Step physics.
