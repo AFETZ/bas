@@ -9,10 +9,9 @@ surface для multi-UAV monitoring и ИССГР browse.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  web/admin/  (Leaflet + vanilla JS, 6 tabs)                      │
+│  web/admin/  (Leaflet + vanilla JS, 6 explanatory tabs)           │
 │  ─────────────────────────────────────────────────────────────  │
-│   Overview / ИССГР Collections / Multi-UAV / On-board Metrics    │
-│   Tile Map / Multicast Sync                                       │
+│   Обзор / ИССГР / БАС / Бортовая БД / 20×20 км / Sync            │
 └──────────────────────────────────────────────────────────────────┘
                        │ fetch (lazy per-tab)
                        ▼
@@ -20,6 +19,7 @@ surface для multi-UAV monitoring и ИССГР browse.
 │  scripts/admin_web_server.py  (stdlib http.server)               │
 │  ─────────────────────────────────────────────────────────────  │
 │   /api/admin/health                                              │
+│   /api/admin/config                                              │
 │   /api/admin/issgr_url                                           │
 │   /api/admin/collections          ← proxy ИССГР                  │
 │   /api/admin/items?c=…            ← proxy ИССГР                  │
@@ -27,7 +27,7 @@ surface для multi-UAV monitoring и ИССГР browse.
 │   /api/admin/onboard_composite                                   │
 │   /api/admin/tile_grid?n=&e=&size=  ← TileGrid generator          │
 │   /api/admin/activity                                            │
-│   /api/admin/sync_stats           ← placeholder                  │
+│   /api/admin/sync_stats           ← live sync publisher proxy     │
 └──────────────────────────────────────────────────────────────────┘
             │ HTTP                       │ SQLite
             ▼                            ▼
@@ -37,12 +37,31 @@ surface для multi-UAV monitoring и ИССГР browse.
 
 Pure stdlib HTTP — нет FastAPI dep, easy embed в любой dev env.
 
+## Product boundary
+
+Admin Dashboard — это **monitor / inspect / prove** surface. Он показывает,
+что модули стенда живы и связаны, но не отправляет flight commands.
+
+| Задача | Интерфейс |
+|---|---|
+| Смотреть ИССГР, бортовую БД, sync, tile grid, registered UAVs | Admin Dashboard `:8810` |
+| Управлять БАС вручную | Web GCS `:8765` через `run_stage_2_4_fpv_rf_demo.sh` |
+| Внешний GUI / QGroundControl | `run_stage_2_4_qgc_demo.sh` |
+| 2 SITL + 2 iris | `run_stage_2_4_multi_uav_demo.sh` |
+| API explorer для АСУ-клиентов | Swagger `:8770/docs` |
+
+Поэтому вкладка Multi-UAV показывает столько БАС, сколько зарегистрировано
+в ИССГР текущего сценария. В `run_master_demo.sh` seeded один synthetic UAV:
+это нормально, потому что master demo демонстрирует integration stack, а не
+пульт управления роем.
+
 ## Tabs
 
 ### 1. Overview
 - 4 KPI cards: collections / UAVs / obstacles / on-board rows
 - Endpoint health table (ИССГР, OnBoard DB, multicast)
 - Activity log (recent /api/admin/activity events)
+- Human guide: что это за экран, где управление, какую часть ТЗ закрывает
 
 ### 2. ИССГР Collections
 - Collection dropdown (uavs / obstacles / gcs / missions / sensor_readings)
@@ -53,6 +72,8 @@ Pure stdlib HTTP — нет FastAPI dep, easy embed в любой dev env.
 - Roster table: sysid / name / mode / armed / alt / battery
 - Live Leaflet map с circle markers (green=armed, gray=disarmed)
 - Auto-fit bounds
+- Explicit note: admin monitors БАС; control handoff is Web GCS/QGC
+- Copyable commands for `run_stage_2_4_multi_uav_demo.sh` and operator UI
 
 ### 4. On-board Metrics
 - 4 KPI cards: rows per table (uav_state / sensor_readings / mission / composite)
@@ -65,7 +86,7 @@ Pure stdlib HTTP — нет FastAPI dep, easy embed в любой dev env.
 
 ### 6. Multicast Sync
 - Static info: endpoint, TTL, packet sizes, wire format
-- Placeholder для live publisher stats (extension)
+- Human-readable live publisher stats + collapsible raw JSON
 
 ## Запуск
 
@@ -99,11 +120,24 @@ Admin dashboard работает поверх любого ИССГР instance. 
 `run_stage_3_issgr_demo.sh` или ваш custom orchestrator с ИССГР, и
 admin будет показывать live состояние через REST proxy.
 
+### Master demo — все модули
+
+```bash
+bash scripts/run_master_demo.sh
+# Открыть http://127.0.0.1:8810/
+```
+
+Этот сценарий запускает ИССГР node-A/node-B, OnBoardDB, multicast sync,
+AirSim stub, scene population, JsonFdmBridge, synthetic SITL emulator,
+cyber monitor, Sionna tile showcase и dashboard. Он intentionally не является
+flight-control screen.
+
 ## API endpoints
 
 | Path | Method | Returns |
 |---|---|---|
 | `/api/admin/health` | GET | `{ok: true, ts: epoch}` |
+| `/api/admin/config` | GET | `{issgr_url, has_onboard_db, has_sync_stats, sync_stats_url}` |
 | `/api/admin/issgr_url` | GET | `{url: "http://..."}` |
 | `/api/admin/collections` | GET | `{collection_name: count, ...}` |
 | `/api/admin/items?c=NAME&limit=N` | GET | ИССГР FeatureCollection (passthrough) |
@@ -111,17 +145,17 @@ admin будет показывать live состояние через REST pr
 | `/api/admin/onboard_composite` | GET | `{metrics: [{sysid, metric_name, metric_value, extra_json, ts_ms}]}` (latest per metric) |
 | `/api/admin/tile_grid?n=N&e=E&size=M` | GET | `{total_tiles, total_area_km2, geojson: FeatureCollection}` |
 | `/api/admin/activity` | GET | `{log: [{ts, event, detail}]}` |
-| `/api/admin/sync_stats` | GET | Placeholder (extension) |
+| `/api/admin/sync_stats` | GET | Live sync publisher stats или explanatory placeholder |
 
 ## Файлы
 
 | Файл | Что |
 |---|---|
-| `web/admin/index.html` | Single-page UI с 6 tabs |
+| `web/admin/index.html` | Single-page UI с explanatory guide + 6 tabs |
 | `web/admin/app.js` | Vanilla JS, fetch + Leaflet (lazy per-tab) |
-| `web/admin/styles.css` | Dark theme, 3500B |
-| `scripts/admin_web_server.py` | Stdlib HTTP server + 9 API endpoints |
-| `scripts/_admin_web_smoke.py` | Unit smoke — 10 endpoints без backend deps |
+| `web/admin/styles.css` | Responsive graphite control-room theme |
+| `scripts/admin_web_server.py` | Stdlib HTTP server + admin API endpoints |
+| `scripts/_admin_web_smoke.py` | Unit smoke — UI-critical endpoints без backend deps |
 | `scripts/_admin_web_integration_smoke.py` | Integration smoke — ИССГР + OnBoardDB + admin end-to-end |
 | `docs/stage_4_admin_web_interface.md` | Этот файл |
 
@@ -131,15 +165,16 @@ admin будет показывать live состояние через REST pr
 
 ```
 [1] /api/admin/health          → {ok: true}
-[2] / (index.html)             → 6875B, content-type ok
-[3] /app.js + /styles.css      → 9928B + 3957B
-[4] /api/admin/tile_grid 10×10 → 100 tiles, 400 km²
-[5] tile_grid bounds clamp     → n=999 → max 50
-[6] /api/admin/activity        → ≥1 event (startup)
-[7] /api/admin/onboard_stats   → 404 (no DB)
-[8] /api/admin/collections     → {} (no ISSGR)
-[9] /api/admin/items?c=uavs    → {} (no ISSGR)
-[10] /api/admin/sync_stats     → placeholder
+[2] /api/admin/config          → runtime wiring flags
+[3] / (index.html)             → content-type ok
+[4] /app.js + /styles.css      → content-type ok
+[5] /api/admin/tile_grid 10×10 → 100 tiles, 400 km²
+[6] tile_grid bounds clamp     → n=999 → max 50
+[7] /api/admin/activity        → ≥1 event (startup)
+[8] /api/admin/onboard_stats   → 404 (no DB)
+[9] /api/admin/collections     → {} (no ISSGR)
+[10] /api/admin/items?c=uavs   → {} (no ISSGR)
+[11] /api/admin/sync_stats     → placeholder
 
 ALL CHECKS PASSED
 ```
@@ -163,9 +198,9 @@ ALL CHECKS PASSED
 2. **No auth** — admin endpoint должен быть за reverse proxy с auth
    или firewalled. Текущий standalone server bind'ит на 127.0.0.1
    по default.
-3. **No write operations** — все endpoints read-only. POST/PUT/DELETE
+3. **No flight control operations** — deliberate safety boundary. POST/PUT/DELETE
    ИССГР объектов идёт напрямую в `/collections/.../items` через
-   существующий ИССГР API (или через Stage 2.4 operator console).
+   существующий ИССГР API; flight commands идут через Stage 2.4 operator console.
 4. **Tile Map** — рендерит до 2500 polygons (50×50). Больше нужен
    server-side simplification / clustering.
 

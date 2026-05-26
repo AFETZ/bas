@@ -28,7 +28,7 @@ machine gets confused → TCP/MAVLink unstable.
 **Fix:** `setup_radio_net.sh` no longer assigns IP to the near netns by default. Legacy 1.4-era
 ping tests can opt in via `RADIO_NEAR_NETNS_IP=1`.
 
-Confirmed via smoke test (`scripts/_smoke_radio.sh degraded_lora 10.10.0.2`):
+Confirmed via smoke test (`scripts/debug/_smoke_radio.sh degraded_lora 10.10.0.2`):
 - Before fix: 2 ARP replies, ping RTT jitter 500-1252ms, TCP unstable
 - After fix: 1 ARP reply, ping 5/5 100% PDR, TCP clean
 
@@ -37,7 +37,7 @@ Confirmed via smoke test (`scripts/_smoke_radio.sh degraded_lora 10.10.0.2`):
 After duplicate-IP fix, smoke test without Gazebo passes. But mission with Gazebo+SITL
 joining the shared netns still fails with `EHOSTUNREACH` from `bas-ctrl-far`.
 
-Confirmed via step-by-step smoke (`scripts/_smoke_step_by_step.sh`):
+Confirmed via step-by-step smoke (`scripts/debug/_smoke_step_by_step.sh`):
 - After pause container + veth + ns-3: `ping 10.10.0.2: 2/2 received` ✓
 - After `docker compose up gazebo`: `ping: 0/2 received, Destination Host Unreachable` ✗
 
@@ -183,11 +183,11 @@ TAKEOFF/SET_POSITION_TARGET с такой стратегией не успели
 
 ## Files involved in debug
 
-- `scripts/_smoke_radio.sh` — minimal smoke (no Gazebo); reproduces dup-IP, verifies post-fix
-- `scripts/_smoke_step_by_step.sh` — incremental smoke that demonstrates Gazebo breaks ping
-- `scripts/_smoke_mission_setup.sh` — mission-style setup without orchestrator
-- `scripts/_dbl_pcap.sh` — three-way tcpdump (tap-near/tap-far/veth-uav-br)
-- `scripts/_compare_netns.sh` — netns state diff before/after Gazebo
+- `scripts/debug/_smoke_radio.sh` — minimal smoke (no Gazebo); reproduces dup-IP, verifies post-fix
+- `scripts/debug/_smoke_step_by_step.sh` — incremental smoke that demonstrates Gazebo breaks ping
+- `scripts/debug/_smoke_mission_setup.sh` — mission-style setup without orchestrator
+- `scripts/debug/_dbl_pcap.sh` — three-way tcpdump (tap-near/tap-far/veth-uav-br)
+- `scripts/debug/_compare_netns.sh` — netns state diff before/after Gazebo
 - Failed multicast-mitigation scripts (`_test_block_mcast.sh`, `_test_no_mcast.sh`,
   `_test_bridge_mcast.sh`, `_test_ebtables.sh`) удалены в v0.7-housekeeping —
   root cause #2 закрыт через `GZ_IP=127.0.0.1` в compose, эти попытки больше

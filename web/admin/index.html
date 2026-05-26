@@ -14,15 +14,18 @@
   <header class="topbar">
     <div class="brand">
       <span class="logo">BAS</span>
-      <span class="subtitle">Admin Dashboard</span>
+      <span>
+        <span class="subtitle-main">Admin Dashboard</span>
+        <span class="subtitle">ИССГР / мониторинг / доказательная витрина</span>
+      </span>
     </div>
-    <nav class="tabs">
-      <button class="tab active" data-tab="overview">Overview</button>
-      <button class="tab" data-tab="issgr">ИССГР Collections</button>
-      <button class="tab" data-tab="multi">Multi-UAV</button>
-      <button class="tab" data-tab="onboard">On-board Metrics</button>
-      <button class="tab" data-tab="tilemap">Tile Map (>20×20 km)</button>
-      <button class="tab" data-tab="sync">Multicast Sync</button>
+    <nav class="tabs" aria-label="Dashboard sections">
+      <button class="tab active" data-tab="overview">Обзор</button>
+      <button class="tab" data-tab="issgr">ИССГР</button>
+      <button class="tab" data-tab="multi">БАС</button>
+      <button class="tab" data-tab="onboard">Бортовая БД</button>
+      <button class="tab" data-tab="tilemap">20×20 км</button>
+      <button class="tab" data-tab="sync">Синхронизация</button>
     </nav>
     <div class="status">
       <span class="pill" id="api-pill">API</span>
@@ -31,92 +34,217 @@
   </header>
 
   <main class="content">
-    <!-- ========== Overview ========== -->
     <section id="tab-overview" class="tab-panel active">
-      <h2>System Overview</h2>
-      <div class="grid grid-4">
-        <div class="card" id="kpi-collections">
-          <div class="kpi-label">ИССГР Collections</div>
-          <div class="kpi-value">—</div>
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Master demo control room</p>
+          <h1>Что показывает этот экран</h1>
+          <p class="lead">
+            Это административная витрина стенда: она показывает состояние ИССГР,
+            бортовой БД, multicast-синхронизации, картографического тайлинга и
+            объектов БАС. Полётные команды отправляются не отсюда, а через Web GCS
+            или QGroundControl.
+          </p>
         </div>
-        <div class="card" id="kpi-uavs">
-          <div class="kpi-label">UAVs registered</div>
-          <div class="kpi-value">—</div>
-        </div>
-        <div class="card" id="kpi-obstacles">
-          <div class="kpi-label">Obstacles</div>
-          <div class="kpi-value">—</div>
-        </div>
-        <div class="card" id="kpi-onboard-rows">
-          <div class="kpi-label">On-board total rows</div>
-          <div class="kpi-value">—</div>
+        <div class="mode-panel">
+          <span class="mode-kicker">Роль интерфейса</span>
+          <strong>Monitor / inspect / prove</strong>
+          <span>Не пульт ручного управления</span>
         </div>
       </div>
+
+      <div class="guide-grid">
+        <article class="guide">
+          <h2>Для чего</h2>
+          <p>Показать, что модули грантового стенда связаны в одну систему: наземная ИССГР, бортовая БД, синхронизация, карта, БАС-объекты и диагностические события.</p>
+        </article>
+        <article class="guide">
+          <h2>Что можно делать</h2>
+          <p>Смотреть объекты, позиции, метрики, coverage grid, sync counters, raw endpoints и проверять, какие части стенда живы прямо сейчас.</p>
+        </article>
+        <article class="guide">
+          <h2>Где управление</h2>
+          <p>Для команд БАС используйте операторский Web GCS: <code>sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh</code> или auto demo recorder.</p>
+        </article>
+        <article class="guide">
+          <h2>Что закрывает</h2>
+          <p>Stage 3/4: ИССГР API, sync, on-board storage, карты 20×20 км, admin UI и интеграционную демонстрацию master demo.</p>
+        </article>
+      </div>
+
+      <div class="command-strip">
+        <div>
+          <span class="command-label">Полный master demo</span>
+          <code>bash scripts/run_master_demo.sh</code>
+        </div>
+        <button class="copy-btn" data-copy="bash scripts/run_master_demo.sh">Copy</button>
+        <div>
+          <span class="command-label">Полётный UI с управлением</span>
+          <code>sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh</code>
+        </div>
+        <button class="copy-btn" data-copy="sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh">Copy</button>
+      </div>
+
+      <div class="grid grid-4">
+        <div class="card kpi-card" id="kpi-collections">
+          <div class="kpi-label">ИССГР collections <span class="hint" data-tip="Типы объектов цифрового двойника: БАС, препятствия, НПУ, missions, sensor readings.">?</span></div>
+          <div class="kpi-value">—</div>
+          <div class="kpi-note">структура наземной БД</div>
+        </div>
+        <div class="card kpi-card" id="kpi-uavs">
+          <div class="kpi-label">БАС в ИССГР <span class="hint" data-tip="В master demo по умолчанию seeded один synthetic UAV. Реальный multi-SITL запускается отдельным demo wrapper.">?</span></div>
+          <div class="kpi-value">—</div>
+          <div class="kpi-note">объекты, доступные для мониторинга</div>
+        </div>
+        <div class="card kpi-card" id="kpi-obstacles">
+          <div class="kpi-label">Препятствия</div>
+          <div class="kpi-value">—</div>
+          <div class="kpi-note">urban/RF scene objects</div>
+        </div>
+        <div class="card kpi-card" id="kpi-onboard-rows">
+          <div class="kpi-label">Бортовые записи</div>
+          <div class="kpi-value">—</div>
+          <div class="kpi-note">SQLite time-series + metrics</div>
+        </div>
+      </div>
+
       <div class="card">
-        <h3>Endpoints</h3>
+        <div class="section-title">
+          <h2>Живые сервисы</h2>
+          <span class="section-note">Куда смотреть, если нужно доказательство работы модуля</span>
+        </div>
         <table id="endpoints-table" class="dense">
-          <thead><tr><th>Service</th><th>URL</th><th>Status</th></tr></thead>
+          <thead><tr><th>Service</th><th>URL</th><th>Что даёт</th><th>Status</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+
       <div class="card">
-        <h3>Activity (last 60s)</h3>
+        <div class="section-title">
+          <h2>Activity</h2>
+          <span class="section-note">Последние события самого dashboard</span>
+        </div>
         <pre id="activity-log">—</pre>
       </div>
     </section>
 
-    <!-- ========== ИССГР Collections ========== -->
     <section id="tab-issgr" class="tab-panel">
-      <h2>ИССГР OGC API Features</h2>
-      <p class="muted">REST-прокси к <code>/collections</code> на <code id="issgr-url">—</code></p>
+      <div class="page-head compact">
+        <div>
+          <p class="eyebrow">Stage 3 ИССГР</p>
+          <h1>ИССГР objects browser</h1>
+          <p class="lead">Здесь видно содержимое наземной геопространственной БД. Это слой цифрового двойника: БАС, препятствия, НПУ, missions и sensor readings.</p>
+        </div>
+        <a class="link-button" id="swagger-link" href="/docs" target="_blank" rel="noreferrer">Open API docs</a>
+      </div>
+
+      <div class="explain-row">
+        <div><strong>Зачем:</strong> проверить REST/OGC API Features и данные для имитаторов АСУ.</div>
+        <div><strong>Что можно:</strong> выбирать collection и смотреть GeoJSON Feature objects.</div>
+        <div><strong>ТЗ:</strong> наземная ИССГР, цифровой двойник, API для внешних клиентов.</div>
+      </div>
+
       <div class="card">
         <div class="toolbar">
-          <select id="issgr-collection-select">
-            <option value="uavs">uavs</option>
-            <option value="obstacles">obstacles</option>
-            <option value="gcs">gcs</option>
-            <option value="missions">missions</option>
-            <option value="sensor_readings">sensor_readings</option>
-          </select>
+          <label>Collection
+            <select id="issgr-collection-select">
+              <option value="uavs">uavs</option>
+              <option value="obstacles">obstacles</option>
+              <option value="gcs">gcs</option>
+              <option value="missions">missions</option>
+              <option value="sensor_readings">sensor_readings</option>
+            </select>
+          </label>
           <button id="issgr-refresh">Refresh</button>
           <span class="muted" id="issgr-count">—</span>
+          <span class="muted">REST proxy: <code id="issgr-url">—</code></span>
         </div>
         <table class="dense" id="issgr-items-table">
-          <thead><tr><th>id</th><th>name</th><th>geometry type</th><th>coords</th><th>properties</th></tr></thead>
+          <thead><tr><th>id</th><th>name</th><th>geometry</th><th>coords</th><th>properties</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
     </section>
 
-    <!-- ========== Multi-UAV ========== -->
     <section id="tab-multi" class="tab-panel">
-      <h2>Multi-UAV</h2>
+      <div class="page-head compact">
+        <div>
+          <p class="eyebrow">Monitoring, not swarm control</p>
+          <h1>БАС / Multi-UAV</h1>
+          <p class="lead">
+            Эта вкладка показывает БАС, которые сейчас зарегистрированы в ИССГР.
+            В master demo seeded один synthetic UAV, поэтому одна строка здесь нормальна.
+            Реальный сценарий с двумя SITL запускается отдельной командой.
+          </p>
+        </div>
+        <div class="mode-panel small">
+          <span class="mode-kicker">Control handoff</span>
+          <strong>Web GCS / QGC</strong>
+          <span>admin dashboard только наблюдает</span>
+        </div>
+      </div>
+
+      <div class="explain-row">
+        <div><strong>Почему один:</strong> `run_master_demo.sh` демонстрирует ИССГР/sync/admin integration и seed'ит один UAV.</div>
+        <div><strong>Где два БАС:</strong> <code>sudo bash scripts/run_stage_2_4_multi_uav_demo.sh</code>.</div>
+        <div><strong>Как управлять:</strong> Web GCS/QGC через MAVProxy/mavp2p, не через эту admin-вкладку.</div>
+      </div>
+
+      <div class="command-strip">
+        <div>
+          <span class="command-label">2 SITL + 2 iris + router</span>
+          <code>sudo bash scripts/run_stage_2_4_multi_uav_demo.sh</code>
+        </div>
+        <button class="copy-btn" data-copy="sudo bash scripts/run_stage_2_4_multi_uav_demo.sh">Copy</button>
+        <div>
+          <span class="command-label">Single UAV ручное управление</span>
+          <code>sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh</code>
+        </div>
+        <button class="copy-btn" data-copy="sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh">Copy</button>
+      </div>
+
       <div class="grid grid-2">
         <div class="card">
-          <h3>UAV roster</h3>
+          <div class="section-title">
+            <h2>UAV roster</h2>
+            <span id="multi-count" class="section-note">—</span>
+          </div>
           <table class="dense" id="uavs-roster">
             <thead><tr><th>sysid</th><th>name</th><th>mode</th><th>armed</th><th>alt (m)</th><th>battery (V)</th></tr></thead>
             <tbody></tbody>
           </table>
+          <p class="footnote" id="multi-footnote">Команды не отправляются из этой таблицы: это deliberate separation между admin monitoring и operator control.</p>
         </div>
         <div class="card">
-          <h3>Live positions</h3>
-          <div id="multi-map" style="height:380px;"></div>
+          <div class="section-title">
+            <h2>Live positions</h2>
+            <span class="section-note">Leaflet map по координатам ИССГР</span>
+          </div>
+          <div id="multi-map" class="map map-medium"></div>
         </div>
       </div>
     </section>
 
-    <!-- ========== On-board Metrics ========== -->
     <section id="tab-onboard" class="tab-panel">
-      <h2>On-board Database (SQLite)</h2>
+      <div class="page-head compact">
+        <div>
+          <p class="eyebrow">Stage 3 on-board storage</p>
+          <h1>Бортовая БД и composite metrics</h1>
+          <p class="lead">SQLite WAL хранит телеметрию, sensor readings, mission log и производные метрики. Это показывает, что данные могут жить на борту, а не только в наземном API.</p>
+        </div>
+      </div>
+
       <div class="grid grid-4">
-        <div class="card" id="ob-uav"><div class="kpi-label">uav_state rows</div><div class="kpi-value">—</div></div>
-        <div class="card" id="ob-sensor"><div class="kpi-label">sensor_readings</div><div class="kpi-value">—</div></div>
-        <div class="card" id="ob-mission"><div class="kpi-label">missions</div><div class="kpi-value">—</div></div>
-        <div class="card" id="ob-composite"><div class="kpi-label">composite_state</div><div class="kpi-value">—</div></div>
+        <div class="card kpi-card" id="ob-uav"><div class="kpi-label">uav_state rows</div><div class="kpi-value">—</div><div class="kpi-note">time-series позиций</div></div>
+        <div class="card kpi-card" id="ob-sensor"><div class="kpi-label">sensor_readings</div><div class="kpi-value">—</div><div class="kpi-note">RSSI/CV/LiDAR-like data</div></div>
+        <div class="card kpi-card" id="ob-mission"><div class="kpi-label">missions</div><div class="kpi-value">—</div><div class="kpi-note">mission events</div></div>
+        <div class="card kpi-card" id="ob-composite"><div class="kpi-label">composite_state</div><div class="kpi-value">—</div><div class="kpi-note">derived state for decision logic</div></div>
       </div>
       <div class="card">
-        <h3>Latest composite metrics</h3>
+        <div class="section-title">
+          <h2>Latest composite metrics</h2>
+          <span class="section-note">Последнее значение каждой метрики по sysid</span>
+        </div>
         <table class="dense" id="composite-table">
           <thead><tr><th>sysid</th><th>metric</th><th>value</th><th>extra</th><th>age (s)</th></tr></thead>
           <tbody></tbody>
@@ -124,42 +252,65 @@
       </div>
     </section>
 
-    <!-- ========== Tile Map ========== -->
     <section id="tab-tilemap" class="tab-panel">
-      <h2>Tile Grid (>20×20 km adaptation)</h2>
+      <div class="page-head compact">
+        <div>
+          <p class="eyebrow">Stage 4 large-map adaptation</p>
+          <h1>Tile grid for maps larger than 20×20 km</h1>
+          <p class="lead">Эта вкладка не управляет полётом. Она доказывает алгоритм разбиения больших территорий на tiles для ИССГР, Sionna cache и AirSim asset streaming.</p>
+        </div>
+      </div>
+
       <div class="card">
         <div class="toolbar">
-          <label>Tile size m: <input type="number" id="tile-size-m" value="2000" min="500" max="10000" step="500"></label>
-          <label>Tiles N: <input type="number" id="tile-n" value="10" min="1" max="50"></label>
-          <label>Tiles E: <input type="number" id="tile-e" value="10" min="1" max="50"></label>
+          <label>Tile size m <input type="number" id="tile-size-m" value="2000" min="500" max="10000" step="500"></label>
+          <label>Tiles N <input type="number" id="tile-n" value="10" min="1" max="50"></label>
+          <label>Tiles E <input type="number" id="tile-e" value="10" min="1" max="50"></label>
           <button id="tile-render">Render grid</button>
           <span class="muted" id="tile-stats">—</span>
         </div>
-        <div id="tile-map" style="height:560px;"></div>
+        <div id="tile-map" class="map map-large"></div>
       </div>
     </section>
 
-    <!-- ========== Multicast Sync ========== -->
     <section id="tab-sync" class="tab-panel">
-      <h2>Multicast Sync Status</h2>
+      <div class="page-head compact">
+        <div>
+          <p class="eyebrow">Stage 3 multicast sync</p>
+          <h1>Синхронизация ИССГР между узлами</h1>
+          <p class="lead">Publisher читает node-A, кодирует heartbeat и позиции БАС в compact UDP multicast packets, subscriber реплицирует их в node-B.</p>
+        </div>
+      </div>
+
       <div class="grid grid-2">
         <div class="card">
-          <h3>Local node</h3>
-          <table class="dense">
+          <div class="section-title">
+            <h2>Protocol contract</h2>
+            <span class="section-note">Что закрывает требование синхронизации БД</span>
+          </div>
+          <table class="dense kv-table">
             <tr><th>Endpoint</th><td><code id="sync-endpoint">239.10.10.10:5500</code></td></tr>
-            <tr><th>TTL</th><td>1 (admin-local)</td></tr>
-            <tr><th>Packet sizes</th><td>L1=40B (POSITION) / L2=80B (SENSOR)</td></tr>
-            <tr><th>Wire format</th><td>FNV-1a hashes + CRC-16/CCITT-FALSE</td></tr>
+            <tr><th>TTL</th><td>1, admin-local multicast scope</td></tr>
+            <tr><th>Packet sizes</th><td>L1=40B position, L2=80B sensor</td></tr>
+            <tr><th>Integrity</th><td>FNV-1a identifiers + CRC-16/CCITT-FALSE</td></tr>
           </table>
         </div>
         <div class="card">
-          <h3>Publisher stats (placeholder)</h3>
-          <p class="muted">Подключите live sync_publisher → /api/admin/sync_stats для real-time данных.</p>
-          <pre id="sync-stats">—</pre>
+          <div class="section-title">
+            <h2>Live publisher stats</h2>
+            <span class="section-note">Если raw <code>/stats</code> открыт отдельно, здесь та же информация human-readable</span>
+          </div>
+          <div id="sync-summary" class="metric-list">—</div>
+          <details class="raw-json">
+            <summary>Raw JSON</summary>
+            <pre id="sync-stats">—</pre>
+          </details>
         </div>
       </div>
     </section>
   </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="

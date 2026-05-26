@@ -73,7 +73,7 @@ git pull origin main
 ```bash
 sudo docker logs bas-ns3-stage24 2>&1 | tail -80
 # Часто: build failure внутри контейнера. Перерёбилл:
-sudo bash scripts/_start_build.sh
+sudo bash scripts/debug/_start_build.sh
 ```
 
 ### ns-3 не получает пакеты от bas-uav

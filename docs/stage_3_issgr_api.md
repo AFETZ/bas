@@ -85,6 +85,11 @@ REST/OGC API для имитаторов ведомственных АСУ. За
 | `GET /schema` | JSON Schema всех моделей |
 | `GET /classifier` | `IssgrClass` values сгруппированные по top-level |
 
+Swagger `:8770/docs` — это developer/API explorer, не основной
+демонстрационный UI. Для комиссии и непогружённых пользователей сначала
+открывайте Admin Dashboard `:8810`, а Swagger используйте для проверки
+конкретных запросов `GET/POST` и JSON schema.
+
 ## ИССГР Collections
 
 | Collection ID | Object type | Назначение |

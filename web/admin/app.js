@@ -1,16 +1,78 @@
-// BAS Admin Dashboard — single-page admin UI поверх ИССГР REST + OnBoardDB stats.
-// Каждая tab — независимая загрузка по требованию. Backend endpoints:
-//   GET /api/admin/health
-//   GET /api/admin/issgr_url
-//   GET /api/admin/collections          → {collection: count}
-//   GET /api/admin/items?c=uavs         → ИССГР items proxy
-//   GET /api/admin/onboard_stats        → OnBoardDB stats (если configured)
-//   GET /api/admin/onboard_composite    → latest composite metrics
-//   GET /api/admin/tile_grid?n=10&e=10&size=2000 → GeoJSON FeatureCollection
-//   GET /api/admin/activity             → recent activity log
+// BAS Admin Dashboard — explanatory UI поверх ИССГР REST + OnBoardDB stats.
+// This page is a monitoring/proof surface, not the flight-control console.
 
 const ORIGIN_LAT = -35.363262;
 const ORIGIN_LON = 149.165237;
+let runtimeConfig = null;
+
+function $(sel) { return document.querySelector(sel); }
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${path} -> HTTP ${r.status}`);
+  return r.json();
+}
+
+function setPill(id, text, cls) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'pill ' + (cls || '');
+}
+
+function setKpi(id, value) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  const valueEl = card.querySelector('.kpi-value');
+  if (valueEl) valueEl.textContent = String(value);
+}
+
+function fmtTime() {
+  return new Date().toISOString().substring(11, 19) + 'Z';
+}
+
+function showToast(text) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add('show');
+  window.setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+function labelTable(table) {
+  const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+  if (!headers.length) return;
+  table.querySelectorAll('tbody tr').forEach(row => {
+    Array.from(row.children).forEach((cell, i) => {
+      cell.dataset.label = headers[i] || '';
+    });
+  });
+}
+
+function labelTables() {
+  document.querySelectorAll('table.dense').forEach(labelTable);
+}
+
+async function getRuntimeConfig() {
+  if (!runtimeConfig) {
+    runtimeConfig = await api('/api/admin/config').catch(() => ({
+      issgr_url: '',
+      has_onboard_db: true,
+      has_sync_stats: false,
+      sync_stats_url: '',
+    }));
+  }
+  return runtimeConfig;
+}
 
 // ----- Tabs -----
 document.querySelectorAll('.tab').forEach(btn => {
@@ -20,7 +82,6 @@ document.querySelectorAll('.tab').forEach(btn => {
     document.querySelectorAll('.tab-panel').forEach(p => {
       p.classList.toggle('active', p.id === 'tab-' + tab);
     });
-    // Trigger lazy load.
     if (tab === 'issgr') loadIssgr();
     if (tab === 'multi') loadMulti();
     if (tab === 'onboard') loadOnboard();
@@ -30,37 +91,26 @@ document.querySelectorAll('.tab').forEach(btn => {
   });
 });
 
-// ----- Utility -----
-async function api(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
-  return r.json();
-}
-
-function setPill(id, text, cls) {
-  const el = document.getElementById(id);
-  el.textContent = text;
-  el.className = 'pill ' + (cls || '');
-}
-
-function setKpi(id, value) {
-  const card = document.getElementById(id);
-  if (!card) return;
-  card.querySelector('.kpi-value').textContent = String(value);
-}
-
-function fmtTime() {
-  const d = new Date();
-  return d.toISOString().substring(11, 19) + 'Z';
-}
+document.querySelectorAll('[data-copy]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const text = btn.dataset.copy || '';
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Команда скопирована');
+    } catch (_e) {
+      showToast(text);
+    }
+  });
+});
 
 // ----- Health/clock pulse -----
 async function clockTick() {
-  document.getElementById('now-pill').textContent = fmtTime();
+  const now = document.getElementById('now-pill');
+  if (now) now.textContent = fmtTime();
   try {
     await api('/api/admin/health');
     setPill('api-pill', 'API ok', 'ok');
-  } catch (e) {
+  } catch (_e) {
     setPill('api-pill', 'API down', 'err');
   }
 }
@@ -70,15 +120,22 @@ clockTick();
 // ----- Overview -----
 async function loadOverview() {
   try {
+    const cfg = await getRuntimeConfig();
     const url = await api('/api/admin/issgr_url');
-    document.getElementById('issgr-url').textContent = url.url || '—';
+    const issgrUrl = url.url || '';
+    const issgrUrlEl = document.getElementById('issgr-url');
+    if (issgrUrlEl) issgrUrlEl.textContent = issgrUrl || '-';
+    const swagger = document.getElementById('swagger-link');
+    if (swagger && issgrUrl) swagger.href = issgrUrl.replace(/\/$/, '') + '/docs';
+
     const colls = await api('/api/admin/collections');
-    const tot = Object.values(colls).reduce((a, b) => a + (b || 0), 0);
     setKpi('kpi-collections', Object.keys(colls).length);
     setKpi('kpi-uavs', colls.uavs ?? 0);
     setKpi('kpi-obstacles', colls.obstacles ?? 0);
 
-    const ob = await api('/api/admin/onboard_stats').catch(() => null);
+    const ob = cfg.has_onboard_db
+      ? await api('/api/admin/onboard_stats').catch(() => null)
+      : null;
     if (ob && ob.tables) {
       const obTot = Object.values(ob.tables).reduce((a, t) => a + (t.count || 0), 0);
       setKpi('kpi-onboard-rows', obTot);
@@ -86,14 +143,20 @@ async function loadOverview() {
       setKpi('kpi-onboard-rows', 'N/A');
     }
 
+    const sync = await api('/api/admin/sync_stats').catch(() => null);
+    const syncOk = sync && sync.ok;
     const eptBody = document.querySelector('#endpoints-table tbody');
     const endpoints = [
-      ['ИССГР REST',  url.url || '(unset)', url.url ? 'ok' : 'warn'],
-      ['On-board DB', ob ? (ob.path || ':memory:') : '(not connected)', ob ? 'ok' : 'warn'],
-      ['Multicast',   '239.10.10.10:5500',   'info'],
+      ['ИССГР REST', issgrUrl || '(unset)', 'GeoJSON digital twin, collections, API for external ASU clients', issgrUrl ? 'ok' : 'warn'],
+      ['On-board DB', ob ? (ob.path || ':memory:') : '(not configured)', 'SQLite бортовой time-series storage + composite metrics', ob ? 'ok' : 'info'],
+      ['Multicast sync', syncOk ? sync.endpoint : '239.10.10.10:5500', '40/80B packets: heartbeat, UAV position, sensor readings', syncOk ? 'ok' : 'info'],
+      ['Admin UI', window.location.origin + '/', 'Human-readable dashboard for grant/demo proof', 'ok'],
     ];
-    eptBody.innerHTML = endpoints.map(([n, u, s]) =>
-      `<tr><td>${n}</td><td>${u}</td><td><span class="pill ${s === 'ok' ? 'ok' : s === 'warn' ? 'warn' : ''}">${s}</span></td></tr>`).join('');
+    eptBody.innerHTML = endpoints.map(([name, value, purpose, status]) =>
+      `<tr><td>${escapeHtml(name)}</td><td>${escapeHtml(value)}</td>` +
+      `<td>${escapeHtml(purpose)}</td><td><span class="pill ${status === 'ok' ? 'ok' : status === 'warn' ? 'warn' : ''}">${escapeHtml(status)}</span></td></tr>`
+    ).join('');
+    labelTable(document.getElementById('endpoints-table'));
 
     const act = await api('/api/admin/activity').catch(() => ({log: []}));
     document.getElementById('activity-log').textContent =
@@ -108,19 +171,30 @@ async function loadIssgr() {
   const sel = document.getElementById('issgr-collection-select');
   const c = sel.value;
   try {
+    const url = await api('/api/admin/issgr_url').catch(() => ({url: ''}));
+    const issgrUrlEl = document.getElementById('issgr-url');
+    if (issgrUrlEl) issgrUrlEl.textContent = url.url || '-';
+    const swagger = document.getElementById('swagger-link');
+    if (swagger && url.url) swagger.href = url.url.replace(/\/$/, '') + '/docs';
+
     const data = await api(`/api/admin/items?c=${encodeURIComponent(c)}`);
     document.getElementById('issgr-count').textContent =
       `${data.numberReturned || 0} returned (${data.numberMatched || 0} matched)`;
     const tbody = document.querySelector('#issgr-items-table tbody');
-    tbody.innerHTML = (data.features || []).slice(0, 50).map(f => {
+    tbody.innerHTML = (data.features || []).slice(0, 80).map(f => {
       const p = f.properties || {};
       const g = f.geometry || {};
-      const coords = JSON.stringify(g.coordinates).substring(0, 60);
-      const props = JSON.stringify({name: p.name, sysid: p.sysid, issgr_class: p.issgr_class})
-        .substring(0, 80);
-      return `<tr><td>${f.id || '—'}</td><td>${p.name || '—'}</td>` +
-             `<td>${g.type || '—'}</td><td>${coords}</td><td>${props}</td></tr>`;
-    }).join('') || '<tr><td colspan="5" class="muted">(empty)</td></tr>';
+      const coords = JSON.stringify(g.coordinates ?? []).substring(0, 72);
+      const props = JSON.stringify({
+        name: p.name,
+        sysid: p.sysid,
+        issgr_class: p.issgr_class,
+        flight_mode: p.flight_mode,
+      }).substring(0, 110);
+      return `<tr><td>${escapeHtml(f.id || '-')}</td><td>${escapeHtml(p.name || '-')}</td>` +
+             `<td>${escapeHtml(g.type || '-')}</td><td>${escapeHtml(coords)}</td><td>${escapeHtml(props)}</td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">(empty or backend unavailable)</td></tr>';
+    labelTable(document.getElementById('issgr-items-table'));
   } catch (e) {
     document.getElementById('issgr-count').textContent = 'error: ' + e.message;
   }
@@ -129,14 +203,18 @@ document.getElementById('issgr-refresh').addEventListener('click', loadIssgr);
 document.getElementById('issgr-collection-select').addEventListener('change', loadIssgr);
 
 // ----- Multi-UAV -----
-let multiMap = null, multiMarkers = {};
+let multiMap = null;
+let multiMarkers = {};
+
 function ensureMultiMap() {
   if (multiMap) return;
   multiMap = L.map('multi-map').setView([ORIGIN_LAT, ORIGIN_LON], 16);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OSM',
+    maxZoom: 19,
+    attribution: '© OSM',
   }).addTo(multiMap);
 }
+
 async function loadMulti() {
   ensureMultiMap();
   setTimeout(() => multiMap && multiMap.invalidateSize(), 80);
@@ -144,39 +222,60 @@ async function loadMulti() {
     const data = await api('/api/admin/items?c=uavs');
     const tbody = document.querySelector('#uavs-roster tbody');
     const features = data.features || [];
+    const count = document.getElementById('multi-count');
+    if (count) {
+      count.textContent = features.length === 1
+        ? '1 БАС в master demo seed'
+        : `${features.length} БАС в ИССГР`;
+    }
     tbody.innerHTML = features.map(f => {
       const p = f.properties || {};
-      return `<tr><td>${p.sysid ?? '—'}</td><td>${p.name || '—'}</td>` +
-             `<td>${p.flight_mode || '—'}</td><td>${p.armed ? '✓' : '✗'}</td>` +
-             `<td>${(p.altitude_m ?? 0).toFixed(1)}</td>` +
-             `<td>${(p.battery_v ?? 0).toFixed(2)}</td></tr>`;
-    }).join('') || '<tr><td colspan="6" class="muted">(нет UAV)</td></tr>';
+      return `<tr><td>${escapeHtml(p.sysid ?? '-')}</td><td>${escapeHtml(p.name || '-')}</td>` +
+             `<td>${escapeHtml(p.flight_mode || '-')}</td><td>${p.armed ? 'yes' : 'no'}</td>` +
+             `<td>${Number(p.altitude_m ?? 0).toFixed(1)}</td>` +
+             `<td>${Number(p.battery_v ?? 0).toFixed(2)}</td></tr>`;
+    }).join('') || '<tr><td colspan="6" class="muted">(нет UAV в ИССГР)</td></tr>';
+    labelTable(document.getElementById('uavs-roster'));
 
-    // Markers.
     Object.values(multiMarkers).forEach(m => multiMap.removeLayer(m));
     multiMarkers = {};
     const bounds = [];
     features.forEach(f => {
-      const c = (f.geometry || {}).coordinates;
-      if (!c) return;
-      const [lon, lat] = c;
+      const coords = (f.geometry || {}).coordinates;
+      if (!coords) return;
+      const [lon, lat] = coords;
       const p = f.properties || {};
       const marker = L.circleMarker([lat, lon], {
-        radius: 7,
-        color: p.armed ? '#7adf94' : '#8e96a8',
-        fillColor: p.armed ? '#7adf94' : '#8e96a8',
-        fillOpacity: 0.8,
-      }).bindTooltip(`sysid=${p.sysid} ${p.name || ''}`).addTo(multiMap);
+        radius: 8,
+        color: p.armed ? '#8bd36f' : '#a7a393',
+        fillColor: p.armed ? '#8bd36f' : '#a7a393',
+        fillOpacity: 0.85,
+        weight: 2,
+      }).bindTooltip(`sysid=${p.sysid ?? '-'} ${p.name || ''}<br>${p.flight_mode || 'mode unknown'} ${Number(p.altitude_m ?? 0).toFixed(1)}m`)
+        .addTo(multiMap);
       multiMarkers[p.sysid] = marker;
       bounds.push([lat, lon]);
     });
     if (bounds.length) multiMap.fitBounds(bounds, {padding: [40, 40], maxZoom: 17});
-  } catch (e) { console.error(e); }
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 // ----- On-board metrics -----
 async function loadOnboard() {
   try {
+    const cfg = await getRuntimeConfig();
+    if (!cfg.has_onboard_db) {
+      setKpi('ob-uav', 'N/A');
+      setKpi('ob-sensor', 'N/A');
+      setKpi('ob-mission', 'N/A');
+      setKpi('ob-composite', 'N/A');
+      const tbody = document.querySelector('#composite-table tbody');
+      tbody.innerHTML = '<tr><td colspan="5" class="muted">(бортовая БД не подключена к текущему admin server)</td></tr>';
+      labelTable(document.getElementById('composite-table'));
+      return;
+    }
     const ob = await api('/api/admin/onboard_stats');
     if (!ob || !ob.tables) {
       setKpi('ob-uav', 'N/A');
@@ -185,26 +284,31 @@ async function loadOnboard() {
       setKpi('ob-composite', 'N/A');
       return;
     }
-    setKpi('ob-uav',       ob.tables.uav_state?.count ?? '—');
-    setKpi('ob-sensor',    ob.tables.sensor_readings?.count ?? '—');
-    setKpi('ob-mission',   ob.tables.mission_log?.count ?? '—');
-    setKpi('ob-composite', ob.tables.composite_state?.count ?? '—');
+    setKpi('ob-uav', ob.tables.uav_state?.count ?? '-');
+    setKpi('ob-sensor', ob.tables.sensor_readings?.count ?? '-');
+    setKpi('ob-mission', ob.tables.mission_log?.count ?? '-');
+    setKpi('ob-composite', ob.tables.composite_state?.count ?? '-');
 
     const cm = await api('/api/admin/onboard_composite').catch(() => ({metrics: []}));
     const tbody = document.querySelector('#composite-table tbody');
     const now = Date.now();
     tbody.innerHTML = (cm.metrics || []).map(m => {
       const age = ((now - m.ts_ms) / 1000).toFixed(1);
-      return `<tr><td>${m.sysid}</td><td>${m.metric_name}</td>` +
-             `<td>${(+m.metric_value).toFixed(3)}</td>` +
-             `<td>${(m.extra_json || '').substring(0, 80)}</td>` +
+      return `<tr><td>${escapeHtml(m.sysid)}</td><td>${escapeHtml(m.metric_name)}</td>` +
+             `<td>${Number(m.metric_value).toFixed(3)}</td>` +
+             `<td>${escapeHtml((m.extra_json || '').substring(0, 100))}</td>` +
              `<td>${age}</td></tr>`;
     }).join('') || '<tr><td colspan="5" class="muted">(нет composite метрик)</td></tr>';
-  } catch (e) { console.error(e); }
+    labelTable(document.getElementById('composite-table'));
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 // ----- Tile Map -----
-let tileMap = null, tileLayer = null;
+let tileMap = null;
+let tileLayer = null;
+
 function ensureTileMap() {
   if (tileMap) {
     setTimeout(() => tileMap.invalidateSize(), 80);
@@ -212,38 +316,76 @@ function ensureTileMap() {
   }
   tileMap = L.map('tile-map').setView([ORIGIN_LAT, ORIGIN_LON], 12);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '© OSM',
+    maxZoom: 19,
+    attribution: '© OSM',
   }).addTo(tileMap);
   renderTileGrid();
 }
+
 async function renderTileGrid() {
   const size = +document.getElementById('tile-size-m').value || 2000;
   const n = +document.getElementById('tile-n').value || 10;
   const e = +document.getElementById('tile-e').value || 10;
   const data = await api(`/api/admin/tile_grid?n=${n}&e=${e}&size=${size}`);
   document.getElementById('tile-stats').textContent =
-    `${data.total_tiles} tiles, ${data.coverage_km_north.toFixed(1)} × ${data.coverage_km_east.toFixed(1)} km = ${data.total_area_km2.toFixed(0)} km²`;
+    `${data.total_tiles} tiles, ${data.coverage_km_north.toFixed(1)} x ${data.coverage_km_east.toFixed(1)} km = ${data.total_area_km2.toFixed(0)} km2`;
   if (tileLayer) tileMap.removeLayer(tileLayer);
   tileLayer = L.geoJSON(data.geojson, {
-    style: f => ({
-      color: '#4ea3ff', weight: 1, fillColor: '#4ea3ff', fillOpacity: 0.05,
+    style: () => ({
+      color: '#5bb7ff',
+      weight: 1,
+      fillColor: '#5bb7ff',
+      fillOpacity: 0.06,
     }),
-    onEachFeature: (f, l) => l.bindTooltip(f.properties.tile_id),
+    onEachFeature: (f, layer) => layer.bindTooltip(f.properties.tile_id),
   }).addTo(tileMap);
   tileMap.fitBounds(tileLayer.getBounds(), {padding: [20, 20]});
 }
 document.getElementById('tile-render').addEventListener('click', renderTileGrid);
 
 // ----- Sync -----
+function renderSyncStats(s) {
+  const summary = document.getElementById('sync-summary');
+  if (!summary) return;
+  if (!s || !s.ok) {
+    summary.innerHTML = '<div class="metric"><span>Status</span><strong>not connected</strong></div>';
+    return;
+  }
+  const totals = s.totals || {};
+  const last = s.last_tick || {};
+  summary.innerHTML = [
+    ['Node', s.node_id || '-'],
+    ['Endpoint', s.endpoint || '-'],
+    ['Uptime', `${Number(s.uptime_s || 0).toFixed(1)}s`],
+    ['Tracked objects', s.tracked_objects ?? 0],
+    ['Heartbeat packets', totals.HEARTBEAT ?? 0],
+    ['L1 position packets', totals.L1 ?? 0],
+    ['L2 sensor packets', totals.L2 ?? 0],
+    ['Last tick', `L1=${last.n_l1 ?? 0}, L2=${last.n_l2 ?? 0}`],
+  ].map(([label, value]) =>
+    `<div class="metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+  ).join('');
+}
+
 async function loadSync() {
   try {
     const s = await api('/api/admin/sync_stats').catch(() => null);
+    renderSyncStats(s);
     document.getElementById('sync-stats').textContent =
-      s ? JSON.stringify(s, null, 2) : '(нет данных — sync_publisher не запущен)';
+      s ? JSON.stringify(s, null, 2) : '(нет данных - sync_publisher не запущен)';
   } catch (e) {
     document.getElementById('sync-stats').textContent = 'error: ' + e.message;
   }
 }
 
-// Init.
+// Init + soft polling.
+labelTables();
 loadOverview();
+setInterval(() => {
+  const active = document.querySelector('.tab-panel.active');
+  if (!active) return;
+  if (active.id === 'tab-overview') loadOverview();
+  if (active.id === 'tab-multi') loadMulti();
+  if (active.id === 'tab-onboard') loadOnboard();
+  if (active.id === 'tab-sync') loadSync();
+}, 5000);

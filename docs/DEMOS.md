@@ -249,17 +249,17 @@ round-trip, `ARMED: True`, takeoff delta >0.5 м, max PWM > hover.
 # Открыть http://127.0.0.1:8765 — увидите UI с simulated telemetry
 ```
 
-### Utility scripts (под `_`)
+### Utility scripts (`scripts/debug/_*.sh`)
 
 | Script | Что |
 |---|---|
-| `_smoke_radio.sh` | Только ns-3 smoke без SITL |
-| `_smoke_mission_setup.sh` | Только bridges + netns без полёта |
-| `_inspect_last_run.sh` | Печать ключевых строк из последнего report.md |
-| `_show_last_stage15.sh` | tail logs last stage 1.5.* |
-| `_show_mission_15.sh` | Mission events из logs |
+| `scripts/debug/_smoke_radio.sh` | Только ns-3 smoke без SITL |
+| `scripts/debug/_smoke_mission_setup.sh` | Только bridges + netns без полёта |
+| `scripts/debug/_inspect_last_run.sh` | Печать ключевых строк из последнего report.md |
+| `scripts/debug/_show_last_stage15.sh` | tail logs last stage 1.5.* |
+| `scripts/debug/_show_mission_15.sh` | Mission events из logs |
 
-Новые одноразовые probes живут в `scripts/debug/`. Не используйте их как
+Одноразовые probes живут в `scripts/debug/`. Не используйте их как
 публичные demo entrypoints, пока они не перенесены обратно в `scripts/` и не
 описаны здесь.
 

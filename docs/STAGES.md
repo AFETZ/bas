@@ -10,7 +10,7 @@ Docker stack, Gazebo + ArduPilot SITL через `ardupilot_gazebo` plugin, ба
 MAVLink через socat, ns-3 TapBridge.
 
 Артефакты: `docker/*.Dockerfile`, `docker-compose.shared-netns.yml`,
-`scripts/setup_radio_net.sh`, `scripts/_start_build.sh`.
+`scripts/setup_radio_net.sh`, `scripts/debug/_start_build.sh`.
 
 ### Stage 1.5.0 — Shadow GCS
 

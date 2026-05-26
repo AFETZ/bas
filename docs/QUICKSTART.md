@@ -5,6 +5,10 @@
 
 ## Самые показательные демо
 
+Перед показом интерфейсов полезно открыть [ui_guide.md](ui_guide.md):
+там расписано, чем отличаются Admin Dashboard `:8810`, Swagger `:8770/docs`,
+raw sync stats `:8811/stats` и операторский Web GCS `:8765`.
+
 ### 🎬 Auto demo — Playwright + ffmpeg recording (рекомендую)
 
 ```bash

@@ -44,7 +44,16 @@ log = logging.getLogger("issgr.api")
 def create_app(
     repo: IssgrRepository | None = None,
     title: str = "BAS Prototype — ИССГР API",
-    description: str = "OGC API Features 1.0 для имитаторов АСУ и внешних клиентов",
+    description: str = (
+        "OGC API Features 1.0 для имитаторов АСУ и внешних клиентов.\n\n"
+        "Назначение: хранить и отдавать цифровой двойник стенда BAS: БАС, "
+        "препятствия, НПУ, missions и sensor readings в GeoJSON-compatible "
+        "формате.\n\n"
+        "Важно: это API данных ИССГР, а не пульт управления полётом. "
+        "Команды БАС отправляются через Web GCS/MAVProxy/QGroundControl; "
+        "этот API нужен для внешних клиентов, синхронизации БД, карт и "
+        "интеграции с ИССГР."
+    ),
 ) -> FastAPI:
     """Создать FastAPI app, optionally с существующим repository."""
     app = FastAPI(
@@ -55,6 +64,13 @@ def create_app(
             "name": "BAS Prototype",
             "url": "https://github.com/AFETZ/bas",
         },
+        openapi_tags=[
+            {"name": "Discovery", "description": "OGC service discovery and conformance."},
+            {"name": "Collections", "description": "Read GeoJSON FeatureCollections from ИССГР."},
+            {"name": "Write", "description": "Create/update objects from ASU simulators and CV pipeline."},
+            {"name": "Digital twin", "description": "Unified operational picture across all collections."},
+            {"name": "Schema", "description": "Classifier and JSON schema reference."},
+        ],
     )
     app.add_middleware(
         CORSMiddleware,
@@ -87,7 +103,8 @@ def create_app(
             ],
         }
 
-    @app.get("/conformance", summary="OGC API Features conformance classes")
+    @app.get("/conformance", summary="OGC API Features conformance classes",
+             tags=["Discovery"])
     def conformance() -> dict[str, list[str]]:
         return {
             "conformsTo": [
@@ -102,7 +119,8 @@ def create_app(
     def api_redirect() -> RedirectResponse:
         return RedirectResponse(url="/openapi.json")
 
-    @app.get("/collections", summary="Список ИССГР collections")
+    @app.get("/collections", summary="Список ИССГР collections",
+             tags=["Collections"])
     def list_collections() -> dict[str, Any]:
         collections = []
         for cid, cls in COLLECTIONS.items():
@@ -124,7 +142,8 @@ def create_app(
                 "links": [{"href": "/collections", "rel": "self"}]}
 
     @app.get("/collections/{collection_id}",
-             summary="Описание одного collection")
+             summary="Описание одного collection",
+             tags=["Collections"])
     def describe_collection(collection_id: str) -> dict[str, Any]:
         if collection_id not in COLLECTIONS:
             raise HTTPException(404, f"unknown collection: {collection_id}")
@@ -143,7 +162,14 @@ def create_app(
         }
 
     @app.get("/collections/{collection_id}/items",
-             summary="Список объектов collection (GeoJSON FeatureCollection)")
+             summary="Список объектов collection (GeoJSON FeatureCollection)",
+             tags=["Collections"],
+             description=(
+                 "Основной read endpoint для внешних клиентов. Возвращает "
+                 "GeoJSON FeatureCollection: координаты, свойства объекта, "
+                 "класс ИССГР и ссылки. Поддерживает bbox, pagination и "
+                 "фильтр по `issgr_class`."
+             ))
     def list_items(
         collection_id: str,
         bbox: str | None = Query(
@@ -192,7 +218,8 @@ def create_app(
         return JSONResponse(content=fc, media_type="application/geo+json")
 
     @app.get("/collections/{collection_id}/items/{item_id}",
-             summary="Один объект collection (GeoJSON Feature)")
+             summary="Один объект collection (GeoJSON Feature)",
+             tags=["Collections"])
     def get_item(collection_id: str, item_id: str) -> JSONResponse:
         if collection_id not in COLLECTIONS:
             raise HTTPException(404, f"unknown collection: {collection_id}")
@@ -203,34 +230,42 @@ def create_app(
         return JSONResponse(content=feature, media_type="application/geo+json")
 
     # ---- POST для имитаторов АСУ -------------------------------------------
-    @app.post("/collections/uavs/items", summary="POST новый UAV")
+    @app.post("/collections/uavs/items", summary="POST новый UAV",
+              tags=["Write"],
+              description="Создать или обновить БАС в цифровом двойнике. Используется simulator/tailer или внешний АСУ-клиент.")
     def post_uav(uav: UAV) -> dict[str, str]:
         oid = state_repo.upsert("uavs", uav)
         return {"id": oid, "status": "created"}
 
-    @app.post("/collections/obstacles/items", summary="POST новый Obstacle")
+    @app.post("/collections/obstacles/items", summary="POST новый Obstacle",
+              tags=["Write"])
     def post_obstacle(obstacle: Obstacle) -> dict[str, str]:
         oid = state_repo.upsert("obstacles", obstacle)
         return {"id": oid, "status": "created"}
 
-    @app.post("/collections/gcs/items", summary="POST новый GCS")
+    @app.post("/collections/gcs/items", summary="POST новый GCS",
+              tags=["Write"])
     def post_gcs(gcs: GCS) -> dict[str, str]:
         oid = state_repo.upsert("gcs", gcs)
         return {"id": oid, "status": "created"}
 
-    @app.post("/collections/missions/items", summary="POST новую Mission")
+    @app.post("/collections/missions/items", summary="POST новую Mission",
+              tags=["Write"])
     def post_mission(mission: Mission) -> dict[str, str]:
         oid = state_repo.upsert("missions", mission)
         return {"id": oid, "status": "created"}
 
     @app.post("/collections/sensor_readings/items",
-              summary="POST sensor observation")
+              summary="POST sensor observation",
+              tags=["Write"],
+              description="Записать наблюдение сенсора: CV detection, RSSI, LiDAR-like sample или другой payload от БАС.")
     def post_sensor(reading: SensorReading) -> dict[str, str]:
         oid = state_repo.upsert("sensor_readings", reading)
         return {"id": oid, "status": "created"}
 
     @app.delete("/collections/{collection_id}/items/{item_id}",
-                summary="DELETE объект из collection")
+                summary="DELETE объект из collection",
+                tags=["Write"])
     def delete_item(collection_id: str, item_id: str) -> dict[str, str]:
         if collection_id not in COLLECTIONS:
             raise HTTPException(404, f"unknown collection: {collection_id}")
@@ -241,7 +276,9 @@ def create_app(
 
     # ---- BAS-specific endpoints --------------------------------------------
     @app.get("/digital_twin",
-             summary="Объединённая GeoJSON FeatureCollection всех ИССГР объектов")
+             summary="Объединённая GeoJSON FeatureCollection всех ИССГР объектов",
+             tags=["Digital twin"],
+             description="Единая картина обстановки: все БАС, препятствия, НПУ, missions и sensor readings в одном GeoJSON FeatureCollection.")
     def digital_twin() -> JSONResponse:
         all_objs: list[IssgrObject] = []
         for cid in state_repo.collections():
@@ -249,18 +286,21 @@ def create_app(
         fc = to_geojson_feature_collection(all_objs)
         return JSONResponse(content=fc, media_type="application/geo+json")
 
-    @app.get("/stats", summary="Счётчики по collections")
+    @app.get("/stats", summary="Счётчики по collections",
+             tags=["Digital twin"])
     def stats() -> dict[str, Any]:
         return state_repo.stats()
 
-    @app.get("/schema", summary="JSON Schema всех ИССГР моделей")
+    @app.get("/schema", summary="JSON Schema всех ИССГР моделей",
+             tags=["Schema"])
     def schema() -> dict[str, Any]:
         return {
             cls.__name__: cls.model_json_schema()
             for cls in (UAV, Obstacle, GCS, Mission, SensorReading)
         }
 
-    @app.get("/classifier", summary="Список IssgrClass values + top-level")
+    @app.get("/classifier", summary="Список IssgrClass values + top-level",
+             tags=["Schema"])
     def classifier() -> dict[str, list[dict[str, str]]]:
         groups: dict[str, list[dict[str, str]]] = {}
         for member in IssgrClass:

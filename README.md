@@ -144,6 +144,7 @@ Backlog roadmap: [docs/roadmap.md](docs/roadmap.md).
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Пошаговая установка (apt, Docker, GPU, ns-3, Sionna, AirSim) |
 | [docs/QUICKSTART.md](docs/QUICKSTART.md) | Готовые команды для каждого demo сценария |
+| [docs/ui_guide.md](docs/ui_guide.md) | Что означают сайты `:8810`, `:8770/docs`, `:8811/stats`, `:8765` |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Полная архитектура: топология netns, ns-3 каналы, IPC paths |
 | [docs/DEMOS.md](docs/DEMOS.md) | Каталог всех `scripts/run_stage_*.sh` обёрток с env переменными |
 | [docs/STAGES.md](docs/STAGES.md) | Краткое описание всех stages 1.0–4.x + закрытый backlog |

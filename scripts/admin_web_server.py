@@ -14,7 +14,7 @@
 ИССГР browse.
 
 Архитектура — pure stdlib HTTP server (без FastAPI dep): /web/admin/
-static + ~10 /api/admin/ JSON endpoints. Опционально подцепляет
+static + admin JSON endpoints. Опционально подцепляет
 OnBoardDB файл и/или ИССГР URL для combining.
 
 Запуск:
@@ -162,6 +162,14 @@ class AdminHandler(BaseHTTPRequestHandler):
 
         if path == "/api/admin/issgr_url":
             return self._send_json({"url": ISSGR_URL or ""})
+
+        if path == "/api/admin/config":
+            return self._send_json({
+                "issgr_url": ISSGR_URL or "",
+                "has_onboard_db": bool(ONBOARD_DB),
+                "has_sync_stats": bool(SYNC_STATS_URL),
+                "sync_stats_url": SYNC_STATS_URL or "",
+            })
 
         if path == "/api/admin/collections":
             top = fetch_issgr("/collections")

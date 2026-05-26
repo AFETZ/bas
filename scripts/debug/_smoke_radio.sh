@@ -9,8 +9,8 @@
 # 6. Параллельно tcpdump на tap-ctrl-far пишет ARP/SYN активность
 #
 # Использование:
-#   sudo bash scripts/_smoke_radio.sh wifi_good [UAV_IP]
-#   sudo bash scripts/_smoke_radio.sh degraded_lora [UAV_IP]
+#   sudo bash scripts/debug/_smoke_radio.sh wifi_good [UAV_IP]
+#   sudo bash scripts/debug/_smoke_radio.sh degraded_lora [UAV_IP]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
