@@ -4,6 +4,34 @@
 определённым набором env переменных. Делитесь wrapper'ом, и человек получит
 тот же стенд в одну команду.
 
+> 💡 Не знаете какую запустить — `bash scripts/demo.sh` (интерактивное меню).
+> Связки модулей — `docs/SCENARIOS.md`. Что за модуль — `docs/MODULE_MAP.md`.
+
+## Хочу увидеть X → запусти Y (reverse-index)
+
+| Хочу показать… | Команда |
+|---|---|
+| Всё сразу (интеграцию стенда) | `bash scripts/run_master_demo.sh` |
+| Красивый автоматический flight-фильм | `sudo bash scripts/run_stage_2_4_auto_demo.sh` |
+| Ручное управление + FPV + RF-панель | `sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh` |
+| Падение связи за зданием (live Sionna RT) | `sudo bash scripts/run_stage_2_4_rt_online_demo.sh` |
+| Sionna RT в реальном городе (Munich) | `bash scripts/run_sionna_live.sh real_tile --scene-name munich --freq-mhz 2400` |
+| Цифровой двойник ИССГР + АСУ-клиент | `bash scripts/run_stage_3_issgr_demo.sh` |
+| Синхронизацию двойника между узлами | `sudo bash scripts/run_stage_3_issgr_sync_demo.sh` |
+| Распознавание объектов (CV) | `bash scripts/run_stage_3_cv_demo.sh` |
+| Городскую сцену | `sudo bash scripts/run_stage_3_urban_demo.sh` |
+| Реальный город из OSM | `./scripts/import_osm_scenario.py --place "..." --with-terrain` |
+| Рой (2 SITL + 2 iris) | `sudo bash scripts/run_stage_2_4_multi_uav_demo.sh` |
+| QGroundControl + Web GCS | `sudo bash scripts/run_stage_2_4_qgc_demo.sh` |
+| Фотореалистичный AirSim (Windows GPU) | `sudo env BAS_AIRSIM_MODE=windows bash scripts/run_stage_2_2_airsim_overlay.sh` |
+| Реальный ArduPilot SITL ↔ наша физика | `.venv/bin/python scripts/_real_sitl_e2e_smoke.py` |
+| MAVLink fanout + JSON-FDM bridge | `bash scripts/run_stage_4_sim_bridges_demo.sh smoke` |
+| Защиту от кибератак | `.venv/bin/python scripts/_cyber_smoke.py` |
+| MAVROS / ROS2 управление | `sudo bash scripts/run_stage_1_8_mavros.sh baseline_wifi` |
+| LoRa через Serial (SX1276) | `sudo bash scripts/run_stage_1_7_lora_serial.sh` |
+| WiFi vs LoRa сравнение | `sudo bash scripts/run_stage_1_6_compare.sh` |
+| Прогнать всю регрессию (smoke) | `bash scripts/run_all_smokes.sh` |
+
 ## Acceptance smoke (CI-grade)
 
 ### `run_stage_1_5_1.sh`

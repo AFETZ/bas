@@ -7,6 +7,29 @@
 Каждый пункт: **(а) что реально работает, (б) что НЕ работает или
 требует доделки, (в) каков workaround / future work**.
 
+## Сводка статуса модулей (at-a-glance)
+
+Зеркалит колонку «Статус» из `docs/MODULE_MAP.md`. 🟢 production /
+🟡 working-with-caveat / 🔵 reference-research.
+
+| Модуль | Статус | Главная оговорка |
+|---|---|---|
+| ИССГР API / on-board БД / multicast sync | 🟢 | — (MongoDB/Minio из PDF → функц. эквивалент SQLite) |
+| Large map >20×20 км | 🟡 | flat-earth ±1м до 50 км (для >100км нужен UTM/MGRS) |
+| ns-3 каналы / LoRa serial | 🟢 | — |
+| Sionna RT (cached + live) | 🟢 | live медленный на WSL (~20с/tile); prod — Linux native GPU |
+| ArduPilot SITL + JsonFdmBridge | 🟢 | full arm+takeoff verified с IMU noise model |
+| Gazebo / MAVROS / MAVLink router | 🟢 | — |
+| Cosys-AirSim overlay | 🟡 | real GPU rendering только Windows-side; Linux headless |
+| AirSim scene builder | 🟡 | primitives (Cube/Cylinder), не realistic UE5 mesh |
+| CV детектор | 🟢 | COCO weights (AGPL через ultralytics) |
+| OSM importer + terrain | 🟢 | Overpass медленный; SDF = box-приближение |
+| Web GCS / Admin dashboard | 🟢 | admin read-only (нет write-команд) |
+| Кибер атака/защита | 🔵 | defensive research, не real pentest |
+| Параллельные вычисления | 🟢 | CPU-only (нет GPU pool / multi-host) |
+
+Подробности по каждому — секции ниже.
+
 ## 0. Общая граница: что в scope vs out of scope
 
 | In scope (реализовано) | Out of scope (специально не делалось) |

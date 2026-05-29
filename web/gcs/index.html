@@ -21,6 +21,38 @@
         </div>
       </header>
 
+      <details class="gcs-help">
+        <summary>❓ Что это и как управлять (нажмите, чтобы открыть)</summary>
+        <div class="gcs-help-body">
+          <div>
+            <p class="eyebrow">Что это</p>
+            <p>Пульт <strong>ручного управления одним БАС</strong>. Команды идут
+            браузер → MAVProxy → ns-3 (радиоканал) → ArduPilot SITL. Это пульт,
+            а не витрина состояния — для мониторинга см. Admin Dashboard
+            <code>:8810</code>.</p>
+          </div>
+          <div>
+            <p class="eyebrow">Порядок взлёта</p>
+            <p><code>GUIDED</code> → <code>ARM</code> (или <code>FORCE</code>) →
+            <code>TAKEOFF</code> → лети <code>WASD</code>/<code>Space</code>/<code>Ctrl</code>
+            или <code>GO TO</code> → <code>LAND</code>.</p>
+          </div>
+          <div>
+            <p class="eyebrow">Клавиши</p>
+            <p><code>W/A/S/D</code> — горизонт, <code>Space</code> — вверх,
+            <code>Ctrl</code> — вниз, <code>Esc</code> — стоп. Удерживайте для
+            непрерывного движения.</p>
+          </div>
+          <div>
+            <p class="eyebrow">Панели</p>
+            <p><strong>Command Map</strong> — позиция в локальном NED + цель GO TO.
+            <strong>RF Link</strong> — RSSI/loss/delay, растёт при заходе за здание
+            (NLOS). <strong>FPV</strong> — видео с борта. <strong>Events</strong> —
+            лог команд.</p>
+          </div>
+        </div>
+      </details>
+
       <section class="workspace">
         <section class="map-panel" aria-label="Local flight map">
           <div class="panel-head">
