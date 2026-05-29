@@ -17,6 +17,13 @@ dependencies = [
   "pyserial>=3.5",
 ]
 
+[project.optional-dependencies]
+# Геодезия large-map: pyproj (PROJ) — индустриальный стандарт WGS84↔UTM.
+# Опционально: large_map.py имеет pure-python Snyder fallback (UTM_BACKEND),
+# поэтому минимальный CI без C-extension PROJ всё равно работает. Для
+# production-точности на любой дистанции — `pip install bas-orchestrator[geo]`.
+geo = ["pyproj>=3.6"]
+
 [project.scripts]
 bas-orchestrator = "orchestrator.main:main"
 

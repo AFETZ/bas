@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, "/home/afetz/bas-prototype/orchestrator/src")
 
 from orchestrator.issgr import (   # noqa: E402
-    TileGrid, TileId, SpatialIndex, IndexEntry,
+    UTM_BACKEND, TileGrid, TileId, SpatialIndex, IndexEntry,
     latlon_to_local_ned, local_ned_to_latlon,
     sionna_cache_key, tiles_to_preload,
 )
@@ -139,7 +139,7 @@ def main() -> int:
     assert 6 <= len(in_bbox) <= 16
 
     # --- 10. NED ↔ latlon round-trip precision (UTM) ---
-    print("\n===== [10] NED ↔ latlon round-trip (UTM) =====")
+    print(f"\n===== [10] NED ↔ latlon round-trip (UTM backend={UTM_BACKEND}) =====")
     test_lat = ORIGIN_LAT + 0.1
     test_lon = ORIGIN_LON + 0.1
     n, e = latlon_to_local_ned(test_lat, test_lon, ORIGIN_LAT, ORIGIN_LON)
@@ -148,8 +148,9 @@ def main() -> int:
     err_lon = abs(back_lon - test_lon)
     print(f"  test (lat={test_lat:.6f}, lon={test_lon:.6f}) → NED ({n:.1f}m, {e:.1f}m)")
     print(f"    back → (lat={back_lat:.6f}, lon={back_lon:.6f})  err={err_lat:.2e}/{err_lon:.2e} deg")
-    # UTM series round-trip ~мм → ~1e-8 deg. Допуск 1e-7 (~1см).
-    assert err_lat < 1e-7 and err_lon < 1e-7
+    # pyproj (PROJ) round-trip ~нм → <1e-10 deg; series ~мм → ~1e-8 deg.
+    tol = 1e-9 if UTM_BACKEND == "pyproj" else 1e-7
+    assert err_lat < tol and err_lon < tol, f"backend={UTM_BACKEND} err={err_lat}/{err_lon}"
 
     # --- 11. UTM accuracy vs flat-earth at long range (200 км) ---
     print("\n===== [11] UTM vs flat-earth @ 200 км (закрывает 🟡→🟢) =====")

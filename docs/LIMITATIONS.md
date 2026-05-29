@@ -15,13 +15,13 @@
 | Модуль | Статус | Главная оговорка |
 |---|---|---|
 | ИССГР API / on-board БД / multicast sync | 🟢 | — (MongoDB/Minio из PDF → функц. эквивалент SQLite) |
-| Large map >20×20 км | 🟡 | flat-earth ±1м до 50 км (для >100км нужен UTM/MGRS) |
+| Large map >20×20 км | 🟢 | WGS84/UTM via pyproj (PROJ), Snyder fallback — см-точность на любой дистанции |
 | ns-3 каналы / LoRa serial | 🟢 | — |
 | Sionna RT (cached + live) | 🟢 | live медленный на WSL (~20с/tile); prod — Linux native GPU |
 | ArduPilot SITL + JsonFdmBridge | 🟢 | full arm+takeoff verified с IMU noise model |
 | Gazebo / MAVROS / MAVLink router | 🟢 | — |
 | Cosys-AirSim overlay | 🟡 | real GPU rendering только Windows-side; Linux headless |
-| AirSim scene builder | 🟡 | primitives (Cube/Cylinder), не realistic UE5 mesh |
+| AirSim scene builder | 🟢 | реальная OSM-геометрия + segmentation ID + рельеф; primitives (не realistic mesh) |
 | CV детектор | 🟢 | COCO weights (AGPL через ultralytics) |
 | OSM importer + terrain | 🟢 | Overpass медленный; SDF = box-приближение |
 | Web GCS / Admin dashboard | 🟢 | admin read-only (нет write-команд) |
@@ -143,9 +143,17 @@ bash scripts/run_sionna_live.sh -- python my_script.py
 
 ### Работает
 - AirSim stub server (msgpack-rpc :41451) — pose forwarding,
-  simSpawnObject/Destroy, scene listing
-- 26-object urban catalog populates через `simSpawnObject` API:
-  Cube/Cylinder primitives с правильными NED coords
+  simSpawnObject/Destroy, scene listing, segmentation ID get/set
+- Встроенный 26-object urban catalog populates через `simSpawnObject`
+  API: Cube/Cylinder primitives с правильными NED coords
+- **OSM-driven сцена** (`scene_from_osm`, флаг `--from-osm`): реальная
+  геометрия зданий из `import_osm_scenario.py` — footprint из полигона
+  (AABB), позиция из local_north/east_m, высота из OSM, категория по
+  issgr_class/высоте, и рельеф из `base_elevation_m` (низшее здание =
+  земля). То есть «настоящий город из OSM», а не только hardcoded набор.
+- **Semantic segmentation**: каждому spawned объекту присваивается
+  стабильный object-ID по категории (`simSetSegmentationObjectID`) →
+  воспроизводимые маски для CV-pipeline. Round-trip verified на stub.
 - `settings.json` generator c полным Multirotor config (camera, lidar,
   IMU, GPS, magnetometer)
 - Cosys-AirSim Windows-side real GPU rendering verified (Stage 2.2):
@@ -153,16 +161,19 @@ bash scripts/run_sionna_live.sh -- python my_script.py
 
 ### Не работает / не сделано
 - **Custom UE5 .umap asset с realistic building meshes НЕ создан**.
-  Текущий scene populator spawn'ит Cube/Cylinder primitives поверх
-  default UE5 levels (Blocks, Neighborhood). Это functional
-  obstacles но без visual realism.
-- Material tags (metal/concrete/brick) в catalog metadata, но не
-  применяются к UE5 actors (no segmentation ID / material override).
+  Scene populator spawn'ит box-primitives (теперь с *реальными*
+  размерами/позицией/рельефом + segmentation), но это всё ещё
+  параллелепипеды, а не photoreal mesh зданий.
+- Material tags (metal/concrete/brick) пишутся в spawn-log и влияют на
+  категорию, но не подменяют UE5-материал actor'а (только segmentation ID).
 - Cosys-AirSim Linux build — headless rendering only (nullrhi); image
-  API возвращает empty PNG. Real GPU rendering — только Windows.
-- Vehicles в catalog статичные; нет moving traffic simulation.
+  API возвращает empty PNG. Real GPU rendering — только Windows
+  (UE5 Vulkan RHI на WSL2 — отдельный rabbit hole, см. секцию ниже).
+- Vehicles статичные; нет moving traffic simulation.
 
 ### Workaround
+- OSM-сцена: `import_osm_scenario.py --place "..." → issgr_obstacles.json`,
+  затем `airsim_scene_builder.py --from-osm issgr_obstacles.json --populate`.
 - Использовать Cosys-AirSim Windows-side для photorealistic rendering
   (Stage 2.2: `BAS_AIRSIM_MODE=windows`)
 - Для production custom map: UE5 Editor с blueprint actors +
@@ -176,19 +187,28 @@ bash scripts/run_sionna_live.sh -- python my_script.py
 - Sionna cache key generator (per-tile per-freq)
 - `tiles_to_preload()` для AirSim asset streaming logic
 - Verified: 100 tiles × 2km × 2km = 20×20 км, 5000 obstacles за 13ms
+- **WGS84/UTM transverse Mercator геодезия** (`latlon_to_local_ned` /
+  `local_ned_to_latlon`): primary backend = **pyproj (PROJ 9.x)**,
+  fallback = self-contained Snyder 1987 series (если pyproj не
+  установлен). Активный backend — в `UTM_BACKEND`. Точность ~см на
+  любой дистанции в пределах UTM-зоны; снято старое ограничение
+  flat-earth «±1м до 50 км». Verified: round-trip 0.00 см (pyproj),
+  на 200 км flat-earth уходит на 1586 м, UTM остаётся точным.
 
 ### Не работает / не сделано
-- **Flat-earth approximation** — точность ±1 м только в радиусе ~50
-  км от origin. Для maps >100 км нужна UTM или MGRS projection.
 - **OSM tile streaming НЕ реализован**: модуль предоставляет coordinate
   algebra, но не downloads / caches tiles от OSM / Mapbox / similar.
 - **GeoTIFF chunking / vector MVT** — out of scope.
 - **R-tree spatial index** — текущее bucketing достаточно до ~100k
   objects, дальше нужен PyPI `rtree` package или PostGIS.
+- **Cross-zone склейка**: точки за пределами UTM-зоны origin
+  проецируются в зону origin (slight overscale на краю), не в свою
+  родную зону — для непрерывных карт >668 км нужна MGRS / зональная
+  мозаика.
 
 ### Workaround
-- Для >50 км scenarios — switch на UTM (`pyproj.Proj`); требует ~20
-  LOC замены в `latlon_to_local_ned`.
+- pyproj ставится из коробки: `pip install bas-orchestrator[geo]` (или
+  `pip install pyproj`). Без него автоматически работает Snyder fallback.
 - Real OSM streaming — добавить `requests`-based tile loader с disk
   cache (3-5 часов работы).
 

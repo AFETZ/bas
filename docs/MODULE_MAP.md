@@ -16,16 +16,16 @@ Birds-eye обзор: **что за модуль, что он показывае
 ## Поток данных одной картинкой
 
 ```
-  OSM/terrain ─► import_osm_scenario ─► ИССГР obstacles ─┐
-                                         + Gazebo SDF     │
-                                                          ▼
-  ArduPilot SITL ─► MAVLink ─► ns-3 (control+payload) ─► Web GCS / Admin
-       ▲                          ▲                          ▲
-       │ PWM/sensors              │ loss/delay               │ REST/stats
-  JsonFdmBridge              Sionna RT (RF heatmap)      ИССГР API :8770
-       │                          │                       on-board SQLite
-  multirotor 6DOF            scene (Munich/город)         multicast sync
-       ▼                                                  large_map tiles
+  OSM/terrain ─► import_osm_scenario ─► ИССГР obstacles ─┬─────────────┐
+                                         + Gazebo SDF     │             │
+                                                          ▼             │ --from-osm
+  ArduPilot SITL ─► MAVLink ─► ns-3 (control+payload) ─► Web GCS / Admin │ (geom+seg)
+       ▲                          ▲                          ▲          ▼
+       │ PWM/sensors              │ loss/delay               │ REST  airsim_scene_builder
+  JsonFdmBridge              Sionna RT (RF heatmap)      ИССГР API :8770 │
+       │                          │                       on-board SQLite│
+  multirotor 6DOF            scene (Munich/город)         multicast sync │
+       ▼                                                  large_map tiles▼
   Cosys-AirSim (UE5 визуал) ─► camera ─► CV detector ─► ИССГР sensor_readings
 ```
 
@@ -38,7 +38,7 @@ Birds-eye обзор: **что за модуль, что он показывае
 | **ИССГР REST/OGC API** | `scripts/issgr_api_server.py`, `orchestrator/issgr/api.py` | Цифровой двойник обстановки как OGC API Features 1.0 | БАС, препятствия, НПУ, миссии, sensor readings в GeoJSON | events.jsonl / POST → `/collections/*`, `/digital_twin` | admin, sync, АСУ-клиент, CV | «ведомственная АСУ видит обстановку через стандартный REST» | 🟢 |
 | **Бортовая БД** | `orchestrator/issgr/onboard.py` | On-board SQLite time-series + комплексированные метрики | траектория, sensor readings, mission log, avg RSSI/NLOS/battery | UAV state → SQLite + composite engine | admin (вкладка Бортовая БД) | «борт хранит данные и считает производные для автопилота» | 🟢 |
 | **Multicast sync** | `orchestrator/issgr/sync.py`, `scripts/issgr_sync_{publisher,subscriber}.py` | Синхронизация БД между узлами компактными 40/80B пакетами | счётчики L1/L2/HEARTBEAT, репликация узел→узел | ИССГР node-A → multicast 239.10.10.10 → node-B | ИССГР API, admin (Синхронизация) | «два АСУ-узла синхронизируют двойник по UDP» | 🟢 |
-| **Large map** | `orchestrator/issgr/large_map.py` | TileGrid + SpatialIndex для карт >20×20 км | tile-сетка, bbox-запросы, neighborhood | lat/lon → tile id / bbox query | admin (вкладка 20×20 км), Sionna cache | «оперативная карта 400 км², быстрый поиск объектов в области» | 🟡 (flat-earth ±1м до 50 км) |
+| **Large map** | `orchestrator/issgr/large_map.py` | TileGrid + SpatialIndex + WGS84/UTM геодезия (pyproj) для карт >20×20 км | tile-сетка, bbox-запросы, neighborhood, точные NED↔lat/lon | lat/lon → tile id / bbox query / UTM | admin (вкладка 20×20 км), Sionna cache | «оперативная карта 400 км², быстрый поиск объектов в области» | 🟢 (WGS84/UTM via pyproj, см-точность на любой дистанции) |
 
 ## 2. Радиофизика — каналы связи
 
@@ -63,7 +63,7 @@ Birds-eye обзор: **что за модуль, что он показывае
 | Модуль | Файл | Назначение | Что показывает | Вход → Выход | В связке с | Сценарий | Статус |
 |---|---|---|---|---|---|---|---|
 | **Cosys-AirSim overlay** | `scripts/airsim_{client,bridge,stub_server}.py`, `run_stage_2_2_airsim_overlay.sh` | UE5 фотореалистичный визуал + сенсоры поверх Gazebo физики | RGB/depth/LiDAR камеры, 209 scene objects | pose → simSetVehiclePose / images | Gazebo (физика), JsonFdmBridge | «фотореалистичная картинка борта на RTX GPU» | 🟡 (real GPU только Windows-side; Linux headless) |
-| **AirSim scene builder** | `scripts/airsim_scene_builder.py` | Спавн 26-объектного urban-каталога в AirSim | здания/деревья/машины primitives, settings.json | catalog → simSpawnObject | AirSim, ИССГР URBAN_OBSTACLES | «город в AirSim без custom UE5 asset» | 🟡 (Cube/Cylinder, не mesh) |
+| **AirSim scene builder** | `scripts/airsim_scene_builder.py` | Спавн сцены в AirSim из встроенного каталога **или реальной OSM-геометрии** + semantic segmentation | здания с реальным footprint/высотой/рельефом, segmentation ID по категории, settings.json | catalog / `--from-osm` ИССГР obstacles → simSpawnObject + simSetSegmentationObjectID | AirSim, ИССГР URBAN_OBSTACLES, OSM importer | «реальный город из OSM в AirSim с семантическими масками для CV» | 🟢 (реальная геометрия + segmentation; primitives, не realistic mesh) |
 | **CV детектор** | `scripts/cv_detector.py` | YOLOv8 детекция + geo-tagging → ИССГР | bbox объектов, ENU-координаты целей | FPV `/camera.mjpg` → ИССГР sensor_readings | FPV, ИССГР API | «борт распознаёт объекты и кладёт в двойник» | 🟢 (COCO weights; AGPL) |
 
 ## 5. Карта и данные (реальный мир)

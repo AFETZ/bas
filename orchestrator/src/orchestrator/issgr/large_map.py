@@ -34,16 +34,20 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Iterable, Iterator
 
 
 EARTH_RADIUS_M = 6_371_000.0
 
 # ---------------------------------------------------------------------------
-# WGS84 / UTM (self-contained transverse Mercator, Snyder 1987 series).
-# Точность ~мм в пределах UTM-зоны (≈668 км по долготе) — снимает
-# ограничение flat-earth «±1м до 50 км» для карт >20×20 / >100 км.
-# Никаких внешних зависимостей (pyproj/GDAL не нужны).
+# WGS84 / UTM geodesy.
+#
+# Primary backend = **pyproj** (PROJ engine) — индустриальный стандарт,
+# покрывает все зоны/датумы/edge-cases. Fallback (если pyproj не
+# установлен — напр. минимальный CI) = self-contained transverse Mercator
+# (Snyder 1987 series), точность ~мм в пределах UTM-зоны. Публичный API
+# одинаков для обоих backend'ов; активный backend — в `UTM_BACKEND`.
 # ---------------------------------------------------------------------------
 _WGS84_A = 6_378_137.0                     # semi-major axis (m)
 _WGS84_F = 1.0 / 298.257223563             # flattening
@@ -52,15 +56,68 @@ _WGS84_EP2 = _WGS84_E2 / (1.0 - _WGS84_E2)  # second eccentricity squared
 _UTM_K0 = 0.9996                           # UTM central-meridian scale
 _UTM_FE = 500_000.0                        # false easting
 _UTM_FN_S = 10_000_000.0                   # false northing (southern hemi)
+_EPSG_WGS84 = 4326
+
+try:                                       # pragma: no cover - env-dependent
+    from pyproj import Transformer as _Transformer
+    _HAS_PYPROJ = True
+except Exception:                          # pragma: no cover
+    _Transformer = None                    # type: ignore[assignment]
+    _HAS_PYPROJ = False
+
+#: Активный геодезический backend: "pyproj" (PROJ) либо "series" (Snyder).
+UTM_BACKEND = "pyproj" if _HAS_PYPROJ else "series"
 
 
 def utm_zone_number(lon: float) -> int:
     return int((lon + 180.0) / 6.0) % 60 + 1
 
 
+def _utm_epsg(zone: int, is_northern: bool) -> int:
+    """EPSG код UTM CRS: 326xx (north) / 327xx (south)."""
+    return (32600 if is_northern else 32700) + zone
+
+
+@lru_cache(maxsize=256)
+def _fwd_transformer(zone: int, is_northern: bool):   # pragma: no cover
+    """lat/lon (EPSG:4326) → UTM easting/northing. always_xy → (lon,lat)→(x,y)."""
+    return _Transformer.from_crs(_EPSG_WGS84, _utm_epsg(zone, is_northern),
+                                 always_xy=True)
+
+
+@lru_cache(maxsize=256)
+def _inv_transformer(zone: int, is_northern: bool):   # pragma: no cover
+    """UTM easting/northing → lat/lon. always_xy → (x,y)→(lon,lat)."""
+    return _Transformer.from_crs(_utm_epsg(zone, is_northern), _EPSG_WGS84,
+                                 always_xy=True)
+
+
 def latlon_to_utm(lat: float, lon: float,
                   force_zone: int | None = None) -> tuple[float, float, int, bool]:
-    """WGS84 lat/lon → (easting, northing, zone, is_northern). Snyder forward."""
+    """WGS84 lat/lon → (easting, northing, zone, is_northern).
+
+    pyproj (PROJ) если доступен, иначе Snyder series fallback.
+    """
+    zone = force_zone if force_zone is not None else utm_zone_number(lon)
+    is_northern = lat >= 0
+    if _HAS_PYPROJ:
+        e, n = _fwd_transformer(zone, is_northern).transform(lon, lat)
+        return e, n, zone, is_northern
+    return _latlon_to_utm_series(lat, lon, force_zone=zone)
+
+
+def utm_to_latlon(easting: float, northing: float, zone: int,
+                  is_northern: bool) -> tuple[float, float]:
+    """UTM → WGS84 lat/lon. pyproj если доступен, иначе Snyder inverse series."""
+    if _HAS_PYPROJ:
+        lon, lat = _inv_transformer(zone, is_northern).transform(easting, northing)
+        return lat, lon
+    return _utm_to_latlon_series(easting, northing, zone, is_northern)
+
+
+def _latlon_to_utm_series(lat: float, lon: float,
+                          force_zone: int | None = None) -> tuple[float, float, int, bool]:
+    """Snyder 1987 forward transverse Mercator (pure-python fallback)."""
     zone = force_zone if force_zone is not None else utm_zone_number(lon)
     lon0 = math.radians((zone - 1) * 6 - 180 + 3)   # central meridian
     phi = math.radians(lat)
@@ -88,9 +145,9 @@ def latlon_to_utm(lat: float, lon: float,
     return easting, northing, zone, is_northern
 
 
-def utm_to_latlon(easting: float, northing: float, zone: int,
-                  is_northern: bool) -> tuple[float, float]:
-    """UTM → WGS84 lat/lon. Snyder inverse series."""
+def _utm_to_latlon_series(easting: float, northing: float, zone: int,
+                          is_northern: bool) -> tuple[float, float]:
+    """Snyder 1987 inverse transverse Mercator (pure-python fallback)."""
     e2, ep2, a, k0 = _WGS84_E2, _WGS84_EP2, _WGS84_A, _UTM_K0
     x = easting - _UTM_FE
     y = northing if is_northern else northing - _UTM_FN_S
@@ -125,14 +182,20 @@ def latlon_to_local_ned(
 ) -> tuple[float, float]:
     """WGS84 lat/lon → local NED (north_m, east_m) от origin через UTM.
 
-    Точность ~см в пределах UTM-зоны origin (≈668 км). Снимает ограничение
-    flat-earth. Для совсем дальних точек (другая зона) origin-зона
-    форсируется — это slight overscale на краю, но без обрыва, в отличие
-    от старого flat-earth, который накапливал ошибку с дистанцией.
+    Точность ~см в пределах UTM-зоны origin (≈668 км). Обе точки проецируются
+    в **зону и полушарие origin** (общий CRS), поэтому false-northing/easting
+    сокращаются при вычитании — корректно даже при пересечении экватора, в
+    отличие от старого flat-earth, накапливавшего ошибку с дистанцией.
     """
-    _, _, zone, _ = latlon_to_utm(origin_lat, origin_lon)
-    e0, n0, _, _ = latlon_to_utm(origin_lat, origin_lon, force_zone=zone)
-    e1, n1, _, _ = latlon_to_utm(lat, lon, force_zone=zone)
+    zone = utm_zone_number(origin_lon)
+    is_north = origin_lat >= 0.0
+    if _HAS_PYPROJ:
+        tr = _fwd_transformer(zone, is_north)
+        e0, n0 = tr.transform(origin_lon, origin_lat)
+        e1, n1 = tr.transform(lon, lat)
+        return (n1 - n0), (e1 - e0)
+    e0, n0, _, _ = _latlon_to_utm_series(origin_lat, origin_lon, force_zone=zone)
+    e1, n1, _, _ = _latlon_to_utm_series(lat, lon, force_zone=zone)
     return (n1 - n0), (e1 - e0)
 
 
@@ -141,8 +204,14 @@ def local_ned_to_latlon(
     origin_lat: float, origin_lon: float,
 ) -> tuple[float, float]:
     """Local NED → WGS84 lat/lon через UTM (inverse of latlon_to_local_ned)."""
-    e0, n0, zone, north = latlon_to_utm(origin_lat, origin_lon)
-    return utm_to_latlon(e0 + y_east, n0 + x_north, zone, north)
+    zone = utm_zone_number(origin_lon)
+    is_north = origin_lat >= 0.0
+    if _HAS_PYPROJ:
+        e0, n0 = _fwd_transformer(zone, is_north).transform(origin_lon, origin_lat)
+        lon, lat = _inv_transformer(zone, is_north).transform(e0 + y_east, n0 + x_north)
+        return lat, lon
+    e0, n0, z, north = _latlon_to_utm_series(origin_lat, origin_lon, force_zone=zone)
+    return _utm_to_latlon_series(e0 + y_east, n0 + x_north, z, north)
 
 
 def latlon_to_local_ned_flat(
