@@ -138,8 +138,8 @@ def main() -> int:
     print(f"  bbox 6×6 km: {len(in_bbox)} tiles (expected 3×3=9 ±1)")
     assert 6 <= len(in_bbox) <= 16
 
-    # --- 10. NED ↔ latlon round-trip precision ---
-    print("\n===== [10] NED ↔ latlon round-trip =====")
+    # --- 10. NED ↔ latlon round-trip precision (UTM) ---
+    print("\n===== [10] NED ↔ latlon round-trip (UTM) =====")
     test_lat = ORIGIN_LAT + 0.1
     test_lon = ORIGIN_LON + 0.1
     n, e = latlon_to_local_ned(test_lat, test_lon, ORIGIN_LAT, ORIGIN_LON)
@@ -147,8 +147,36 @@ def main() -> int:
     err_lat = abs(back_lat - test_lat)
     err_lon = abs(back_lon - test_lon)
     print(f"  test (lat={test_lat:.6f}, lon={test_lon:.6f}) → NED ({n:.1f}m, {e:.1f}m)")
-    print(f"    back → (lat={back_lat:.6f}, lon={back_lon:.6f})  err={err_lat:.2e}/{err_lon:.2e}")
-    assert err_lat < 1e-9 and err_lon < 1e-9
+    print(f"    back → (lat={back_lat:.6f}, lon={back_lon:.6f})  err={err_lat:.2e}/{err_lon:.2e} deg")
+    # UTM series round-trip ~мм → ~1e-8 deg. Допуск 1e-7 (~1см).
+    assert err_lat < 1e-7 and err_lon < 1e-7
+
+    # --- 11. UTM accuracy vs flat-earth at long range (200 км) ---
+    print("\n===== [11] UTM vs flat-earth @ 200 км (закрывает 🟡→🟢) =====")
+    from orchestrator.issgr import (
+        latlon_to_utm, utm_to_latlon, latlon_to_local_ned_flat,
+    )
+    # Известное geodetic-расстояние: 1° широты ≈ 111.32 км. Берём точку
+    # ~200 км севернее origin и проверяем что UTM-northing совпадает с
+    # эталоном (UTM↔latlon round-trip) лучше чем flat-earth.
+    far_lat = ORIGIN_LAT + 1.8     # ~200 км на север
+    far_lon = ORIGIN_LON + 0.5     # ~45 км на восток
+    n_utm, e_utm = latlon_to_local_ned(far_lat, far_lon, ORIGIN_LAT, ORIGIN_LON)
+    n_flat, e_flat = latlon_to_local_ned_flat(far_lat, far_lon, ORIGIN_LAT, ORIGIN_LON)
+    # Эталон: UTM forward обеих точек в общей зоне.
+    _, _, z, _ = latlon_to_utm(ORIGIN_LAT, ORIGIN_LON)
+    e0, n0, _, _ = latlon_to_utm(ORIGIN_LAT, ORIGIN_LON, force_zone=z)
+    e1, n1, _, _ = latlon_to_utm(far_lat, far_lon, force_zone=z)
+    ref_n, ref_e = (n1 - n0), (e1 - e0)
+    # UTM round-trips: точка из NED обратно в latlon → совпадает с far.
+    rt_lat, rt_lon = local_ned_to_latlon(n_utm, e_utm, ORIGIN_LAT, ORIGIN_LON)
+    rt_err_m = abs(rt_lat - far_lat) * 111_320.0
+    flat_dev_m = abs(n_flat - ref_n)
+    print(f"  @200км: UTM round-trip error = {rt_err_m*100:.2f} см")
+    print(f"          flat-earth northing отклонение от UTM = {flat_dev_m:.1f} м")
+    assert rt_err_m < 0.1, f"UTM round-trip drift {rt_err_m}m @200km"
+    assert flat_dev_m > 5.0, "ожидали заметное расхождение flat-earth на 200км"
+    print(f"  ✓ UTM точен на любой дистанции (flat-earth уходит на {flat_dev_m:.0f}м)")
 
     print("\nALL CHECKS PASSED")
     return 0

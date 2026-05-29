@@ -26,6 +26,8 @@ from .models import (
 from .large_map import (
     EARTH_RADIUS_M, IndexEntry, SpatialIndex, TileBounds, TileGrid,
     TileId, latlon_to_local_ned, local_ned_to_latlon,
+    latlon_to_local_ned_flat, local_ned_to_latlon_flat,
+    utm_zone_number, latlon_to_utm, utm_to_latlon,
     sionna_cache_key, tiles_to_preload,
 )
 from .onboard import CompositeMetrics, OnBoardDB
@@ -46,9 +48,11 @@ __all__ = [
     "Waypoint", "to_geojson_feature", "to_geojson_feature_collection",
     # On-board persistence
     "CompositeMetrics", "OnBoardDB",
-    # Large-map adaptation (>20×20 km)
+    # Large-map adaptation (>20×20 km) + UTM geodesy
     "EARTH_RADIUS_M", "IndexEntry", "SpatialIndex", "TileBounds", "TileGrid",
     "TileId", "latlon_to_local_ned", "local_ned_to_latlon",
+    "latlon_to_local_ned_flat", "local_ned_to_latlon_flat",
+    "utm_zone_number", "latlon_to_utm", "utm_to_latlon",
     "sionna_cache_key", "tiles_to_preload",
     # Multicast sync
     "AutoPublisher", "L1Packet", "L2Packet", "MulticastPublisher",

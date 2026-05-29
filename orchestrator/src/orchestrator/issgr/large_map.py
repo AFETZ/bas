@@ -39,17 +39,116 @@ from typing import Iterable, Iterator
 
 EARTH_RADIUS_M = 6_371_000.0
 
+# ---------------------------------------------------------------------------
+# WGS84 / UTM (self-contained transverse Mercator, Snyder 1987 series).
+# Точность ~мм в пределах UTM-зоны (≈668 км по долготе) — снимает
+# ограничение flat-earth «±1м до 50 км» для карт >20×20 / >100 км.
+# Никаких внешних зависимостей (pyproj/GDAL не нужны).
+# ---------------------------------------------------------------------------
+_WGS84_A = 6_378_137.0                     # semi-major axis (m)
+_WGS84_F = 1.0 / 298.257223563             # flattening
+_WGS84_E2 = _WGS84_F * (2.0 - _WGS84_F)    # first eccentricity squared
+_WGS84_EP2 = _WGS84_E2 / (1.0 - _WGS84_E2)  # second eccentricity squared
+_UTM_K0 = 0.9996                           # UTM central-meridian scale
+_UTM_FE = 500_000.0                        # false easting
+_UTM_FN_S = 10_000_000.0                   # false northing (southern hemi)
+
+
+def utm_zone_number(lon: float) -> int:
+    return int((lon + 180.0) / 6.0) % 60 + 1
+
+
+def latlon_to_utm(lat: float, lon: float,
+                  force_zone: int | None = None) -> tuple[float, float, int, bool]:
+    """WGS84 lat/lon → (easting, northing, zone, is_northern). Snyder forward."""
+    zone = force_zone if force_zone is not None else utm_zone_number(lon)
+    lon0 = math.radians((zone - 1) * 6 - 180 + 3)   # central meridian
+    phi = math.radians(lat)
+    lam = math.radians(lon)
+    e2, ep2, a, k0 = _WGS84_E2, _WGS84_EP2, _WGS84_A, _UTM_K0
+    sin_p, cos_p, tan_p = math.sin(phi), math.cos(phi), math.tan(phi)
+    N = a / math.sqrt(1 - e2 * sin_p * sin_p)
+    T = tan_p * tan_p
+    C = ep2 * cos_p * cos_p
+    A = (lam - lon0) * cos_p
+    M = a * (
+        (1 - e2/4 - 3*e2**2/64 - 5*e2**3/256) * phi
+        - (3*e2/8 + 3*e2**2/32 + 45*e2**3/1024) * math.sin(2*phi)
+        + (15*e2**2/256 + 45*e2**3/1024) * math.sin(4*phi)
+        - (35*e2**3/3072) * math.sin(6*phi)
+    )
+    easting = (k0 * N * (A + (1 - T + C) * A**3 / 6
+               + (5 - 18*T + T*T + 72*C - 58*ep2) * A**5 / 120) + _UTM_FE)
+    northing = (k0 * (M + N * tan_p * (A*A/2
+                + (5 - T + 9*C + 4*C*C) * A**4 / 24
+                + (61 - 58*T + T*T + 600*C - 330*ep2) * A**6 / 720)))
+    is_northern = lat >= 0
+    if not is_northern:
+        northing += _UTM_FN_S
+    return easting, northing, zone, is_northern
+
+
+def utm_to_latlon(easting: float, northing: float, zone: int,
+                  is_northern: bool) -> tuple[float, float]:
+    """UTM → WGS84 lat/lon. Snyder inverse series."""
+    e2, ep2, a, k0 = _WGS84_E2, _WGS84_EP2, _WGS84_A, _UTM_K0
+    x = easting - _UTM_FE
+    y = northing if is_northern else northing - _UTM_FN_S
+    M = y / k0
+    mu = M / (a * (1 - e2/4 - 3*e2**2/64 - 5*e2**3/256))
+    e1 = (1 - math.sqrt(1 - e2)) / (1 + math.sqrt(1 - e2))
+    phi1 = (mu + (3*e1/2 - 27*e1**3/32) * math.sin(2*mu)
+            + (21*e1**2/16 - 55*e1**4/32) * math.sin(4*mu)
+            + (151*e1**3/96) * math.sin(6*mu)
+            + (1097*e1**4/512) * math.sin(8*mu))
+    sin1, cos1, tan1 = math.sin(phi1), math.cos(phi1), math.tan(phi1)
+    C1 = ep2 * cos1 * cos1
+    T1 = tan1 * tan1
+    N1 = a / math.sqrt(1 - e2 * sin1 * sin1)
+    R1 = a * (1 - e2) / (1 - e2 * sin1 * sin1) ** 1.5
+    D = x / (N1 * k0)
+    phi = (phi1 - (N1 * tan1 / R1) * (D*D/2
+           - (5 + 3*T1 + 10*C1 - 4*C1*C1 - 9*ep2) * D**4 / 24
+           + (61 + 90*T1 + 298*C1 + 45*T1*T1 - 252*ep2 - 3*C1*C1) * D**6 / 720))
+    lon0 = math.radians((zone - 1) * 6 - 180 + 3)
+    lam = lon0 + (D - (1 + 2*T1 + C1) * D**3 / 6
+                  + (5 - 2*C1 + 28*T1 - 3*C1*C1 + 8*ep2 + 24*T1*T1)
+                  * D**5 / 120) / cos1
+    return math.degrees(phi), math.degrees(lam)
+
 
 # ---------------------------------------------------------------------------
-# Geo helpers
+# Geo helpers — local NED via UTM (production-accurate) с flat-earth fallback
 # ---------------------------------------------------------------------------
 def latlon_to_local_ned(
     lat: float, lon: float, origin_lat: float, origin_lon: float,
 ) -> tuple[float, float]:
-    """Flat-earth approximation для small-distance NED conversion.
+    """WGS84 lat/lon → local NED (north_m, east_m) от origin через UTM.
 
-    Точность ±1м в радиусе 50 км от origin (haversine с малыми углами).
+    Точность ~см в пределах UTM-зоны origin (≈668 км). Снимает ограничение
+    flat-earth. Для совсем дальних точек (другая зона) origin-зона
+    форсируется — это slight overscale на краю, но без обрыва, в отличие
+    от старого flat-earth, который накапливал ошибку с дистанцией.
     """
+    _, _, zone, _ = latlon_to_utm(origin_lat, origin_lon)
+    e0, n0, _, _ = latlon_to_utm(origin_lat, origin_lon, force_zone=zone)
+    e1, n1, _, _ = latlon_to_utm(lat, lon, force_zone=zone)
+    return (n1 - n0), (e1 - e0)
+
+
+def local_ned_to_latlon(
+    x_north: float, y_east: float,
+    origin_lat: float, origin_lon: float,
+) -> tuple[float, float]:
+    """Local NED → WGS84 lat/lon через UTM (inverse of latlon_to_local_ned)."""
+    e0, n0, zone, north = latlon_to_utm(origin_lat, origin_lon)
+    return utm_to_latlon(e0 + y_east, n0 + x_north, zone, north)
+
+
+def latlon_to_local_ned_flat(
+    lat: float, lon: float, origin_lat: float, origin_lon: float,
+) -> tuple[float, float]:
+    """Flat-earth approximation (legacy). Точность ±1м в радиусе 50 км."""
     dlat = math.radians(lat - origin_lat)
     dlon = math.radians(lon - origin_lon)
     x_north = EARTH_RADIUS_M * dlat
@@ -57,10 +156,11 @@ def latlon_to_local_ned(
     return x_north, y_east
 
 
-def local_ned_to_latlon(
+def local_ned_to_latlon_flat(
     x_north: float, y_east: float,
     origin_lat: float, origin_lon: float,
 ) -> tuple[float, float]:
+    """Flat-earth inverse (legacy)."""
     lat = origin_lat + math.degrees(x_north / EARTH_RADIUS_M)
     lon = origin_lon + math.degrees(
         y_east / (EARTH_RADIUS_M * math.cos(math.radians(origin_lat)))
@@ -349,6 +449,8 @@ def tiles_to_preload(
 __all__ = [
     "EARTH_RADIUS_M",
     "latlon_to_local_ned", "local_ned_to_latlon",
+    "latlon_to_local_ned_flat", "local_ned_to_latlon_flat",
+    "utm_zone_number", "latlon_to_utm", "utm_to_latlon",
     "TileId", "TileBounds", "TileGrid",
     "IndexEntry", "SpatialIndex",
     "sionna_cache_key", "tiles_to_preload",
