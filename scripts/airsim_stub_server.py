@@ -182,6 +182,20 @@ def dispatch(method: str, args: list[Any]) -> Any:
         # AirSim image consumer. bridge сам разберётся что это empty
         # frame и не запишет.
         return b""
+    if method == "simGetImages":
+        # Реальный Cosys-AirSim RPC: simGetImages([ImageRequest], vehicle).
+        # Возвращаем 1 пустой ImageResponse (headless stub без GPU-рендера) —
+        # клиент видит empty image_data_uint8 и трактует как «нет кадра».
+        reqs = args[0] if args else []
+        cam = ""
+        if isinstance(reqs, list) and reqs and isinstance(reqs[0], dict):
+            cam = reqs[0].get("camera_name", "")
+        return [{
+            "image_data_uint8": [], "image_data_float": [],
+            "camera_name": cam, "width": 0, "height": 0,
+            "pixels_as_float": False, "compress": True,
+            "time_stamp": int(time.time() * 1e9), "message": "",
+        }]
     if method == "getLidarData":
         return {
             "point_cloud": [],   # без точек

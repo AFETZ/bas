@@ -41,7 +41,7 @@ BAS_AIRSIM_INSTALL_DIR="${BAS_AIRSIM_INSTALL_DIR:-${AIRSIM_RUN_HOME}/cosys-airsi
 BAS_AIRSIM_BLOCKS_URL="${BAS_AIRSIM_BLOCKS_URL:-https://github.com/Cosys-Lab/Cosys-AirSim/releases/download/5.5-v3.3/Blocks_packaged_Linux_55_33.zip}"
 BAS_AIRSIM_BLOCKS_WIN_URL="${BAS_AIRSIM_BLOCKS_WIN_URL:-https://github.com/Cosys-Lab/Cosys-AirSim/releases/download/5.5-v3.3/Blocks_packaged_Windows_55_33.zip}"
 BAS_AIRSIM_WIN_INSTALL_DIR="${BAS_AIRSIM_WIN_INSTALL_DIR:-/mnt/c/Users/${AIRSIM_RUN_USER}/cosys-airsim}"
-BAS_AIRSIM_CAMERA="${BAS_AIRSIM_CAMERA:-front_center_cam}"
+BAS_AIRSIM_CAMERA="${BAS_AIRSIM_CAMERA:-front_center}"
 BAS_AIRSIM_IMAGE_PERIOD_S="${BAS_AIRSIM_IMAGE_PERIOD_S:-2}"
 
 # Back-compat: BAS_AIRSIM_STUB=0 → выключить stub.
@@ -243,25 +243,33 @@ ensure_windows_airsim_settings() {
     local win_docs="/mnt/c/Users/${win_user}/Documents/AirSim"
     mkdir -p "$win_docs"
     if [ ! -f "${win_docs}/settings.json" ]; then
+        # ВАЖНО: камера задаётся в блоке "Cameras" (НЕ "Sensors") — иначе
+        # simGetImages не находит камеру и кадр пустой. Verified: с этим
+        # блоком Windows-GPU Blocks отдаёт реальный PNG 256×144 (RTX 5070 Ti).
         cat > "${win_docs}/settings.json" <<EOF
 {
   "SettingsVersion": 2.0,
   "SimMode": "Multirotor",
   "ClockType": "SteppableClock",
-  "ViewMode": "SpringArmChase",
+  "ViewMode": "NoDisplay",
   "ApiServerEndpoint": "0.0.0.0:${BAS_AIRSIM_PORT}",
   "Vehicles": {
     "Copter": {
       "VehicleType": "SimpleFlight",
       "AutoCreate": true,
-      "Sensors": {
-        "front_center_cam": { "SensorType": 7, "Enabled": true }
+      "Cameras": {
+        "front_center": {
+          "CaptureSettings": [
+            { "ImageType": 0, "Width": 256, "Height": 144, "FOV_Degrees": 90 }
+          ],
+          "X": 0.5, "Y": 0.0, "Z": 0.1, "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0
+        }
       }
     }
   }
 }
 EOF
-        echo "[airsim] wrote Windows settings.json to ${win_docs}"
+        echo "[airsim] wrote Windows settings.json to ${win_docs} (camera front_center)"
     fi
 }
 

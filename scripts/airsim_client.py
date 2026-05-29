@@ -215,23 +215,49 @@ class AirSimRpcClient:
 
     def get_image(self, camera_name: str, image_type: int = 0,
                   vehicle_name: str = "") -> bytes:
-        """image_type: 0=Scene, 1=DepthPlanar, 2=DepthPerspective, ...
+        """Возвращает PNG-байты кадра камеры (пусто, если кадра нет).
 
-        Cosys-AirSim 3.3 RPC signature: simGetImage(camera_name, image_type,
-        vehicle_name) — 3 args. В default-Blocks сцене работающие camera_name:
-        "0", "1", "front_center", "front_left", "front_right", "fpv",
-        "back_center", "bottom_center".
+        image_type: 0=Scene, 1=DepthPlanar, 2=DepthPerspective, ...
+        Рабочие camera_name в Blocks: "0","1","front_center","fpv",
+        "back_center","bottom_center".
+
+        Реальный Cosys-AirSim 3.3 RPC = **simGetImages([ImageRequest],
+        vehicle_name)** → [ImageResponse]; ImageRequest — map
+        {camera_name,image_type,pixels_as_float,compress}, а
+        ImageResponse.image_data_uint8 — PNG-байты при compress=True.
+        Single-image `simGetImage` в этом билде бросает "bad cast" (проверено
+        на Windows-GPU Blocks), поэтому используем plural-форму. Для серверов
+        без simGetImages (наш stub / старые форки) — fallback на simGetImage.
         """
-        data = self._call(
-            "simGetImage", camera_name, image_type, vehicle_name,
-        )
-        if data is None:
+        req = [{
+            "camera_name": str(camera_name),
+            "image_type": int(image_type),
+            "pixels_as_float": False,
+            "compress": True,
+        }]
+        try:
+            resp = self._call("simGetImages", req, vehicle_name)
+        except AirSimRpcError:
+            resp = None
+        if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+            img = resp[0].get("image_data_uint8")
+            if img:
+                try:
+                    return bytes(img)
+                except (TypeError, ValueError):
+                    return b""
+
+        # Fallback: серверы, экспонирующие только simGetImage (stub / older).
+        try:
+            data = self._call("simGetImage", camera_name, image_type,
+                              vehicle_name)
+        except AirSimRpcError:
             return b""
-        if isinstance(data, (bytes, bytearray)):
-            return bytes(data)
-        # Cosys-AirSim иногда возвращает list of bytes.
-        if isinstance(data, list):
-            return bytes(data)
+        if isinstance(data, (bytes, bytearray, list)) and data:
+            try:
+                return bytes(data)
+            except (TypeError, ValueError):
+                return b""
         return b""
 
     def get_lidar_data(self, lidar_name: str = "",

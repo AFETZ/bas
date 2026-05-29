@@ -20,7 +20,7 @@
 | Sionna RT (cached + live) | 🟢 | live медленный на WSL (~20с/tile); prod — Linux native GPU |
 | ArduPilot SITL + JsonFdmBridge | 🟢 | full arm+takeoff verified с IMU noise model |
 | Gazebo / MAVROS / MAVLink router | 🟢 | — |
-| Cosys-AirSim overlay | 🟡 | real GPU rendering только Windows-side; Linux headless |
+| Cosys-AirSim overlay | 🟢 | real GPU verified via Windows-host (PNG 256×144, RTX 5070 Ti); Linux=nullrhi CI (UE5 SM6/Vulkan) |
 | AirSim scene builder | 🟢 | реальная OSM-геометрия + segmentation ID + рельеф; primitives (не realistic mesh) |
 | CV детектор | 🟢 | COCO weights (AGPL через ultralytics) |
 | OSM importer + terrain | 🟢 | Overpass медленный; SDF = box-приближение |
@@ -156,8 +156,18 @@ bash scripts/run_sionna_live.sh -- python my_script.py
   воспроизводимые маски для CV-pipeline. Round-trip verified на stub.
 - `settings.json` generator c полным Multirotor config (camera, lidar,
   IMU, GPS, magnetometer)
-- Cosys-AirSim Windows-side real GPU rendering verified (Stage 2.2):
-  RTX 5070 Ti, 209 scene objects, 7 cameras returning real PNG
+- **Cosys-AirSim Windows-host real GPU rendering — verified end-to-end**:
+  Blocks.exe `-RenderOffscreen` поднимает D3D12 RHI на feature level **SM6**
+  (RTX 5070 Ti, shader model 6.7, atomic64), API на `0.0.0.0:41451`. Из WSL2
+  (через vEthernet gateway 172.x.x.1, firewall-правило уже стоит) клиент
+  `airsim_client.get_image()` снимает **реальный PNG 256×144 RGBA** (~57 КБ,
+  сцена Blocks с небом/зданиями — не пустой кадр; см.
+  `docs/assets/airsim_windows_gpu_frame.png`). `BAS_AIRSIM_MODE=windows`.
+- **API-фикс**: этот Cosys-билд бросает «bad cast» на single-image
+  `simGetImage`; рабочий путь — `simGetImages([ImageRequest], vehicle)` →
+  `ImageResponse.image_data_uint8`. `airsim_client.get_image` переписан на
+  него (с fallback на `simGetImage` для stub/старых форков); stub получил
+  `simGetImages`-handler.
 
 ### Не работает / не сделано
 - **Custom UE5 .umap asset с realistic building meshes НЕ создан**.
