@@ -48,6 +48,7 @@ jobs:
 
       - name: YAML sanity
         run: |
+          python -m pip install -q pyyaml
           python - <<'PY'
           import glob, yaml
           files = (glob.glob("configs/**/*.yml", recursive=True)
