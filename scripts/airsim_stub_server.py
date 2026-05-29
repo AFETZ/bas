@@ -43,6 +43,7 @@ STATE_LOCK = threading.Lock()
 LAST_POSE: dict[str, Any] = {}
 POSE_HISTORY: list[dict[str, Any]] = []
 SPAWN_HISTORY: list[dict[str, Any]] = []
+SEG_HISTORY: list[dict[str, Any]] = []
 POSE_LOG_PATH: Path | None = None
 SPAWN_LOG_PATH: Path | None = None
 
@@ -110,6 +111,28 @@ def dispatch(method: str, args: list[Any]) -> Any:
                                 if s.get("object_name") != target]
             removed = before - len(SPAWN_HISTORY)
         return removed > 0
+    if method == "simSetSegmentationObjectID":
+        # args = [mesh_name, object_id, is_name_regex]
+        # Cosys-AirSim returns bool (True если mesh найден и покрашен).
+        rec = {
+            "wall_time": time.time(),
+            "mesh_name": args[0] if len(args) > 0 else "",
+            "object_id": args[1] if len(args) > 1 else -1,
+            "is_name_regex": args[2] if len(args) > 2 else False,
+        }
+        with STATE_LOCK:
+            SEG_HISTORY.append(rec)
+        return True
+    if method == "simGetSegmentationObjectID":
+        # args = [mesh_name] → последний назначенный id или -1.
+        if not args:
+            return -1
+        target = args[0]
+        with STATE_LOCK:
+            for s in reversed(SEG_HISTORY):
+                if s.get("mesh_name") == target:
+                    return s.get("object_id", -1)
+        return -1
     if method == "simListAssets":
         # Минимальный asset list (типичный для Cosys-AirSim Blocks scene).
         return ["Cube", "Cylinder", "Sphere", "Cone", "Plane"]
