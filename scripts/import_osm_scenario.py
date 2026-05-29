@@ -168,8 +168,16 @@ def ring_centroid_bbox(ring: list[list[float]]) -> tuple[float, float, float, fl
 
 
 def build_scenario(buildings: list[dict], origin_lat: float, origin_lon: float,
-                   max_buildings: int = 200) -> list[dict]:
-    """Преобразует raw OSM buildings → нормализованные obstacle records."""
+                   max_buildings: int = 200, terrain_grid: dict | None = None) -> list[dict]:
+    """Преобразует raw OSM buildings → нормализованные obstacle records.
+
+    Если передан terrain_grid (из terrain_elevation), каждое здание получает
+    base_elevation_m (реальная высота рельефа под ним, AMSL).
+    """
+    elevation_at = None
+    if terrain_grid is not None:
+        from terrain_elevation import elevation_at as _eat
+        elevation_at = _eat
     obstacles = []
     for idx, b in enumerate(buildings[:max_buildings]):
         ring = polygon_ring(b["geometry"])
@@ -180,7 +188,7 @@ def build_scenario(buildings: list[dict], origin_lat: float, origin_lon: float,
         h = building_height(b["tags"])
         mat = building_material(b["tags"])
         name = b["tags"].get("name") or f"bld-{b.get('id', idx)}"
-        obstacles.append({
+        rec = {
             "name": name,
             "centroid_lat": clat, "centroid_lon": clon,
             "north_m": round(north, 2), "east_m": round(east, 2),
@@ -189,7 +197,10 @@ def build_scenario(buildings: list[dict], origin_lat: float, origin_lon: float,
             "material": mat,
             "ring": ring,
             "osm_id": b.get("id"),
-        })
+        }
+        if elevation_at is not None:
+            rec["base_elevation_m"] = round(elevation_at(terrain_grid, clat, clon), 1)
+        obstacles.append(rec)
     return obstacles
 
 
@@ -208,7 +219,9 @@ def emit_issgr_json(obstacles: list[dict], out_path: Path) -> None:
             "material": o["material"],
             "properties": {"osm_id": o["osm_id"],
                            "local_north_m": o["north_m"],
-                           "local_east_m": o["east_m"]},
+                           "local_east_m": o["east_m"],
+                           **({"base_elevation_m": o["base_elevation_m"]}
+                              if "base_elevation_m" in o else {})},
         })
     out_path.write_text(json.dumps(records, indent=2, ensure_ascii=False),
                         encoding="utf-8")
@@ -285,6 +298,9 @@ def main() -> int:
     p.add_argument("--issgr-url", help="POST obstacles в ИССГР REST вместо/вместе с JSON")
     p.add_argument("--max-buildings", type=int, default=200)
     p.add_argument("--origin", help="origin lat,lon для local NED (default = bbox center)")
+    p.add_argument("--with-terrain", action="store_true",
+                   help="добрать реальную высоту рельефа (AWS Terrain Tiles, keyless)")
+    p.add_argument("--terrain-zoom", type=int, default=12)
     args = p.parse_args()
 
     # Resolve bbox.
@@ -311,7 +327,22 @@ def main() -> int:
         print("    [!] no buildings in bbox — try larger area")
         return 1
 
-    obstacles = build_scenario(raw, origin_lat, origin_lon, args.max_buildings)
+    terrain_grid = None
+    terrain_stats = None
+    if args.with_terrain:
+        print("==> fetching terrain elevation (AWS Terrain Tiles, keyless)...")
+        try:
+            from terrain_elevation import fetch_elevation_grid, grid_stats, elevation_at
+            terrain_grid = fetch_elevation_grid(bbox, args.terrain_zoom)
+            terrain_stats = grid_stats(terrain_grid)
+            og = elevation_at(terrain_grid, origin_lat, origin_lon)
+            print(f"    relief {terrain_stats['min_m']}–{terrain_stats['max_m']}m, "
+                  f"origin ground {og:.1f}m AMSL")
+        except Exception as e:    # noqa: BLE001
+            print(f"    [!] terrain fetch failed: {e} — продолжаем без рельефа")
+
+    obstacles = build_scenario(raw, origin_lat, origin_lon, args.max_buildings,
+                               terrain_grid=terrain_grid)
     print(f"==> normalized {len(obstacles)} obstacles (cap {args.max_buildings})")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -334,6 +365,9 @@ def main() -> int:
                       for m in set(o["material"] for o in obstacles)},
         "files": {"issgr": str(issgr_json), "sdf": str(sdf_path)},
         "data_license": "OpenStreetMap © ODbL",
+        **({"terrain": terrain_stats,
+            "terrain_source": "AWS Terrain Tiles (SRTM-derived, keyless)"}
+           if terrain_stats else {}),
     }
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False),
                             encoding="utf-8")

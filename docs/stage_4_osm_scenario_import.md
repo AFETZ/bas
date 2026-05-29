@@ -96,6 +96,36 @@ OSM (Overpass) ──┐
 Один скрипт связывает OSM-данные с ИССГР (наземная БД для имитаторов
 АСУ) и Gazebo (физика полёта в реальном городе).
 
+## Реальный рельеф (--with-terrain, Phase B2)
+
+`--with-terrain` добирает реальную высоту рельефа под каждым зданием
+через **AWS Terrain Tiles** (SRTM-derived, keyless public S3 — без
+API-токена). Модуль `scripts/terrain_elevation.py`.
+
+```bash
+./scripts/import_osm_scenario.py --bbox ... --with-terrain --terrain-zoom 12
+```
+
+Каждое здание получает `base_elevation_m` (AMSL) в properties; summary
+получает `terrain` блок (min/max/mean/relief). Закрывает ограничение
+large_map «flat-earth».
+
+Terrarium decode: `elevation_m = (R*256 + G + B/256) - 32768`.
+
+Verified: Москва центр 91–190м (origin ground 146м AMSL — реальная
+высота); Кавказ 2032–5626м (max ≈ Эльбрус 5642м). Standalone:
+```bash
+./scripts/terrain_elevation.py --bbox 43.30,42.40,43.40,42.50 --zoom 11
+# → elevation: 2032.0–5626.0m  mean 3344.5m  relief 3594.0m
+```
+
+Smoke `scripts/_terrain_smoke.py --live`: tile-coord round-trip,
+elevation_at gradient, terrarium decode, live Moscow ≈146м, OSM
+importer terrain wiring. ALL CHECKS PASSED.
+
+Источник: [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/)
+(SRTM/ASTER/etc., public domain / attribution per source).
+
 ## Ограничения
 
 - **Скорость**: Overpass-зеркала бывают медленные (10-200с на bbox),
@@ -104,11 +134,12 @@ OSM (Overpass) ──┐
 - **Box-приближение**: Gazebo SDF использует bounding box здания, а не
   точный footprint mesh. Для photorealistic — экспорт в Blender/Mitsuba
   (как делает CARLA Digital Twins).
-- **Высоты**: если в OSM нет `height`/`building:levels` — default 10м.
-  Для точных высот можно добрать Microsoft Global Building Footprints
-  (CC0) — следующий шаг (Phase B2).
-- **Лицензия данных**: OpenStreetMap © ODbL — атрибуция обязательна при
-  публикации производных карт.
+- **Высоты зданий**: если в OSM нет `height`/`building:levels` — default
+  10м. (Высота *рельефа* — отдельно через `--with-terrain`.)
+- **Terrain zoom**: bbox ограничен 64 tiles на zoom; для больших
+  областей понизить `--terrain-zoom` (10-11).
+- **Лицензия данных**: OpenStreetMap © ODbL; terrain — AWS Terrain Tiles
+  (public). Атрибуция обязательна при публикации производных карт.
 
 ## Pattern source
 
