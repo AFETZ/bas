@@ -55,12 +55,14 @@ def main() -> int:
                           + ":" + str(REPO / "orchestrator/src")},
     )
     try:
-        for _ in range(30):
+        # Cold import of orchestrator deps (issgr.large_map/onboard/etc.) can
+        # take several seconds — allow up to 15s before declaring failure.
+        for _ in range(150):
             if _port_open(PORT):
                 break
             time.sleep(0.1)
         else:
-            print(f"server didn't bind in 3s; log:")
+            print(f"server didn't bind in 15s; log:")
             print(STUB_LOG.read_text())
             return 1
         print(f"==> server up on :{PORT}")

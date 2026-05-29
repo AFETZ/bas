@@ -7,6 +7,34 @@ let runtimeConfig = null;
 
 function $(sel) { return document.querySelector(sel); }
 
+// ----- Basemap layers (shared by all Leaflet maps) -----
+// Все источники — free tile servers без API-ключа / биллинга.
+function makeBaseLayers() {
+  return {
+    'OSM': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '© OpenStreetMap',
+    }),
+    'Спутник (Esri)': L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, attribution: 'Esri World Imagery' }),
+    'Тёмная (CARTO)': L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      { maxZoom: 19, attribution: '© CARTO' }),
+    'Светлая (CARTO)': L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      { maxZoom: 19, attribution: '© CARTO' }),
+  };
+}
+
+// Add base layers + layer-switcher control to a map; returns the default layer.
+function addBaseLayers(map, defaultName = 'OSM') {
+  const layers = makeBaseLayers();
+  (layers[defaultName] || layers['OSM']).addTo(map);
+  L.control.layers(layers, null, { position: 'topright', collapsed: true })
+    .addTo(map);
+  return layers;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -209,10 +237,7 @@ let multiMarkers = {};
 function ensureMultiMap() {
   if (multiMap) return;
   multiMap = L.map('multi-map').setView([ORIGIN_LAT, ORIGIN_LON], 16);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OSM',
-  }).addTo(multiMap);
+  addBaseLayers(multiMap, 'Спутник (Esri)');   // satellite default for UAV view
 }
 
 async function loadMulti() {
@@ -315,10 +340,7 @@ function ensureTileMap() {
     return;
   }
   tileMap = L.map('tile-map').setView([ORIGIN_LAT, ORIGIN_LON], 12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OSM',
-  }).addTo(tileMap);
+  addBaseLayers(tileMap, 'Тёмная (CARTO)');   // dark default matches dashboard theme
   renderTileGrid();
 }
 
