@@ -18,9 +18,10 @@
 """
 import math
 import sys
+import os
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from multirotor_dynamics import (   # noqa: E402
     MultirotorParams, MultirotorDynamics,

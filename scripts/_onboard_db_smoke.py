@@ -11,9 +11,10 @@
   6. Verify retention purge.
 """
 import sys, time, uuid
+import os
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/orchestrator/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator", "src"))
 
 from orchestrator.issgr import (   # noqa: E402
     UAV, Pose, ObjectIdentifier, SensorReading, IssgrClass,

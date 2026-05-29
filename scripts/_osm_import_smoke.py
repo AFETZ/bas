@@ -7,10 +7,11 @@ Part 2 (--live): real Overpass fetch on tiny bbox (skipped if network down).
 import argparse
 import json
 import sys
+import os
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from import_osm_scenario import (   # noqa: E402
     build_scenario, building_height, building_material,
     polygon_ring, ring_centroid_bbox, latlon_to_local,
@@ -89,7 +90,7 @@ def part1_offline() -> None:
         print(f"  ✓ emit_issgr_json: 2 valid Polygon obstacles")
         print(f"  ✓ emit_gazebo_sdf: 2 models, valid SDF XML")
     # Verify ИССГР JSON loads into Pydantic Obstacle model.
-    sys.path.insert(0, "/home/afetz/bas-prototype/orchestrator/src")
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator", "src"))
     from orchestrator.issgr.models import Obstacle
     obj = Obstacle(**recs[0])
     assert obj.height_m == 24.0

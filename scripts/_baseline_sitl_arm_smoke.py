@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-REPO = Path("/home/afetz/bas-prototype")
+REPO = Path(__file__).resolve().parents[1]
 ARDUPILOT = Path("/home/afetz/ardupilot")
 ARDUCOPTER = ARDUPILOT / "build/sitl/bin/arducopter"
 

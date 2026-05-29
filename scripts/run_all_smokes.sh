@@ -31,8 +31,14 @@ OFFLINE=(
   "admin_web|$VENV scripts/_admin_web_smoke.py"
   "osm_import_offline|$VENV scripts/_osm_import_smoke.py"
   "terrain_offline|$VENV scripts/_terrain_smoke.py"
-  "sionna_scenes_resolve|$SIONNA_VENV scripts/_sionna_scenes_smoke.py --resolve-only"
 )
+
+# sionna scene resolution требует sionna_env (TensorFlow + sionna) — добавляем
+# только если он установлен. На CI (без GPU) его нет → offline-набор остаётся
+# полностью зелёным (12/12); локально с sionna_env — 13/13.
+if [ -x "$SIONNA_VENV" ]; then
+  OFFLINE+=("sionna_scenes_resolve|$SIONNA_VENV scripts/_sionna_scenes_smoke.py --resolve-only")
+fi
 
 # live: нужны сеть / GPU / ArduPilot binary
 LIVE=(

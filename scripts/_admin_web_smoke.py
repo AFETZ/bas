@@ -19,7 +19,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-REPO = Path("/home/afetz/bas-prototype")
+REPO = Path(__file__).resolve().parents[1]
 PORT = 18810   # fresh ephemeral
 STUB_LOG = Path("/tmp/_admin_web_smoke_server.log")
 

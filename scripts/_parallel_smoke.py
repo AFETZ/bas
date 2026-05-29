@@ -17,7 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/orchestrator/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator", "src"))
 
 from orchestrator.parallel import (   # noqa: E402
     TaskScheduler, TaskResult, launch_sitl_fleet,

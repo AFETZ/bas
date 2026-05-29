@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-REPO = Path("/home/afetz/bas-prototype")
+REPO = Path(__file__).resolve().parents[1]
 ISSGR_PORT = 28770
 STATS_PORT = 28811
 

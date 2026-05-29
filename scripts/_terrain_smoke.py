@@ -6,8 +6,9 @@ Part 2 (--live): real Moscow fetch (~150m) + OSM importer terrain wiring.
 """
 import argparse
 import sys
+import os
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from terrain_elevation import (   # noqa: E402
     _deg2tile, _tile_lon_lat, elevation_at, grid_stats,

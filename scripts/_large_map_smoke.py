@@ -12,10 +12,11 @@ Verify:
 """
 import random
 import sys
+import os
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/orchestrator/src")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "orchestrator", "src"))
 
 from orchestrator.issgr import (   # noqa: E402
     UTM_BACKEND, TileGrid, TileId, SpatialIndex, IndexEntry,

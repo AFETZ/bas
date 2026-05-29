@@ -7,11 +7,12 @@ HEARTBEAT frames, отправляем в router source, проверяем чт
 """
 import socket
 import sys
+import os
 import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mavlink_sim_router import (   # noqa: E402
     Router, SourceConfig, UdpOutSink, FileSink,

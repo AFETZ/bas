@@ -20,7 +20,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-REPO = Path("/home/afetz/bas-prototype")
+REPO = Path(__file__).resolve().parents[1]
 ISSGR_PORT = 18770
 ADMIN_PORT = 18811
 ONBOARD_DB_PATH = Path("/tmp/_admin_integration_onboard.db")

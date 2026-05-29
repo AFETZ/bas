@@ -7,206 +7,127 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Отменяем устаревшие прогоны при новом push в ту же ветку.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  # ---------------------------------------------------------------- lint
+  # --------------------------------------------------------------- lint
   lint:
-    name: Lint & Syntax
+    name: Lint & syntax
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install shellcheck
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends shellcheck
-
-      - name: Shellcheck all bash scripts
-        run: |
-          set +e
-          shellcheck_failures=0
-          while IFS= read -r f; do
-            shellcheck -e SC1091,SC2086,SC2155,SC2046 "$f" || shellcheck_failures=$((shellcheck_failures+1))
-          done < <(find scripts -name "*.sh" -not -path "*/__pycache__/*")
-          echo "shellcheck failures: $shellcheck_failures"
-          # Не фейлим пока — много existing wrappers с минорными warnings
-          exit 0
-
-      - name: bash -n syntax check
-        run: |
-          set -e
-          for f in scripts/*.sh; do
-            bash -n "$f" && echo "OK $f"
-          done
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Python AST parse
+      - name: Bash syntax (bash -n)
         run: |
           set -e
-          for f in scripts/*.py orchestrator/src/orchestrator/*.py analyzer/src/*.py 2>/dev/null; do
-            [ -f "$f" ] && python -c "import ast; ast.parse(open('$f').read())" && echo "OK $f"
-          done || true
+          for f in $(find scripts -name '*.sh'); do bash -n "$f"; done
+          echo "bash -n: OK"
 
-      - name: Yaml syntax check
+      - name: Shellcheck (advisory)
         run: |
-          set +e
-          python -c "import yaml; [yaml.safe_load(open(f)) for f in __import__('glob').glob('configs/**/*.yaml', recursive=True)]"
-          python -c "import yaml; yaml.safe_load(open('docker-compose.shared-netns.yml'))"
-          python -c "import yaml; yaml.safe_load(open('docker-compose.yml'))"
-          echo "yaml OK"
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends shellcheck
+          # Advisory: не фейлим сборку на стилевых warning'ах.
+          shellcheck -S error -e SC1091,SC2086,SC2155,SC2046 scripts/*.sh || true
 
-  # ---------------------------------------------------------------- python install
-  python-install:
-    name: Python venv install
+      - name: Python compile (syntax gate)
+        run: |
+          set -e
+          python -m compileall -q scripts orchestrator/src
+          if [ -d analyzer/src ]; then python -m compileall -q analyzer/src; fi
+          echo "compileall: OK"
+
+      - name: YAML sanity
+        run: |
+          python - <<'PY'
+          import glob, yaml
+          files = (glob.glob("configs/**/*.yml", recursive=True)
+                   + glob.glob("configs/**/*.yaml", recursive=True)
+                   + glob.glob("*.yml")
+                   + glob.glob(".github/workflows/*.yml"))
+          for f in sorted(set(files)):
+              with open(f) as fh:
+                  yaml.safe_load(fh)
+              print("ok", f)
+          PY
+
+  # --------------------------------------------------------------- regression
+  test:
+    name: Offline regression suite
     runs-on: ubuntu-24.04
-    needs: lint
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install minimal deps (no Docker, no GPU)
+      - name: Create venv + install deps (no GPU / no Docker / no SITL)
         run: |
           set -e
           python -m venv .venv
-          .venv/bin/pip install --quiet --upgrade pip setuptools wheel
-          .venv/bin/pip install --quiet msgpack pyyaml requests pymavlink mavproxy
-          # orchestrator/analyzer как editable если есть pyproject.toml
-          if [ -f orchestrator/pyproject.toml ]; then
-            .venv/bin/pip install --quiet -e ./orchestrator || true
-          fi
-          if [ -f analyzer/pyproject.toml ]; then
-            .venv/bin/pip install --quiet -e ./analyzer || true
-          fi
-          echo "Installed:"
-          .venv/bin/pip list 2>/dev/null | head -20
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q msgpack numpy pyproj requests mavproxy
+          .venv/bin/pip install -q -e ./orchestrator
+          echo "deps:"; .venv/bin/pip list 2>/dev/null | grep -iE 'msgpack|numpy|pyproj|pydantic|pymavlink|pyyaml' || true
 
-  # ---------------------------------------------------------------- stub smoke
-  stub-smoke:
-    name: AirSim stub smoke
-    runs-on: ubuntu-24.04
-    needs: python-install
-    steps:
-      - uses: actions/checkout@v4
+      - name: Run offline regression (run_all_smokes.sh)
+        run: bash scripts/run_all_smokes.sh
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install msgpack
-        run: pip install msgpack
-
-      - name: Stub server + client probe
-        run: |
-          set -e
-          mkdir -p /tmp/airsim_ci
-          python scripts/airsim_stub_server.py \
-              --port 41452 \
-              --pose-log /tmp/airsim_ci/stub_poses.jsonl \
-              > /tmp/airsim_ci/stub.log 2>&1 &
-          STUB_PID=$!
-          sleep 2
-          python scripts/airsim_client.py --port 41452
-          kill $STUB_PID 2>/dev/null || true
-          echo "stub log:"
-          cat /tmp/airsim_ci/stub.log | head -10
-
-      - name: Bridge replay on existing events.jsonl
-        run: |
-          # Если в репо есть пример events.jsonl — replay против stub
-          if [ -d logs/ ] && [ -n "$(ls logs/ 2>/dev/null)" ]; then
-            LATEST=$(ls -td logs/*/ 2>/dev/null | head -1)
-            if [ -f "${LATEST}events.jsonl" ]; then
-              python scripts/airsim_stub_server.py --port 41453 \
-                  --pose-log /tmp/airsim_ci/replay_stub.jsonl \
-                  > /tmp/airsim_ci/replay_stub.log 2>&1 &
-              STUB_PID=$!
-              sleep 1
-              timeout 15 python scripts/airsim_bridge.py \
-                  --events "${LATEST}events.jsonl" \
-                  --log-dir /tmp/airsim_ci \
-                  --airsim-port 41453 \
-                  --image-period-s 0 --no-images \
-                  --replay --max-seconds 10
-              kill $STUB_PID 2>/dev/null || true
-              wc -l /tmp/airsim_ci/airsim_pose_forward.jsonl || true
-            fi
-          fi
-
-  # ---------------------------------------------------------------- web UI demo mode
-  web-ui-demo:
+  # --------------------------------------------------------------- web UI
+  web-ui:
     name: Web GCS demo mode
     runs-on: ubuntu-24.04
-    needs: python-install
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install deps
-        run: pip install pymavlink mavproxy pyyaml requests
+        run: pip install -q pymavlink mavproxy pyyaml requests
 
-      - name: Probe demo mode UI
+      - name: Probe demo UI (health + state + index)
         run: |
           set -e
           python scripts/gcs_web_ui_server.py --demo --host 127.0.0.1 --port 18765 \
               > /tmp/ui.log 2>&1 &
           UI_PID=$!
-          for i in $(seq 1 20); do
+          ok=0
+          for _ in $(seq 1 30); do
             if curl -fs http://127.0.0.1:18765/api/health > /tmp/health.json 2>/dev/null; then
-              break
+              ok=1; break
             fi
             sleep 1
           done
-          echo "Health response:"
-          cat /tmp/health.json
+          if [ "$ok" != 1 ]; then echo "GCS health endpoint never came up"; cat /tmp/ui.log; exit 1; fi
+          echo "health: $(cat /tmp/health.json)"
           curl -fs http://127.0.0.1:18765/ -o /tmp/index.html
-          wc -l /tmp/index.html
           curl -fs http://127.0.0.1:18765/api/state > /tmp/state.json
-          python -c "import json; d=json.load(open('/tmp/state.json')); print('state keys:', list(d.keys())[:10])"
-          kill $UI_PID 2>/dev/null || true
+          python -c "import json; d=json.load(open('/tmp/state.json')); assert isinstance(d, dict); print('state keys:', list(d)[:8])"
+          kill "$UI_PID" 2>/dev/null || true
 
-  # ---------------------------------------------------------------- markdown lint
-  docs-check:
-    name: Docs markdown sanity
+  # --------------------------------------------------------------- docs
+  docs:
+    name: Docs sanity
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check required docs exist
+      - name: Required docs present
         run: |
           set -e
           for f in README.md CHANGELOG.md \
               docs/INSTALL.md docs/QUICKSTART.md docs/ARCHITECTURE.md \
               docs/DEMOS.md docs/STAGES.md docs/TROUBLESHOOTING.md \
-              docs/CONTRIBUTING.md docs/tz_compliance.md docs/roadmap.md; do
-            [ -f "$f" ] && echo "OK $f" || (echo "MISSING $f"; exit 1)
+              docs/CONTRIBUTING.md docs/tz_compliance.md docs/roadmap.md \
+              docs/MODULE_MAP.md docs/SCENARIOS.md docs/LIMITATIONS.md docs/GLOSSARY.md; do
+            [ -f "$f" ] && echo "OK $f" || { echo "MISSING $f"; exit 1; }
           done
-
-      - name: Check no broken relative links (basic)
-        run: |
-          set +e
-          broken=0
-          while IFS= read -r link; do
-            md=$(echo "$link" | cut -d: -f1)
-            target=$(echo "$link" | sed -E 's|.*\]\(([^)#]+).*|\1|')
-            if [[ "$target" =~ ^https?: ]]; then continue; fi
-            if [[ "$target" =~ ^# ]]; then continue; fi
-            dir=$(dirname "$md")
-            full="${dir}/${target}"
-            if [ ! -e "$full" ]; then
-              echo "BROKEN: $md → $target"
-              broken=$((broken+1))
-            fi
-          done < <(grep -rEHn '\]\([^)]+\)' --include='*.md' docs/ README.md CHANGELOG.md 2>/dev/null)
-          echo "Total broken links: $broken"
-          # Не фейлим — некоторые ссылки на не-yet-created docs могут быть
-          exit 0

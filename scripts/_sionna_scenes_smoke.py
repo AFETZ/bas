@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sionna_real_tile import (   # noqa: E402
     resolve_scene, SIONNA_BUILTIN_SCENES, compute_real_tile,
 )

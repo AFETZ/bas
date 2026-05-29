@@ -13,11 +13,12 @@ import json
 import socket
 import struct
 import sys
+import os
 import threading
 import time
 from pathlib import Path
 
-sys.path.insert(0, "/home/afetz/bas-prototype/scripts")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cyber_defense_monitor import (   # noqa: E402
     DefenseMonitor, DefenseConfig, listen_mavlink, poll_channel,

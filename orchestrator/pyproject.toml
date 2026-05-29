@@ -10,6 +10,8 @@ requires-python = ">=3.10"
 dependencies = [
   "pyyaml>=6.0",
   "pymavlink>=2.4",
+  # ИССГР модели (orchestrator.issgr.models) построены на Pydantic v2.
+  "pydantic>=2.0",
   # pyserial — для serial endpoint'а (1.7 LoRa PTY: serial:/tmp/ptyGCS_lora:57600).
   # pymavlink требует pyserial только когда device path = UART/PTY, поэтому
   # отдельная зависимость. Без неё mavutil.mavlink_connection падает с
