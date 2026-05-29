@@ -39,6 +39,66 @@ REPO = Path(__file__).resolve().parent.parent
 SCENE_DEFAULT = REPO / "scene" / "iris_runway.xml"
 CACHED_MAP_DEFAULT = REPO / "radio_maps" / "iris_runway.npz"
 
+# Built-in Sionna RT scenes (real cities, derived from OpenStreetMap, ODbL).
+# Каждая запись: tx position [x,y,z] (rooftop/sensible point внутри сцены) +
+# radio map center [x,y,z] + extent. Из Sionna tutorials.
+SIONNA_BUILTIN_SCENES = {
+    "munich": {
+        "tx_pos": [8.5, 21.0, 27.0],       # rooftop near Frauenkirche
+        "map_center": [0.0, 0.0, 1.5],
+        "map_size": [400.0, 400.0],
+        "desc": "Frauenkirche area, Munich (OSM/ODbL)",
+    },
+    "etoile": {
+        "tx_pos": [-115.0, 33.0, 25.0],    # near Arc de Triomphe
+        "map_center": [-115.0, 33.0, 1.5],
+        "map_size": [400.0, 400.0],
+        "desc": "Arc de Triomphe, Paris (OSM/ODbL)",
+    },
+    "florence": {
+        "tx_pos": [0.0, 0.0, 30.0],
+        "map_center": [0.0, 0.0, 1.5],
+        "map_size": [400.0, 400.0],
+        "desc": "Florence city centre (OSM/ODbL)",
+    },
+    "san_francisco": {
+        "tx_pos": [0.0, 0.0, 40.0],
+        "map_center": [0.0, 0.0, 1.5],
+        "map_size": [500.0, 500.0],
+        "desc": "San Francisco district (OSM/ODbL)",
+    },
+    "simple_street_canyon": {
+        "tx_pos": [-33.0, 0.0, 8.0],
+        "map_center": [0.0, 0.0, 1.5],
+        "map_size": [80.0, 80.0],
+        "desc": "Simple street canyon (synthetic)",
+    },
+    "simple_street_canyon_with_cars": {
+        "tx_pos": [-33.0, 0.0, 8.0],
+        "map_center": [0.0, 0.0, 1.5],
+        "map_size": [80.0, 80.0],
+        "desc": "Street canyon with parked cars (synthetic)",
+    },
+}
+
+
+def resolve_scene(scene_name: str) -> tuple[str, dict | None]:
+    """Map --scene-name → (mitsuba xml path, builtin metadata or None).
+
+    scene_name == "iris_runway" → наш bundled scene.
+    scene_name in SIONNA_BUILTIN_SCENES → sionna.rt.scene.<name>.
+    Иначе trakt as filesystem path.
+    """
+    if scene_name in ("iris_runway", "iris", ""):
+        return str(SCENE_DEFAULT), None
+    if scene_name in SIONNA_BUILTIN_SCENES:
+        import sionna.rt as rt
+        path = getattr(rt.scene, scene_name)
+        return str(path), SIONNA_BUILTIN_SCENES[scene_name]
+    # Fallback: treat as path.
+    return scene_name, None
+
+
 # Per-process caches.
 _CACHED_MAP: dict[str, Any] = {}
 _LIVE_SCENE: dict[str, Any] = {}
@@ -167,8 +227,8 @@ def compute_cached_tile(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Live mode — real-time Sionna RT (требует CUDA OptiX)
 # ---------------------------------------------------------------------------
-def _ensure_live_loaded(scene_path: Path) -> tuple[Any, Any]:
-    key = str(scene_path)
+def _ensure_live_loaded(scene_path: Path, n_cars: int = 0) -> tuple[Any, Any]:
+    key = f"{scene_path}#cars={n_cars}"
     if key in _LIVE_SCENE:
         return _LIVE_SCENE[key]
     import mitsuba as mi
@@ -191,14 +251,47 @@ def _ensure_live_loaded(scene_path: Path) -> tuple[Any, Any]:
         num_rows=1, num_cols=1, vertical_spacing=0.5, horizontal_spacing=0.5,
         pattern="iso", polarization="V",
     )
+    # A2: spawn N cars (metal reflectors) как ground targets для RF + CV.
+    if n_cars > 0:
+        _add_cars(scene, n_cars)
     solver = rt.RadioMapSolver()
     _LIVE_SCENE[key] = (scene, solver)
     return scene, solver
 
 
+def _add_cars(scene: Any, n_cars: int) -> int:
+    """Spawn N low_poly_car meshes (ITU metal) в линию вдоль улицы.
+
+    Использует Sionna built-in `low_poly_car.ply` mesh + ITURadioMaterial
+    metal. Машины — RF reflectors (Sionna ray-trace) и ground targets
+    (для CV pipeline через geo-tagged positions).
+    """
+    import sionna.rt as rt
+    car_mat = rt.ITURadioMaterial("car-metal", "metal", thickness=0.01,
+                                   color=(0.8, 0.1, 0.1))
+    cars = []
+    for i in range(n_cars):
+        car = rt.SceneObject(
+            fname=rt.scene.low_poly_car,
+            name=f"car-{i}",
+            radio_material=car_mat,
+        )
+        cars.append(car)
+    # Position can only be set after the object belongs to a scene.
+    scene.edit(add=cars)
+    for i, car in enumerate(cars):
+        car.position = [(i - n_cars / 2) * 8.0, 0.0, 0.0]
+    return len(cars)
+
+
 def compute_live_tile(args: dict) -> dict:
     """Live Sionna RT tile compute. Требует CUDA + OptiX (Linux native или WSL2
-    с manual OptiX install per Mitsuba docs)."""
+    с manual OptiX install per Mitsuba docs).
+
+    Если передан `builtin_meta` (из resolve_scene), tx position + radio-map
+    extent берутся из metadata реальной городской сцены (Munich/Etoile/...),
+    иначе — tile-based grid как у iris_runway.
+    """
     tile_i = args["tile_i"]
     tile_j = args["tile_j"]
     tile_size_m = float(args.get("tile_size_m", 100.0))
@@ -207,27 +300,43 @@ def compute_live_tile(args: dict) -> dict:
     antenna_h = float(args.get("antenna_height_m", 2.0))
     max_depth = int(args.get("max_depth", 2))
     scene_path = Path(args.get("scene_path", SCENE_DEFAULT))
+    builtin = args.get("builtin_meta")          # None or dict
+    n_cars = int(args.get("add_cars", 0))
 
     t0 = time.time()
-    scene, solver = _ensure_live_loaded(scene_path)
+    scene, solver = _ensure_live_loaded(scene_path, n_cars=n_cars)
     scene.frequency = freq_mhz * 1e6
-
-    center_x = tile_i * tile_size_m + tile_size_m / 2
-    center_y = tile_j * tile_size_m + tile_size_m / 2
 
     import mitsuba as mi
     from sionna import rt
     if scene.get("tx") is not None:
         scene.remove("tx")
-    scene.add(rt.Transmitter(name="tx",
-                              position=mi.Point3f(0.0, 0.0, antenna_h),
-                              power_dbm=20.0))
+
+    if builtin is not None:
+        # Real-city scene: tx на крыше, radio map по центру сцены.
+        tx_pos = builtin["tx_pos"]
+        mc = builtin["map_center"]
+        ms = builtin["map_size"]
+        scene.add(rt.Transmitter(name="tx",
+                                  position=mi.Point3f(*tx_pos),
+                                  power_dbm=20.0))
+        rm_center = mi.Point3f(mc[0], mc[1], mc[2])
+        rm_size = mi.Point2f(ms[0], ms[1])
+    else:
+        # iris_runway / custom: tile-based grid.
+        center_x = tile_i * tile_size_m + tile_size_m / 2
+        center_y = tile_j * tile_size_m + tile_size_m / 2
+        scene.add(rt.Transmitter(name="tx",
+                                  position=mi.Point3f(0.0, 0.0, antenna_h),
+                                  power_dbm=20.0))
+        rm_center = mi.Point3f(center_x, center_y, antenna_h)
+        rm_size = mi.Point2f(tile_size_m, tile_size_m)
 
     rm = solver(
         scene=scene,
-        center=mi.Point3f(center_x, center_y, antenna_h),
+        center=rm_center,
         orientation=mi.Point3f(0.0, 0.0, 0.0),
-        size=mi.Point2f(tile_size_m, tile_size_m),
+        size=rm_size,
         cell_size=mi.Point2f(cell_size_m, cell_size_m),
         samples_per_tx=10_000, max_depth=max_depth,
     )
@@ -238,13 +347,27 @@ def compute_live_tile(args: dict) -> dict:
     tx_dbm = 20.0
     with np.errstate(divide="ignore"):
         rss = tx_dbm + 10.0 * np.log10(np.maximum(pg, 1e-30))
+    # Valid cells (не noise floor).
+    mask = rss > -250.0
+    n_valid = int(mask.sum())
+    if n_valid > 0:
+        mean_rssi = float(rss[mask].mean())
+        min_rssi = float(rss[mask].min())
+        max_rssi = float(rss[mask].max())
+    else:
+        mean_rssi = min_rssi = max_rssi = -250.0
     return {
+        "scene": args.get("scene_name", "iris_runway"),
+        "scene_desc": builtin["desc"] if builtin else "bundled iris runway",
         "tile_i": tile_i, "tile_j": tile_j, "freq_mhz": freq_mhz,
         "tile_size_m": tile_size_m, "cell_size_m": cell_size_m,
         "n_cells": int(rss.size),
-        "mean_rssi_dbm": round(float(rss.mean()), 2),
-        "min_rssi_dbm": round(float(rss.min()), 2),
-        "max_rssi_dbm": round(float(rss.max()), 2),
+        "n_valid_cells": n_valid,
+        "coverage_fraction": round(n_valid / max(rss.size, 1), 4),
+        "n_cars": n_cars,
+        "mean_rssi_dbm": round(mean_rssi, 2),
+        "min_rssi_dbm": round(min_rssi, 2),
+        "max_rssi_dbm": round(max_rssi, 2),
         "backend": "sionna_live",
         "compute_s": round(time.time() - t0, 3),
     }
@@ -268,10 +391,22 @@ def main() -> int:
     p.add_argument("--freq-mhz", type=float, default=2400.0)
     p.add_argument("--antenna-height-m", type=float, default=2.0)
     p.add_argument("--max-depth", type=int, default=2)
-    p.add_argument("--scene", type=Path, default=SCENE_DEFAULT)
+    p.add_argument("--scene", type=Path, default=SCENE_DEFAULT,
+                   help="Explicit scene XML path (overridden by --scene-name)")
+    p.add_argument("--scene-name", default="iris_runway",
+                   help="iris_runway | munich | etoile | florence | "
+                        "san_francisco | simple_street_canyon | "
+                        "simple_street_canyon_with_cars")
+    p.add_argument("--add-cars", type=int, default=0,
+                   help="Spawn N low_poly_car meshes (metal RF reflectors / CV targets)")
     p.add_argument("--cached-path", type=Path, default=CACHED_MAP_DEFAULT)
     p.add_argument("--output", type=Path, default=None)
     args = p.parse_args()
+
+    # Resolve scene: built-in city scene или filesystem path.
+    scene_path, builtin_meta = resolve_scene(args.scene_name)
+    if args.scene_name in ("iris_runway", "iris", "") and args.scene != SCENE_DEFAULT:
+        scene_path = str(args.scene)   # explicit --scene override
 
     spec = {
         "mode": args.mode,
@@ -281,7 +416,10 @@ def main() -> int:
         "freq_mhz": args.freq_mhz,
         "antenna_height_m": args.antenna_height_m,
         "max_depth": args.max_depth,
-        "scene_path": args.scene,
+        "scene_path": scene_path,
+        "scene_name": args.scene_name,
+        "builtin_meta": builtin_meta,
+        "add_cars": args.add_cars,
         "cached_path": args.cached_path,
     }
     result = compute_real_tile(spec)

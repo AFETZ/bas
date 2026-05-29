@@ -283,16 +283,32 @@ launch cyber_defense \
 PIDS+=($!)
 
 # ---------------------------------------------------------------------------
-echo "==> [11/14] Real Sionna tile showcase (cached map, 4 tiles)"
+echo "==> [11/14] Sionna RT showcase (live Munich city if GPU, else cached)"
 mkdir -p "${LOG_DIR}/sionna_tiles"
-for ij in "0,0" "2,4" "4,8" "1,12"; do
-    i="${ij%,*}"; j="${ij#*,}"
-    "$VENV" "${SCRIPT_DIR}/sionna_real_tile.py" \
-        --tile-i "$i" --tile-j "$j" --tile-size-m 50 \
-        --output "${LOG_DIR}/sionna_tiles/tile_${i}_${j}.json" \
-        > /dev/null 2>&1 || true
-done
-echo "  [+] 4 Sionna real tiles → ${LOG_DIR}/sionna_tiles/"
+SIONNA_OPTIX_LIB="/usr/lib/x86_64-linux-gnu/libnvoptix.so.595.71.05"
+if [ -f "$SIONNA_OPTIX_LIB" ] && [ -x "${REPO_ROOT}/sionna_env/bin/python" ]; then
+    echo "  live mode: real-time RT on built-in city scenes (Munich/Etoile)"
+    for combo in "munich:0" "munich:5" "etoile:0"; do
+        sc="${combo%:*}"; cars="${combo#*:}"
+        bash "${SCRIPT_DIR}/run_sionna_live.sh" real_tile \
+            --scene-name "$sc" --add-cars "$cars" \
+            --cell-size-m 20 --freq-mhz 2400 --max-depth 2 \
+            --output "${LOG_DIR}/sionna_tiles/live_${sc}_cars${cars}.json" \
+            > "${LOG_DIR}/sionna_tiles/live_${sc}.log" 2>&1 || \
+            echo "  [!] live ${sc} failed (см. log)"
+    done
+    echo "  [+] live Sionna scenes → ${LOG_DIR}/sionna_tiles/live_*.json"
+else
+    echo "  cached mode: slicing pre-computed iris_runway radio map (no GPU/OptiX)"
+    for ij in "0,0" "2,4" "4,8" "1,12"; do
+        i="${ij%,*}"; j="${ij#*,}"
+        "$VENV" "${SCRIPT_DIR}/sionna_real_tile.py" \
+            --mode cached --tile-i "$i" --tile-j "$j" --tile-size-m 50 \
+            --output "${LOG_DIR}/sionna_tiles/tile_${i}_${j}.json" \
+            > /dev/null 2>&1 || true
+    done
+    echo "  [+] 4 cached Sionna tiles → ${LOG_DIR}/sionna_tiles/"
+fi
 
 # ---------------------------------------------------------------------------
 echo "==> [12/14] Admin Dashboard (live tabs) :${ADMIN_PORT}"
