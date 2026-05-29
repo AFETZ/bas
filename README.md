@@ -25,6 +25,18 @@ AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+## 📚 С чего начать (навигация)
+
+| Хочу… | Открыть |
+|---|---|
+| **Запустить демо, но не знаю какое** | `bash scripts/demo.sh` (интерактивное меню) |
+| **Понять что за модуль, что показывает, с чем связан** | [docs/MODULE_MAP.md](docs/MODULE_MAP.md) |
+| **Увидеть готовые цепочки модулей (рецепты)** | [docs/SCENARIOS.md](docs/SCENARIOS.md) |
+| **Разобрать термины (ИССГР, SITL, LoS…)** | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
+| **Понять сайты в браузере** | [docs/ui_guide.md](docs/ui_guide.md) |
+| **Что реально, а что заглушка** | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) |
+| **Полный каталог демо** | [docs/DEMOS.md](docs/DEMOS.md) |
+
 ## Что внутри
 
 | Сценарий | Команда | Что увидите |

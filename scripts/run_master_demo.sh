@@ -338,7 +338,25 @@ fi
 echo
 echo "==> [14/14] All modules launched. Demo running ${BAS_DEMO_DURATION}s..."
 echo
-echo "  Live KPIs (poll every 10s):"
+cat <<ROUTE
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  МАРШРУТ ОСМОТРА (пока стенд жив — открывайте в браузере):          │
+  ├────────────────────────────────────────────────────────────────────┤
+  │  1. http://127.0.0.1:${ADMIN_PORT}/            Admin: вкладка «Обзор»      │
+  │       → сколько модулей живо, endpoint health                       │
+  │  2. http://127.0.0.1:${ADMIN_PORT}/  вкладки ИССГР / Бортовая БД / 20×20 │
+  │       → объекты двойника, метрики борта, tile-карта                 │
+  │  3. http://127.0.0.1:${ISSGR_PORT_A}/docs          ИССГР Swagger API        │
+  │       → как АСУ-клиент читает обстановку                            │
+  │  4. http://127.0.0.1:${SYNC_STATS_PORT}/stats          Multicast sync счётчики │
+  │       → L1/L2/HEARTBEAT пакеты узел→узел                            │
+  │  5. ${LOG_DIR}/sionna_tiles/
+  │       → результат реального RT-расчёта (Munich live или cached)     │
+  └────────────────────────────────────────────────────────────────────┘
+  Что есть что — docs/MODULE_MAP.md · связки — docs/SCENARIOS.md
+
+  Live KPIs (poll every 10s):
+ROUTE
 echo
 
 print_status() {
