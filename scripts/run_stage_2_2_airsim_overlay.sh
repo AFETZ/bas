@@ -159,6 +159,9 @@ start_linux_blocks() {
     # UE5 binary защищается от запуска под root. Используем sudo -u чтобы
     # запустить как реального пользователя.
     echo "[airsim] starting Cosys-AirSim Blocks as user=${AIRSIM_RUN_USER} (headless, nullrhi)"
+    echo "[airsim] note: -nullrhi обязателен в WSL2 — UE5.5 SM6 требует Vulkan 1.3+"
+    echo "[airsim]       mesh_shader, недоступный через DZN/lavapipe. Для РЕАЛЬНОГО"
+    echo "[airsim]       GPU-рендера используйте BAS_AIRSIM_MODE=windows (тот же RTX)."
     cd "$(dirname "$blocks_sh")"
     if [ "$EUID" -eq 0 ] && [ "$AIRSIM_RUN_USER" != "root" ]; then
         sudo -u "$AIRSIM_RUN_USER" -H \
@@ -185,10 +188,20 @@ start_linux_blocks() {
 }
 
 # ---- Windows mode: real GPU rendering via WSL interop -------------------
-# WSL не имеет NVIDIA Vulkan ICD (DZN не поддерживает UE5 5.5 SM6 features).
-# Чтобы получить real image rendering, запускаем Windows binary напрямую
-# через cmd.exe, и bridge подключается на Windows host через Hyper-V
-# vEthernet gateway (172.x.x.1 → 0.0.0.0:41451 на Windows).
+# Почему Linux-mode не даёт GPU-картинку (проверено эмпирически на этой
+# машине, RTX 5070 Ti, драйвер 595, UE5.5 Blocks):
+#   UE5.5 RHI требует профиль VP_UE_Vulkan_SM6 — Vulkan 1.3 + VK_EXT_mesh_shader
+#   + shader_image_atomic_int64 + maintenance4 + maxBoundDescriptorSets>=9.
+#   В WSL2 доступны только два Vulkan-провайдера, и оба профиль НЕ проходят:
+#     * DZN (Mesa Dozen, Vulkan-over-D3D12, GPU) — Vulkan 1.1, нет mesh_shader;
+#     * lavapipe (программный, CPU) — "None of the 1 devices meet all criteria".
+#   NVIDIA не поставляет native Vulkan ICD для WSL2 (в /usr/lib/wsl/lib только
+#   CUDA/OptiX/D3D12, нет vulkan-producer). UE5 печатает "Vulkan Driver is
+#   required to run the engine" и выходит с кодом 1.
+# Вывод: реальный GPU-рендер этого бинаря возможен только там, где у RTX
+# полный Vulkan 1.3/SM6 стек — на Windows-хосте. Поэтому для GPU-картинки
+# запускаем Windows binary через cmd.exe, bridge подключается на Windows host
+# через Hyper-V vEthernet gateway (172.x.x.1 → 0.0.0.0:41451 на Windows).
 # Требует ОДНОРАЗОВУЮ настройку firewall (см. docs).
 windows_host_ip() {
     # Default route gateway = Windows host vEthernet IP в WSL2 NAT mode.

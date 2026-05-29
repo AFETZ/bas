@@ -166,9 +166,17 @@ bash scripts/run_sionna_live.sh -- python my_script.py
   параллелепипеды, а не photoreal mesh зданий.
 - Material tags (metal/concrete/brick) пишутся в spawn-log и влияют на
   категорию, но не подменяют UE5-материал actor'а (только segmentation ID).
-- Cosys-AirSim Linux build — headless rendering only (nullrhi); image
-  API возвращает empty PNG. Real GPU rendering — только Windows
-  (UE5 Vulkan RHI на WSL2 — отдельный rabbit hole, см. секцию ниже).
+- Cosys-AirSim Linux build в WSL2 — headless `-nullrhi` only (empty PNG).
+  **Проверено эмпирически** (RTX 5070 Ti, драйвер 595, UE5.5 Blocks): движок
+  требует профиль `VP_UE_Vulkan_SM6` = Vulkan 1.3 + `VK_EXT_mesh_shader` +
+  `shader_image_atomic_int64` + `maintenance4` + `maxBoundDescriptorSets>=9`.
+  Оба доступных в WSL2 Vulkan-провайдера профиль НЕ проходят: DZN
+  (Vulkan-over-D3D12, GPU) — Vulkan 1.1 без mesh_shader; lavapipe (CPU) —
+  «None of the 1 devices meet all the criteria». NVIDIA не даёт native
+  Vulkan ICD для WSL2. UE5 пишет «Vulkan Driver is required to run the
+  engine» и выходит (rc=1). **Реальный GPU-рендер этого бинаря возможен
+  только на Windows-хосте** (тот же RTX, полный Vulkan 1.3/SM6) —
+  `BAS_AIRSIM_MODE=windows`, verified (Stage 2.2: 209 объектов, 7 камер, PNG).
 - Vehicles статичные; нет moving traffic simulation.
 
 ### Workaround
