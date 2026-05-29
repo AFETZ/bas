@@ -49,3 +49,4 @@ docs/*.docx
 docs/*.pdf
 docs/*.pptx
 *.pt
+wiki-build/

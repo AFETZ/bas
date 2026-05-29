@@ -1,0 +1,8 @@
+[
+  {"url": "http://127.0.0.1:8765/", "out": "/tmp/wiki-img/gcs_operator.png", "w": 1600, "h": 1000, "wait": 4500},
+  {"url": "http://127.0.0.1:8810/", "out": "/tmp/wiki-img/admin_overview.png", "w": 1600, "h": 1050, "wait": 3000},
+  {"url": "http://127.0.0.1:8810/", "out": "/tmp/wiki-img/admin_issgr.png", "w": 1600, "h": 1050, "wait": 1500, "clicks": ["button[data-tab=\"issgr\"]", "#issgr-refresh"], "click_wait": 1800},
+  {"url": "http://127.0.0.1:8810/", "out": "/tmp/wiki-img/admin_onboard.png", "w": 1600, "h": 1050, "wait": 1500, "clicks": ["button[data-tab=\"onboard\"]"], "click_wait": 1800},
+  {"url": "http://127.0.0.1:8810/", "out": "/tmp/wiki-img/admin_tilemap.png", "w": 1600, "h": 1050, "wait": 1500, "clicks": ["button[data-tab=\"tilemap\"]", "#tile-render"], "click_wait": 2800},
+  {"url": "http://127.0.0.1:8810/", "out": "/tmp/wiki-img/admin_sync.png", "w": 1600, "h": 1050, "wait": 1500, "clicks": ["button[data-tab=\"sync\"]"], "click_wait": 1800}
+]
