@@ -326,21 +326,29 @@ start_windows_blocks() {
         export BAS_AIRSIM_HOST="$win_ip"
     fi
 
-    # Probe API endpoint.
-    for _ in $(seq 1 30); do
-        if timeout 2 bash -c "cat </dev/tcp/${BAS_AIRSIM_HOST}/${BAS_AIRSIM_PORT}" \
-                &>/dev/null; then
+    # Probe API endpoint. UE5.5 cold boot до готовности AirSim RPC — это
+    # ~40-120с (процесс появляется за 2с, но порт 41451 биндится только после
+    # полной загрузки движка). Ждём щедро (до 150с) и — ВАЖНО — НЕ валим демо
+    # при таймауте: возвращаем 0, чтобы поднялся базовый стек, а bridge сам
+    # ретраит подключение к AirSim (см. airsim_bridge.connect_airsim_with_retry).
+    # ВАЖНО: проверяем ОТКРЫТИЕ соединения (запись), а НЕ чтение. AirSim —
+    # msgpack-rpc сервер: он принимает коннект, но молчит до запроса. Если
+    # делать `cat < /dev/tcp` (чтение) — cat висит в ожидании данных, timeout
+    # его убивает → ложное "not reachable" хотя порт открыт. Поэтому открываем
+    # соединение на запись (ничего не шлём) — успех = порт слушает.
+    echo "  waiting for AirSim API on ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT} (UE5 boot)..."
+    for _ in $(seq 1 75); do
+        if timeout 2 bash -c "cat < /dev/null > /dev/tcp/${BAS_AIRSIM_HOST}/${BAS_AIRSIM_PORT}" \
+                2>/dev/null; then
             echo "  AirSim API reachable on ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT}"
             return 0
         fi
         sleep 2
     done
-    echo "  AirSim API not reachable on ${BAS_AIRSIM_HOST}:${BAS_AIRSIM_PORT}" >&2
-    echo "  Возможно блокирует Windows Firewall. ОДНОРАЗОВО запусти" >&2
-    echo "  на Windows (от админа PowerShell):" >&2
-    echo "    netsh advfirewall firewall add rule name=CosysAirSim41451 \\\\" >&2
-    echo "       dir=in action=allow protocol=TCP localport=${BAS_AIRSIM_PORT}" >&2
-    return 1
+    echo "  [warn] AirSim API ещё не отвечает за 150с — продолжаю (bridge подключится сам)." >&2
+    echo "         Если камера так и не появится — проверь firewall на Windows (от админа):" >&2
+    echo "         netsh advfirewall firewall add rule name=CosysAirSim41451 dir=in action=allow protocol=TCP localport=${BAS_AIRSIM_PORT}" >&2
+    return 0
 }
 
 # ---- 1. AirSim startup according to mode ---------------------------------

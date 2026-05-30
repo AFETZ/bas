@@ -106,6 +106,7 @@ class BridgeConfig:
     lidar_name: str = ""
     replay: bool = False
     max_seconds: float = 0.0
+    connect_wait_s: float = 90.0   # ретраить подключение к AirSim до N с (cold boot)
 
 
 def tail_flight_events(events_path: Path, from_start: bool = False):
@@ -142,12 +143,15 @@ def tail_flight_events(events_path: Path, from_start: bool = False):
         }
 
 
-def safe_connect_airsim(cfg: BridgeConfig) -> AirSimRpcClient | None:
+def safe_connect_airsim(cfg: BridgeConfig,
+                        quiet: bool = False) -> AirSimRpcClient | None:
     """Try connect; вернуть None если AirSim не запущен (stub mode).
 
     Если установлен официальный `cosysairsim` package — используем его
     для image decode и расширенных RPC методов. Иначе наш минимальный
     msgpack-rpc client (pose forwarding + ping + scene listing).
+
+    quiet=True подавляет сообщение об отказе (для тихих ретраев).
     """
     try:
         client = AirSimRpcClient(
@@ -172,9 +176,39 @@ def safe_connect_airsim(cfg: BridgeConfig) -> AirSimRpcClient | None:
                   flush=True)
         return client
     except (OSError, AirSimRpcError) as exc:
-        print(f"[airsim] no AirSim endpoint at {cfg.airsim_host}:{cfg.airsim_port}"
-              f" ({exc}); running in LOCAL POSE-LOG MODE", flush=True)
+        if not quiet:
+            print(f"[airsim] no AirSim endpoint at {cfg.airsim_host}:{cfg.airsim_port}"
+                  f" ({exc}); running in LOCAL POSE-LOG MODE", flush=True)
         return None
+
+
+def connect_airsim_with_retry(cfg: BridgeConfig,
+                              total_wait_s: float = 90.0,
+                              interval_s: float = 3.0) -> AirSimRpcClient | None:
+    """safe_connect_airsim с ретраями — Cosys-AirSim cold boot ~40-120с.
+
+    Возвращает client при первом успешном подключении; None после
+    total_wait_s секунд тихих попыток. Это делает мост устойчивым к
+    медленному старту AirSim (UE5 биндит порт не сразу после запуска).
+    """
+    deadline = time.time() + max(0.0, total_wait_s)
+    attempt = 0
+    announced = False
+    while True:
+        attempt += 1
+        client = safe_connect_airsim(cfg, quiet=True)
+        if client is not None:
+            return client
+        if time.time() >= deadline:
+            print(f"[airsim] no AirSim at {cfg.airsim_host}:{cfg.airsim_port} "
+                  f"after {attempt} attempt(s)/{total_wait_s:.0f}s "
+                  f"→ LOCAL POSE-LOG MODE (no camera)", flush=True)
+            return None
+        if not announced:
+            print(f"[airsim] AirSim not up yet at {cfg.airsim_host}:{cfg.airsim_port}"
+                  f"; retrying up to {total_wait_s:.0f}s (UE5 boot)...", flush=True)
+            announced = True
+        time.sleep(interval_s)
 
 
 def forward_pose(
@@ -267,6 +301,10 @@ def main() -> int:
                     help="Прочитать events.jsonl с начала (smoke режим)")
     ap.add_argument("--max-seconds", type=float, default=0.0,
                     help="Auto-stop после N секунд (0 = forever)")
+    ap.add_argument("--airsim-connect-wait", type=float,
+                    default=float(os.environ.get("BAS_AIRSIM_CONNECT_WAIT", "90")),
+                    help="Ретраить подключение к AirSim до N секунд (UE5 cold "
+                         "boot ~40-120с; 0 = одна попытка)")
     args = ap.parse_args()
 
     cfg = BridgeConfig(
@@ -281,12 +319,13 @@ def main() -> int:
         capture_images=not args.no_images,
         replay=args.replay,
         max_seconds=args.max_seconds,
+        connect_wait_s=args.airsim_connect_wait,
     )
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     pose_log = cfg.log_dir / cfg.pose_log_name
     pose_log.write_text("")   # truncate
 
-    client = safe_connect_airsim(cfg)
+    client = connect_airsim_with_retry(cfg, total_wait_s=cfg.connect_wait_s)
     mode_label = "RPC" if client is not None else "STUB (no AirSim)"
     print(f"[airsim-bridge] mode={mode_label}, log_dir={cfg.log_dir}",
           flush=True)
