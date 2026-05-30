@@ -44,6 +44,13 @@ BAS_AIRSIM_WIN_INSTALL_DIR="${BAS_AIRSIM_WIN_INSTALL_DIR:-/mnt/c/Users/${AIRSIM_
 BAS_AIRSIM_CAMERA="${BAS_AIRSIM_CAMERA:-front_center}"
 BAS_AIRSIM_IMAGE_PERIOD_S="${BAS_AIRSIM_IMAGE_PERIOD_S:-2}"
 
+# Windows-interop бинари. ВАЖНО: под sudo PATH сбрасывается на secure_path,
+# где НЕТ /mnt/c/Windows/... → bare `cmd.exe`/`powershell.exe` = command not
+# found, и windows-mode падает сразу. Резолвим абсолютные пути через wslpath
+# (он есть в /usr/bin даже под sudo). Interop для root работает по abs-пути.
+WIN_CMD="$(wslpath -u 'C:\Windows\System32\cmd.exe' 2>/dev/null || echo /mnt/c/Windows/System32/cmd.exe)"
+WIN_PS="$(wslpath -u 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' 2>/dev/null || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
+
 # Back-compat: BAS_AIRSIM_STUB=0 → выключить stub.
 if [ "${BAS_AIRSIM_STUB:-}" = "0" ]; then
     BAS_AIRSIM_MODE="off"
@@ -83,7 +90,7 @@ cleanup() {
     pkill -f "Blocks_packaged_Linux_55_33" 2>/dev/null || true
     # Windows Blocks.exe — снести через taskkill (только если windows mode).
     if [ "${BAS_AIRSIM_MODE:-}" = "windows" ]; then
-        cmd.exe /c "taskkill /F /IM Blocks.exe /T" 2>/dev/null || true
+        "$WIN_CMD" /c "taskkill /F /IM Blocks.exe /T" 2>/dev/null || true
     fi
     if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
         kill -INT "$STACK_PID" 2>/dev/null || true
@@ -228,7 +235,7 @@ install_windows_blocks() {
     win_zip_path="$(wslpath -w "${install_dir}/Blocks_packaged_Windows_55_33.zip")"
     local win_dest_path
     win_dest_path="$(wslpath -w "${install_dir}")"
-    powershell.exe -Command "Expand-Archive -Path '${win_zip_path}' -DestinationPath '${win_dest_path}' -Force" \
+    "$WIN_PS" -NoProfile -Command "Expand-Archive -Path '${win_zip_path}' -DestinationPath '${win_dest_path}' -Force" \
         2>&1 | tail -3
     if [ -f "$blocks_exe_win" ]; then
         echo "  installed: ${blocks_exe_win}"
@@ -285,21 +292,26 @@ start_windows_blocks() {
 
     local win_blocks_path
     win_blocks_path="$(wslpath -w "$blocks_exe_win")"
-    echo "[airsim] starting Windows Blocks.exe (real GPU)"
+    echo "[airsim] starting Windows Blocks.exe (real GPU) via ${WIN_CMD}"
     # `cmd.exe /c start /B` запускает .exe detached, без console window.
-    cmd.exe /c start /B "" "$win_blocks_path" -RenderOffscreen -ResX=640 -ResY=480 \
-        > "${LOG_DIR}/airsim_blocks_win.log" 2>&1 || true
+    # ВАЖНО: абсолютный путь к cmd.exe (под sudo его нет в PATH).
+    "$WIN_CMD" /c start /B "" "$win_blocks_path" -RenderOffscreen -ResX=640 -ResY=480 \
+        > "${LOG_DIR}/airsim_blocks_win.log" 2>&1 \
+        || echo "  [warn] cmd.exe start вернул non-zero (см. airsim_blocks_win.log)" >&2
 
     # Wait для Blocks процесса (PowerShell сам найдёт).
     local found_pid=""
     for _ in $(seq 1 30); do
-        found_pid="$(powershell.exe -Command 'Get-Process Blocks -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id' 2>/dev/null | tr -d '\r' | head -1)"
+        found_pid="$("$WIN_PS" -NoProfile -Command 'Get-Process Blocks -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id' 2>/dev/null | tr -d '\r' | head -1)"
         if [ -n "$found_pid" ]; then
             echo "  Blocks.exe started: Win-PID=${found_pid}"
             break
         fi
         sleep 2
     done
+    if [ -z "$found_pid" ]; then
+        echo "  [warn] Blocks.exe не обнаружен через Get-Process за 60с — продолжаю" >&2
+    fi
 
     # Windows host IP для AirSim API access.
     local win_ip
