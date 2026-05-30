@@ -258,7 +258,7 @@ ensure_windows_airsim_settings() {
   "SettingsVersion": 2.0,
   "SimMode": "Multirotor",
   "ClockType": "SteppableClock",
-  "ViewMode": "NoDisplay",
+  "ViewMode": "SpringArmChase",
   "ApiServerEndpoint": "0.0.0.0:${BAS_AIRSIM_PORT}",
   "Vehicles": {
     "Copter": {
@@ -292,15 +292,25 @@ start_windows_blocks() {
 
     local win_blocks_path
     win_blocks_path="$(wslpath -w "$blocks_exe_win")"
-    echo "[airsim] starting Windows Blocks.exe (real GPU) via Start-Process"
-    # ВАЖНО: запускаем через PowerShell Start-Process, а НЕ `cmd /c start … > wslfile`.
-    # При cmd-start с редиректом в WSL-файл дочерний Blocks НАСЛЕДУЕТ WSL stdout-pipe,
-    # и /init-мост ждёт закрытия этого хэндла (= выхода Blocks) → cmd НИКОГДА не
-    # возвращается, и враппер виснет на этой строке навсегда. Start-Process
-    # полностью отвязывает процесс (свои хэндлы) и сразу возвращает управление.
-    # Сам Blocks пишет лог в <build>/Blocks/Saved/Logs/Blocks.log.
+    # По умолчанию — ВИДИМОЕ окно AirSim (чтобы пользователь видел фотореалистику).
+    # BAS_AIRSIM_HEADLESS=1 → headless (-RenderOffscreen, скрытое окно) для CI.
+    local ue_args win_style
+    if [ "${BAS_AIRSIM_HEADLESS:-0}" = "1" ]; then
+        ue_args="'-RenderOffscreen','-ResX=640','-ResY=480','-nosound','-nosplash'"
+        win_style="Hidden"
+        echo "[airsim] starting Windows Blocks.exe (real GPU, HEADLESS) via Start-Process"
+    else
+        ue_args="'-ResX=1280','-ResY=720','-windowed','-nosound','-nosplash'"
+        win_style="Normal"
+        echo "[airsim] starting Windows Blocks.exe (real GPU, ВИДИМОЕ окно) via Start-Process"
+        echo "         (BAS_AIRSIM_HEADLESS=1 чтобы запустить без окна)"
+    fi
+    # ВАЖНО: через PowerShell Start-Process, а НЕ `cmd /c start … > wslfile` —
+    # иначе дочерний Blocks наследует WSL stdout-pipe и /init-мост ждёт его
+    # выхода навсегда (враппер виснет). Start-Process отвязывает процесс и
+    # сразу возвращает управление. Лог Blocks: <build>/Blocks/Saved/Logs/Blocks.log.
     "$WIN_PS" -NoProfile -Command \
-        "Start-Process -FilePath '${win_blocks_path}' -ArgumentList '-RenderOffscreen','-ResX=640','-ResY=480','-nosound','-nosplash' -WindowStyle Hidden" \
+        "Start-Process -FilePath '${win_blocks_path}' -ArgumentList ${ue_args} -WindowStyle ${win_style}" \
         > "${LOG_DIR}/airsim_blocks_win.log" 2>&1 \
         || echo "  [warn] Start-Process вернул non-zero (см. airsim_blocks_win.log)" >&2
 
@@ -410,9 +420,13 @@ for _ in $(seq 1 60); do
 done
 
 # ---- 3. Bridge ------------------------------------------------------------
-echo "[airsim-overlay] start bridge (events → AirSim setVehiclePose)"
+echo "[airsim-overlay] start bridge (GCS live pose → AirSim setVehiclePose + camera)"
+# Источник позы — Web GCS /api/state (РЕАЛЬНАЯ телеметрия дрона). events.jsonl
+# в fpv_rf_demo несёт только команды, не непрерывную позицию, поэтому дрон в
+# AirSim раньше не двигался. Теперь мост опрашивает GCS и гонит дрона в AirSim.
 "$VENV_PY" "${SCRIPT_DIR}/airsim_bridge.py" \
     --events "$EVENTS_PATH" \
+    --gcs-state-url "http://${BAS_GCS_UI_HOST}:${BAS_GCS_UI_PORT}" \
     --log-dir "$LOG_DIR" \
     --airsim-host "$BAS_AIRSIM_HOST" \
     --airsim-port "$BAS_AIRSIM_PORT" \

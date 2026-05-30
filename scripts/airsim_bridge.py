@@ -40,6 +40,7 @@ import math
 import os
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,6 +108,8 @@ class BridgeConfig:
     replay: bool = False
     max_seconds: float = 0.0
     connect_wait_s: float = 90.0   # ретраить подключение к AirSim до N с (cold boot)
+    gcs_state_url: str = ""        # если задан — берём live-позу из GCS /api/state
+    state_period_s: float = 0.1    # период опроса /api/state
 
 
 def tail_flight_events(events_path: Path, from_start: bool = False):
@@ -141,6 +144,35 @@ def tail_flight_events(events_path: Path, from_start: bool = False):
             "alt_rel_m": float(pos.get("alt_rel_m", 0.0)),
             "yaw_deg": float(pos.get("heading_deg", 0.0)),
         }
+
+
+def poll_gcs_state(gcs_url: str, period_s: float = 0.1):
+    """Опрашивает Web GCS `/api/state` и отдаёт live-позу БАС в том же формате,
+    что и tail_flight_events. Это источник РЕАЛЬНОЙ позиции дрона (events.jsonl
+    в fpv_rf_demo несёт только команды, а не непрерывную телеметрию). Поле
+    `local.{north,east}` — NED от того же origin, что и AirSim → дрон в AirSim
+    повторяет полёт на карте GCS."""
+    url = gcs_url.rstrip("/") + "/api/state"
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                st = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            time.sleep(period_s)
+            continue
+        loc = st.get("local") or {}
+        ev = {
+            "wall_time": time.time(),
+            "lat": float(st.get("lat_deg", 0.0) or 0.0),
+            "lon": float(st.get("lon_deg", 0.0) or 0.0),
+            "alt_rel_m": float(st.get("altitude_m", 0.0) or 0.0),
+            "yaw_deg": float(st.get("heading_deg", 0.0) or 0.0),
+        }
+        if "north" in loc and "east" in loc:
+            ev["north"] = float(loc["north"])
+            ev["east"] = float(loc["east"])
+        yield ev
+        time.sleep(period_s)
 
 
 def safe_connect_airsim(cfg: BridgeConfig,
@@ -216,8 +248,15 @@ def forward_pose(
     event: dict[str, float],
     cfg: BridgeConfig,
 ) -> dict:
-    """Конвертирует Gazebo event → AirSim Pose; шлёт через RPC если есть."""
-    x_north, y_east = haversine_xy_m(event["lat"], event["lon"])
+    """Конвертирует event → AirSim Pose; шлёт через RPC если есть.
+
+    Если в event есть готовый NED (north/east из GCS /api/state) — используем
+    его напрямую (точное совпадение с картой GCS); иначе считаем из lat/lon.
+    """
+    if "north" in event and "east" in event:
+        x_north, y_east = float(event["north"]), float(event["east"])
+    else:
+        x_north, y_east = haversine_xy_m(event["lat"], event["lon"])
     alt = event["alt_rel_m"]
     yaw = math.radians(event.get("yaw_deg", 0.0))
 
@@ -305,6 +344,11 @@ def main() -> int:
                     default=float(os.environ.get("BAS_AIRSIM_CONNECT_WAIT", "90")),
                     help="Ретраить подключение к AirSim до N секунд (UE5 cold "
                          "boot ~40-120с; 0 = одна попытка)")
+    ap.add_argument("--gcs-state-url",
+                    default=os.environ.get("BAS_GCS_STATE_URL", ""),
+                    help="Брать live-позу из Web GCS /api/state (напр. "
+                         "http://127.0.0.1:8765). Если задан — приоритетнее "
+                         "events.jsonl (реальная телеметрия дрона).")
     args = ap.parse_args()
 
     cfg = BridgeConfig(
@@ -320,6 +364,7 @@ def main() -> int:
         replay=args.replay,
         max_seconds=args.max_seconds,
         connect_wait_s=args.airsim_connect_wait,
+        gcs_state_url=args.gcs_state_url,
     )
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     pose_log = cfg.log_dir / cfg.pose_log_name
@@ -335,10 +380,18 @@ def main() -> int:
     last_image_t = 0.0
     pose_count = 0
 
+    if cfg.gcs_state_url:
+        print(f"[airsim-bridge] pose source: GCS {cfg.gcs_state_url}/api/state",
+              flush=True)
+        source = poll_gcs_state(cfg.gcs_state_url, cfg.state_period_s)
+    else:
+        print(f"[airsim-bridge] pose source: events.jsonl ({cfg.events_path})",
+              flush=True)
+        source = tail_flight_events(cfg.events_path, from_start=cfg.replay)
+
     try:
         with pose_log.open("a", encoding="utf-8") as poses_fp:
-            for ev in tail_flight_events(cfg.events_path,
-                                          from_start=cfg.replay):
+            for ev in source:
                 record = forward_pose(client, ev, cfg)
                 poses_fp.write(json.dumps(record, separators=(",", ":")) + "\n")
                 poses_fp.flush()
