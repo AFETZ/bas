@@ -292,12 +292,17 @@ start_windows_blocks() {
 
     local win_blocks_path
     win_blocks_path="$(wslpath -w "$blocks_exe_win")"
-    echo "[airsim] starting Windows Blocks.exe (real GPU) via ${WIN_CMD}"
-    # `cmd.exe /c start /B` запускает .exe detached, без console window.
-    # ВАЖНО: абсолютный путь к cmd.exe (под sudo его нет в PATH).
-    "$WIN_CMD" /c start /B "" "$win_blocks_path" -RenderOffscreen -ResX=640 -ResY=480 \
+    echo "[airsim] starting Windows Blocks.exe (real GPU) via Start-Process"
+    # ВАЖНО: запускаем через PowerShell Start-Process, а НЕ `cmd /c start … > wslfile`.
+    # При cmd-start с редиректом в WSL-файл дочерний Blocks НАСЛЕДУЕТ WSL stdout-pipe,
+    # и /init-мост ждёт закрытия этого хэндла (= выхода Blocks) → cmd НИКОГДА не
+    # возвращается, и враппер виснет на этой строке навсегда. Start-Process
+    # полностью отвязывает процесс (свои хэндлы) и сразу возвращает управление.
+    # Сам Blocks пишет лог в <build>/Blocks/Saved/Logs/Blocks.log.
+    "$WIN_PS" -NoProfile -Command \
+        "Start-Process -FilePath '${win_blocks_path}' -ArgumentList '-RenderOffscreen','-ResX=640','-ResY=480','-nosound','-nosplash' -WindowStyle Hidden" \
         > "${LOG_DIR}/airsim_blocks_win.log" 2>&1 \
-        || echo "  [warn] cmd.exe start вернул non-zero (см. airsim_blocks_win.log)" >&2
+        || echo "  [warn] Start-Process вернул non-zero (см. airsim_blocks_win.log)" >&2
 
     # Wait для Blocks процесса (PowerShell сам найдёт).
     local found_pid=""
