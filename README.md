@@ -1,9 +1,14 @@
 # BAS Prototype — стенд моделирования беспилотных авиационных систем
 
+[![CI](https://github.com/AFETZ/bas/actions/workflows/ci.yml/badge.svg)](https://github.com/AFETZ/bas/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AFETZ/bas/actions/workflows/codeql.yml/badge.svg)](https://github.com/AFETZ/bas/actions/workflows/codeql.yml)
+[![Wiki](https://img.shields.io/badge/wiki-interfaces_%26_scenarios-blue)](https://github.com/AFETZ/bas/wiki)
 ![Stages](https://img.shields.io/badge/stages-1.0--4_verified-success)
 ![License](https://img.shields.io/badge/license-research-blue)
 ![Platform](https://img.shields.io/badge/platform-Linux/WSL2-orange)
-AI RAG DEEPWIKI DOCS https://deepwiki.com/AFETZ/bas
+
+📖 **[Wiki: интерфейсы, сценарии, радио/3D, модули](https://github.com/AFETZ/bas/wiki)** ·
+🤖 [DeepWiki RAG docs](https://deepwiki.com/AFETZ/bas)
 
 Воспроизводимый исследовательский стенд для моделирования БАС с фокусом на
 **каналы связи, радиофизику, ручное управление и интерфейсы симуляторов**.
