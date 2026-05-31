@@ -57,6 +57,7 @@ WEB_DIR = REPO_ROOT / "web" / "admin"
 
 # Global runtime state.
 ISSGR_URL: str | None = None
+GCS_URL: str | None = None       # Web GCS для команд из витрины (deep integration A)
 ONBOARD_DB: Any = None
 SYNC_STATS_URL: str | None = None
 ACTIVITY: deque = deque(maxlen=200)
@@ -80,6 +81,43 @@ def fetch_issgr(path: str, timeout: float = 3.0) -> dict[str, Any]:
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
         log_activity("issgr_fetch_fail", f"{path}: {e}")
         return {}
+
+
+def fetch_gcs(path: str, timeout: float = 2.0) -> dict[str, Any]:
+    """GET Web GCS path (напр. /api/state) → JSON; {} on error."""
+    if not GCS_URL:
+        return {}
+    try:
+        with urllib.request.urlopen(GCS_URL.rstrip("/") + path, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def forward_to_gcs(path: str, payload: dict, timeout: float = 8.0) -> tuple[int, dict]:
+    """POST payload → Web GCS path (напр. /api/goto, /api/command).
+
+    Это сердце deep-integration A: команда из админ-витрины проксируется на
+    пульт Web GCS, а тот шлёт её в MAVProxy/SITL. Браузер ходит только в
+    admin (same-origin) — никакого CORS.
+    """
+    if not GCS_URL:
+        return 503, {"ok": False, "error": "GCS не настроен (запусти admin с --gcs-url)"}
+    url = GCS_URL.rstrip("/") + path
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return 200, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            body = {"ok": False, "error": f"GCS HTTP {e.code}"}
+        return e.code, body
+    except (urllib.error.URLError, OSError) as e:
+        return 502, {"ok": False, "error": f"GCS недоступен: {e}"}
 
 
 def tile_grid_geojson(n_north: int, n_east: int, size_m: float) -> dict:
@@ -143,6 +181,33 @@ class AdminHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _read_json(self) -> dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                return {}
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            return {}
+
+    def do_POST(self) -> None:
+        """Deep integration A — команды дрону ИЗ админ-витрины (→ Web GCS)."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == "/api/admin/control/command":
+            payload = self._read_json()
+            status, body = forward_to_gcs("/api/command", payload)
+            log_activity("control_command", str(payload.get("action", "")))
+            return self._send_json(body, status=status)
+        if path == "/api/admin/control/goto":
+            payload = self._read_json()
+            status, body = forward_to_gcs("/api/goto", payload)
+            log_activity(
+                "control_goto",
+                f"N={payload.get('north')} E={payload.get('east')}")
+            return self._send_json(body, status=status)
+        self.send_error(HTTPStatus.NOT_FOUND)
+
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -169,7 +234,17 @@ class AdminHandler(BaseHTTPRequestHandler):
                 "has_onboard_db": bool(ONBOARD_DB),
                 "has_sync_stats": bool(SYNC_STATS_URL),
                 "sync_stats_url": SYNC_STATS_URL or "",
+                "has_gcs": bool(GCS_URL),
+                "gcs_url": GCS_URL or "",
+                "origin_lat": ORIGIN_LAT,
+                "origin_lon": ORIGIN_LON,
             })
+
+        # Deep integration A: live состояние дрона из Web GCS (для пульта витрины).
+        if path == "/api/admin/control_state":
+            st = fetch_gcs("/api/state")
+            return self._send_json({"ok": bool(st), "state": st,
+                                    "has_gcs": bool(GCS_URL)})
 
         if path == "/api/admin/collections":
             top = fetch_issgr("/collections")
@@ -259,12 +334,15 @@ class AdminHandler(BaseHTTPRequestHandler):
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
-    global ISSGR_URL, ONBOARD_DB, SYNC_STATS_URL
+    global ISSGR_URL, GCS_URL, ONBOARD_DB, SYNC_STATS_URL
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8810)
     p.add_argument("--issgr-url",
                    help="ИССГР REST endpoint (e.g. http://127.0.0.1:8770)")
+    p.add_argument("--gcs-url",
+                   help="Web GCS endpoint для команд из витрины "
+                        "(e.g. http://127.0.0.1:8765) — включает управление дроном")
     p.add_argument("--onboard-db", type=Path,
                    help="SQLite file для on-board metrics tab")
     p.add_argument("--sync-stats-url",
@@ -275,6 +353,9 @@ def main() -> int:
     if args.issgr_url:
         ISSGR_URL = args.issgr_url.rstrip("/")
         log_activity("config", f"issgr={ISSGR_URL}")
+    if args.gcs_url:
+        GCS_URL = args.gcs_url.rstrip("/")
+        log_activity("config", f"gcs={GCS_URL}")
     if args.onboard_db and HAS_ONBOARD:
         ONBOARD_DB = OnBoardDB(path=args.onboard_db)
         log_activity("config", f"onboard={args.onboard_db}")

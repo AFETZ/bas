@@ -238,11 +238,13 @@ function ensureMultiMap() {
   if (multiMap) return;
   multiMap = L.map('multi-map').setView([ORIGIN_LAT, ORIGIN_LON], 16);
   addBaseLayers(multiMap, 'Спутник (Esri)');   // satellite default for UAV view
+  multiMap.on('click', onMapClickFly);          // deep integration A: клик = лететь
 }
 
 async function loadMulti() {
   ensureMultiMap();
   setTimeout(() => multiMap && multiMap.invalidateSize(), 80);
+  refreshControlState();
   try {
     const data = await api('/api/admin/items?c=uavs');
     const tbody = document.querySelector('#uavs-roster tbody');
@@ -400,6 +402,65 @@ async function loadSync() {
   }
 }
 
+// ===== Deep integration A: управление дроном из витрины (Admin → Web GCS) =====
+let controlTargetMarker = null;
+let controlHasGcs = false;
+
+async function postControl(path, body) {
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) {
+      showToast('Команда не прошла: ' + (d.error || ('HTTP ' + r.status)));
+    } else {
+      showToast('Команда отправлена ✓');
+    }
+    return d;
+  } catch (e) {
+    showToast('Ошибка связи с витриной');
+    return { ok: false };
+  }
+}
+
+async function onMapClickFly(ev) {
+  if (!controlHasGcs) { showToast('Нет связи с Web GCS — запусти полётное демо'); return; }
+  const lat = ev.latlng.lat, lon = ev.latlng.lng;
+  const north = (lat - ORIGIN_LAT) * 111319.9;
+  const east = (lon - ORIGIN_LON) * 111319.9 * Math.cos(ORIGIN_LAT * Math.PI / 180);
+  if (controlTargetMarker) multiMap.removeLayer(controlTargetMarker);
+  controlTargetMarker = L.marker([lat, lon]).addTo(multiMap)
+    .bindTooltip('🎯 цель goto').openTooltip();
+  showToast(`Лететь → N=${north.toFixed(0)} E=${east.toFixed(0)} м`);
+  await postControl('/api/admin/control/goto', { north, east, altitude: 15 });
+}
+
+async function refreshControlState() {
+  let d = {};
+  try { d = await api('/api/admin/control_state'); } catch (e) { d = {}; }
+  const st = (d && d.state) || {};
+  controlHasGcs = !!(d && d.has_gcs) && Object.keys(st).length > 0;
+  const el = document.getElementById('control-status');
+  if (el) {
+    if (!d || !d.has_gcs) el.textContent = 'GCS не настроен (admin без --gcs-url)';
+    else if (!controlHasGcs) el.textContent = 'нет связи с Web GCS (:8765) — запусти полётное демо';
+    else el.textContent =
+      `${st.armed ? '🟢 ARMED' : '⚪ disarmed'} · ${st.current_mode || '?'} · ` +
+      `${Number(st.altitude_m || 0).toFixed(1)} м · ${st.connected ? 'link OK' : 'no link'}`;
+  }
+  document.querySelectorAll('.ctl-btn').forEach(b => { b.disabled = !controlHasGcs; });
+}
+
+document.querySelectorAll('.ctl-btn').forEach(b => {
+  b.addEventListener('click', async () => {
+    await postControl('/api/admin/control/command', { action: b.dataset.action, altitude: 15 });
+    setTimeout(refreshControlState, 700);
+  });
+});
+
 // Init + soft polling.
 labelTables();
 loadOverview();
@@ -411,3 +472,9 @@ setInterval(() => {
   if (active.id === 'tab-onboard') loadOnboard();
   if (active.id === 'tab-sync') loadSync();
 }, 5000);
+
+// Faster live refresh on БАС tab — плавнее видно движение дрона + control state.
+setInterval(() => {
+  const active = document.querySelector('.tab-panel.active');
+  if (active && active.id === 'tab-multi') loadMulti();
+}, 1500);

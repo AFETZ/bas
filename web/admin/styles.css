@@ -502,3 +502,19 @@ table.dense tbody tr:hover { background: var(--panel-2); }
     content: none;
   }
 }
+
+/* ===== Deep integration A: drone control from Admin (→ Web GCS) ===== */
+#control-card { border-color: var(--accent); }
+.control-buttons { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
+.ctl-btn {
+  padding: 0.55rem 1.15rem; border-radius: 9px;
+  border: 1px solid var(--border); background: var(--panel-3);
+  color: var(--text); font-weight: 600; font-size: 0.9rem;
+  cursor: pointer; transition: background .15s, transform .05s, opacity .15s;
+}
+.ctl-btn:hover:not(:disabled) { background: var(--panel-2); border-color: var(--accent); }
+.ctl-btn:active:not(:disabled) { transform: translateY(1px); }
+.ctl-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.ctl-danger { border-color: #6e3a38; }
+.ctl-danger:hover:not(:disabled) { background: #3a2624; border-color: var(--err); }
+#control-status { color: var(--accent-2); font-variant-numeric: tabular-nums; }

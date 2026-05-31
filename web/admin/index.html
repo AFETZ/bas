@@ -178,9 +178,9 @@
           </p>
         </div>
         <div class="mode-panel small">
-          <span class="mode-kicker">Control handoff</span>
-          <strong>Web GCS / QGC</strong>
-          <span>admin dashboard только наблюдает</span>
+          <span class="mode-kicker">Управление из витрины</span>
+          <strong>Admin → Web GCS → SITL</strong>
+          <span>клик по карте = лететь; ARM/TAKEOFF/LAND кнопками</span>
         </div>
       </div>
 
@@ -203,6 +203,26 @@
         <button class="copy-btn" data-copy="sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh">Copy</button>
       </div>
 
+      <div class="card" id="control-card">
+        <div class="section-title">
+          <h2>🕹 Управление дроном из витрины</h2>
+          <span id="control-status" class="section-note">нет связи с Web GCS</span>
+        </div>
+        <p class="footnote" id="control-hint">
+          Команды идут через Web GCS → MAVProxy → SITL.
+          <strong>Клик по карте ниже = лететь туда</strong> (GUIDED).
+          Запусти демо с пультом: <code>sudo bash scripts/run_stage_3_issgr_demo.sh</code>.
+        </p>
+        <div class="control-buttons">
+          <button class="ctl-btn" data-action="guided">GUIDED</button>
+          <button class="ctl-btn" data-action="arm">ARM</button>
+          <button class="ctl-btn" data-action="takeoff">TAKEOFF</button>
+          <button class="ctl-btn ctl-danger" data-action="land">LAND</button>
+          <button class="ctl-btn" data-action="stop">STOP</button>
+          <button class="ctl-btn ctl-danger" data-action="disarm">DISARM</button>
+        </div>
+      </div>
+
       <div class="grid grid-2">
         <div class="card">
           <div class="section-title">
@@ -217,8 +237,8 @@
         </div>
         <div class="card">
           <div class="section-title">
-            <h2>Live positions</h2>
-            <span class="section-note">Leaflet map по координатам ИССГР</span>
+            <h2>Live positions · клик = лететь</h2>
+            <span class="section-note">дрон по координатам ИССГР; клик по карте → GUIDED goto</span>
           </div>
           <div id="multi-map" class="map map-medium"></div>
         </div>

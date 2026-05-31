@@ -133,10 +133,11 @@ PUB_PID=$!
 echo "  publisher pid=${PUB_PID}"
 
 # ---- 4. Admin Dashboard (:8810) — витрина, читает ИССГР live --------------
-echo "[issgr-demo] starting Admin Dashboard on :${ADMIN_PORT}"
+echo "[issgr-demo] starting Admin Dashboard on :${ADMIN_PORT} (с управлением → GCS)"
 "$VENV_PY" "${SCRIPT_DIR}/admin_web_server.py" \
     --host 127.0.0.1 --port "$ADMIN_PORT" \
     --issgr-url "http://127.0.0.1:${BAS_ISSGR_PORT}" \
+    --gcs-url "http://127.0.0.1:${UI_PORT}" \
     > "${LOG_DIR}/admin_web.log" 2>&1 &
 ADMIN_PID=$!
 for _ in $(seq 1 20); do
