@@ -36,20 +36,26 @@ STACK_PATH="${SCRIPT_DIR}/${STACK_SCRIPT}"
 [ -x "$STACK_PATH" ] || { echo "stack script missing: $STACK_PATH" >&2; exit 1; }
 
 UI_PORT="${BAS_GCS_UI_PORT:-8765}"
+ADMIN_PORT="${BAS_ADMIN_PORT:-8810}"
 BAS_RUN_ID="${BAS_RUN_ID:-stage_3_issgr_demo_$(date -u +%Y%m%dT%H%M%SZ)}"
 export BAS_RUN_ID
 LOG_DIR="${REPO_ROOT}/logs/${BAS_RUN_ID}"
 mkdir -p "$LOG_DIR"
+VENV_PY="${REPO_ROOT}/.venv/bin/python"
 
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
 ensure_root
 
 STACK_PID=""
 ISSGR_PID=""
+PUB_PID=""
+ADMIN_PID=""
 
 cleanup() {
     set +e
     echo "[issgr-demo] cleanup"
+    [ -n "$PUB_PID" ] && kill "$PUB_PID" 2>/dev/null || true
+    [ -n "$ADMIN_PID" ] && kill "$ADMIN_PID" 2>/dev/null || true
     [ -n "$ISSGR_PID" ] && kill "$ISSGR_PID" 2>/dev/null || true
     if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
         kill -INT "$STACK_PID" 2>/dev/null || true
@@ -115,12 +121,38 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
+# ---- 3. Live digital-twin: GCS /api/state → ИССГР UAV upsert --------------
+# Чтобы дрон ХОДИЛ в двойнике (и в Admin Dashboard) когда вы летите на :8765.
+echo "[issgr-demo] starting live GCS→ИССГР publisher (UAV pose into двойник)"
+"$VENV_PY" "${SCRIPT_DIR}/gcs_to_issgr_publisher.py" \
+    --gcs-url "http://127.0.0.1:${UI_PORT}" \
+    --issgr-url "http://127.0.0.1:${BAS_ISSGR_PORT}" \
+    --period-s 0.5 \
+    > "${LOG_DIR}/gcs_to_issgr.log" 2>&1 &
+PUB_PID=$!
+echo "  publisher pid=${PUB_PID}"
+
+# ---- 4. Admin Dashboard (:8810) — витрина, читает ИССГР live --------------
+echo "[issgr-demo] starting Admin Dashboard on :${ADMIN_PORT}"
+"$VENV_PY" "${SCRIPT_DIR}/admin_web_server.py" \
+    --host 127.0.0.1 --port "$ADMIN_PORT" \
+    --issgr-url "http://127.0.0.1:${BAS_ISSGR_PORT}" \
+    > "${LOG_DIR}/admin_web.log" 2>&1 &
+ADMIN_PID=$!
+for _ in $(seq 1 20); do
+    ss -tln 2>/dev/null | grep -q ":${ADMIN_PORT}\b" && { echo "  Admin ready"; break; }
+    sleep 0.5
+done
+
 cat <<INFO
 
 ==========================================================================
- BAS Prototype Stage 3 — ИССГР REST/OGC API запущен
+ BAS Prototype Stage 3 — ИССГР цифровой двойник (LIVE)
 --------------------------------------------------------------------------
- Web GCS UI:        http://127.0.0.1:${UI_PORT}/
+ 🕹  ПУЛЬТ (летать):    http://127.0.0.1:${UI_PORT}/   — ARM/TAKEOFF, WASD
+ 🗺  ВИТРИНА (смотреть): http://127.0.0.1:${ADMIN_PORT}/   — Admin Dashboard
+       → вкладка «БАС»/«ИССГР»: дрон ХОДИТ в реальном времени, пока летите
+ ──────────────────────────────────────────────────────────────────────
  ИССГР API landing:  http://127.0.0.1:${BAS_ISSGR_PORT}/
  Swagger UI:         http://127.0.0.1:${BAS_ISSGR_PORT}/docs
  OpenAPI 3.0 spec:   http://127.0.0.1:${BAS_ISSGR_PORT}/openapi.json
