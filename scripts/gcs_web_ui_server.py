@@ -25,6 +25,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+import urllib.request
+import urllib.error
 
 # FPV upstream: TCP server bas-fpv-mjpeg внутри bas-uav netns, доступен с хоста
 # через control veth (10.10.0.2). Конфигурируется через env переменные, чтобы
@@ -60,6 +62,28 @@ from mavproxy_stage_2_4_driver import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = REPO_ROOT / "web/gcs"
+
+# Deep integration C: CV-детекты из ИССГР на карте пульта. ISSGR_URL задаётся
+# через --issgr-url; если пусто — слой детектов просто не показывается.
+ISSGR_URL: str | None = None
+DETECTION_SENSOR_TYPE = "camera_object_detection"
+# Origin двойника по умолчанию (как в gcs_to_issgr_publisher и cv_detector),
+# на случай demo-режима без захвата home по GPS.
+DEFAULT_ORIGIN_LAT = -35.363262
+DEFAULT_ORIGIN_LON = 149.165237
+
+
+def fetch_issgr(path: str, timeout: float = 3.0) -> dict[str, Any]:
+    """GET ISSGR base + path → JSON. {} on error (слой детектов просто пуст)."""
+    if not ISSGR_URL:
+        return {}
+    url = ISSGR_URL.rstrip("/") + path
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        return {}
+
 
 RF_GCS = {
     "north": -60.0,
@@ -793,6 +817,9 @@ class GcsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/fpv":
             self.send_json(self._probe_fpv())
             return
+        if parsed.path == "/api/detections":
+            self.send_json(self._detections())
+            return
         if parsed.path == "/camera.mjpg":
             self._proxy_fpv()
             return
@@ -843,6 +870,43 @@ class GcsHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _detections(self) -> dict[str, Any]:
+        """CV-детекты из ИССГР → local NED относительно home.
+
+        Дрон видит объекты камерой → cv_detector geo-tag-ит их в ИССГР
+        (sensor_readings, camera_object_detection, value.ground_lat/lon).
+        Здесь читаем их и переводим в NED, чтобы пульт нарисовал метки на
+        своей тактической карте — оператор видит то же, что и витрина.
+        """
+        if not ISSGR_URL:
+            return {"ok": True, "has_issgr": False, "count": 0, "detections": []}
+        ctrl = self.controller
+        home_lat = ctrl.home_lat if ctrl.home_lat is not None else DEFAULT_ORIGIN_LAT
+        home_lon = ctrl.home_lon if ctrl.home_lon is not None else DEFAULT_ORIGIN_LON
+        fc = fetch_issgr("/collections/sensor_readings/items?limit=500")
+        deg2m_lat = 111319.9
+        deg2m_lon = 111319.9 * max(math.cos(math.radians(home_lat)), 0.01)
+        items: list[dict[str, Any]] = []
+        for feat in fc.get("features", []):
+            props = feat.get("properties", {})
+            if props.get("sensor_type") != DETECTION_SENSOR_TYPE:
+                continue
+            val = props.get("value", {})
+            glat = val.get("ground_lat")
+            glon = val.get("ground_lon")
+            if glat is None or glon is None:
+                continue
+            items.append({
+                "class": val.get("class_name", "?"),
+                "confidence": round(float(val.get("confidence", 0.0)), 2),
+                "lat": glat,
+                "lon": glon,
+                "north": round((glat - home_lat) * deg2m_lat, 1),
+                "east": round((glon - home_lon) * deg2m_lon, 1),
+                "ts": props.get("timestamp", ""),
+            })
+        return {"ok": True, "has_issgr": True, "count": len(items), "detections": items}
 
     def _probe_fpv(self) -> dict[str, Any]:
         """Лёгкая проверка: открывается ли TCP-сокет на bas-fpv-mjpeg.
@@ -947,6 +1011,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--force-arm", action="store_true", default=os.environ.get("BAS_STAGE24_FORCE_ARM", "0") == "1")
     parser.add_argument("--rf-demo", action="store_true", default=os.environ.get("BAS_GCS_RF_DEMO", "0") == "1")
     parser.add_argument("--rf-channel-path", default=os.environ.get("BAS_RF_CHANNEL_PATH", os.environ.get("BAS_SIONNA_CHANNEL_PATH", "")))
+    parser.add_argument("--issgr-url", default=os.environ.get("BAS_ISSGR_URL", ""),
+                        help="ИССГР base URL для CV-детектов на карте пульта (deep integration C)")
     args = parser.parse_args(argv)
     if args.log_dir is None:
         args.log_dir = str(REPO_ROOT / "logs" / args.run_id)
@@ -958,7 +1024,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str]) -> int:
+    global ISSGR_URL
     args = parse_args(argv)
+    if args.issgr_url:
+        ISSGR_URL = args.issgr_url.rstrip("/")
     if not STATIC_DIR.exists():
         raise FileNotFoundError(f"Static UI directory not found: {STATIC_DIR}")
     controller = OperatorController(args)

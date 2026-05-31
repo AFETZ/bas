@@ -469,3 +469,46 @@ initFpv();
 
 refresh();
 setInterval(refresh, 650);
+
+// --- Deep integration C: CV-детекты с борта на тактической карте ------------
+// Дрон видит объекты камерой → cv_detector кладёт их в ИССГР → пульт рисует
+// метки в том же NED, где летит дрон. Оператор видит то же, что и витрина.
+const CV_COLORS = {
+  person: "#ff5470", car: "#f4b860", truck: "#f4b860", bus: "#f4b860",
+  bicycle: "#36d6e7", motorcycle: "#36d6e7",
+};
+
+function drawDetections(list = []) {
+  const host = el("detections");
+  if (!host) return;
+  host.innerHTML = list.map((d) => {
+    const x = Number(d.east);
+    const y = -Number(d.north);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
+    const color = CV_COLORS[d.class] || "#54e08a";
+    const conf = Number(d.confidence);
+    const label = `${d.class}${Number.isFinite(conf) ? " " + conf.toFixed(2) : ""}`;
+    return `<g class="cv-det" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})">
+      <circle class="cv-ring" r="5" style="stroke:${color}"/>
+      <circle class="cv-dot" r="1.8" style="fill:${color}"/>
+      <text x="7.5" y="3" style="fill:${color}">${label}</text>
+    </g>`;
+  }).join("");
+}
+
+async function pollDetections() {
+  try {
+    const res = await fetch("/api/detections", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    const list = Array.isArray(data.detections) ? data.detections : [];
+    drawDetections(list);
+    const cnt = el("cv-count");
+    if (cnt) cnt.textContent = String(data.count ?? list.length);
+  } catch (_e) {
+    /* пульт работает и без ИССГР — слой детектов опционален */
+  }
+}
+
+pollDetections();
+setInterval(pollDetections, 1500);

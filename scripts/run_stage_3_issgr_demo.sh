@@ -37,6 +37,9 @@ STACK_PATH="${SCRIPT_DIR}/${STACK_SCRIPT}"
 
 UI_PORT="${BAS_GCS_UI_PORT:-8765}"
 ADMIN_PORT="${BAS_ADMIN_PORT:-8810}"
+# Deep integration C: Web GCS пульт подтянет CV-детекты из ИССГР на свою карту
+# (наследуется вниз через base stack → gcs_web_ui_server читает BAS_ISSGR_URL).
+export BAS_ISSGR_URL="http://127.0.0.1:${BAS_ISSGR_PORT}"
 BAS_RUN_ID="${BAS_RUN_ID:-stage_3_issgr_demo_$(date -u +%Y%m%dT%H%M%SZ)}"
 export BAS_RUN_ID
 LOG_DIR="${REPO_ROOT}/logs/${BAS_RUN_ID}"

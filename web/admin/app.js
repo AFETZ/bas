@@ -233,6 +233,55 @@ document.getElementById('issgr-collection-select').addEventListener('change', lo
 // ----- Multi-UAV -----
 let multiMap = null;
 let multiMarkers = {};
+let detectionLayer = null;   // deep integration C: CV-детекты с борта
+
+// Цвета классов CV — те же, что на пульте (web/gcs/app.js), чтобы оператор и
+// витрина видели объекты одинаково.
+const CV_DET_COLORS = {
+  person: '#ff5470', car: '#f4b860', truck: '#f4b860', bus: '#f4b860',
+  bicycle: '#36d6e7', motorcycle: '#36d6e7',
+};
+
+function cvDetIcon(color) {
+  return L.divIcon({
+    className: 'cv-det-icon',
+    html: `<span class="cv-diamond" style="background:${color}"></span>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+}
+
+// Читает sensor_readings из ИССГР, фильтрует camera_object_detection и рисует
+// объекты в ground-точках на карте витрины. Дрон видит → ИССГР → витрина.
+async function loadDetections() {
+  ensureMultiMap();
+  try {
+    const data = await api('/api/admin/items?c=sensor_readings');
+    const feats = (data.features || []).filter(
+      f => (f.properties || {}).sensor_type === 'camera_object_detection');
+    if (!detectionLayer) detectionLayer = L.layerGroup().addTo(multiMap);
+    detectionLayer.clearLayers();
+    let n = 0;
+    feats.forEach(f => {
+      const v = (f.properties || {}).value || {};
+      const lat = Number(v.ground_lat);
+      const lon = Number(v.ground_lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const cls = v.class_name || '?';
+      const conf = Number(v.confidence);
+      const color = CV_DET_COLORS[cls] || '#54e08a';
+      const confTxt = Number.isFinite(conf) ? ' ' + conf.toFixed(2) : '';
+      L.marker([lat, lon], { icon: cvDetIcon(color) })
+        .bindTooltip(`🎯 ${escapeHtml(cls)}${confTxt}<br>${lat.toFixed(5)}, ${lon.toFixed(5)}`)
+        .addTo(detectionLayer);
+      n += 1;
+    });
+    const badge = document.getElementById('cv-det-count');
+    if (badge) badge.textContent = `🎯 ${n}`;
+  } catch (e) {
+    console.error('loadDetections', e);
+  }
+}
 
 function ensureMultiMap() {
   if (multiMap) return;
@@ -245,6 +294,7 @@ async function loadMulti() {
   ensureMultiMap();
   setTimeout(() => multiMap && multiMap.invalidateSize(), 80);
   refreshControlState();
+  loadDetections();   // deep integration C: CV-детекты с борта на карте витрины
   try {
     const data = await api('/api/admin/items?c=uavs');
     const tbody = document.querySelector('#uavs-roster tbody');

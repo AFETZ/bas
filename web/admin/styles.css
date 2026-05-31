@@ -518,3 +518,13 @@ table.dense tbody tr:hover { background: var(--panel-2); }
 .ctl-danger { border-color: #6e3a38; }
 .ctl-danger:hover:not(:disabled) { background: #3a2624; border-color: var(--err); }
 #control-status { color: var(--accent-2); font-variant-numeric: tabular-nums; }
+
+/* Deep integration C: CV-детекты с борта (камера → ИССГР → карта витрины). */
+#cv-det-count { color: var(--accent-2); font-variant-numeric: tabular-nums; }
+.cv-det-icon { background: transparent; border: 0; }
+.cv-diamond {
+  display: block; width: 11px; height: 11px;
+  transform: rotate(45deg);
+  border: 1.5px solid rgba(255, 255, 255, 0.88);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 1px 4px rgba(0, 0, 0, 0.5);
+}
