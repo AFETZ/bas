@@ -2,9 +2,43 @@
 
 Полная установка BAS Prototype от нуля до запущенного `auto_demo`.
 
-> 💡 Если просто хочешь one-command setup — запусти `sudo bash scripts/bootstrap.sh`.
-> Этот файл нужен если что-то пошло не так или хочешь поэтапно понять что
-> происходит.
+## Самый быстрый способ
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh)
+```
+
+Installer скачает проект в `~/bas` и запустит `scripts/bootstrap.sh`.
+После установки:
+
+```bash
+cd ~/bas
+bash scripts/demo.sh
+```
+
+Полная установка с Sionna RT:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh) --full
+```
+
+Полезные опции:
+
+```bash
+# Сложить проект в другое место
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh) --dir /opt/bas
+
+# Только скачать/обновить репозиторий, без bootstrap
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh) --skip-bootstrap
+
+# Уже внутри скачанного репозитория
+sudo bash scripts/bootstrap.sh
+sudo bash scripts/bootstrap.sh --full
+sudo bash scripts/bootstrap.sh --no-docker
+```
+
+Этот файл нужен если что-то пошло не так или хочешь поэтапно понять что
+происходит.
 
 ## Tier 0 — System requirements check
 

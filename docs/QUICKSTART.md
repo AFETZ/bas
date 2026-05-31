@@ -1,5 +1,13 @@
 # Quick Start — список рабочих команд
 
+Новая машина / свежая WSL2:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh)
+cd ~/bas
+bash scripts/demo.sh
+```
+
 Все команды требуют `sudo` потому что они трогают сетевые namespace и Docker.
 Параметры через env переменные (`sudo env VAR=val bash ...`).
 

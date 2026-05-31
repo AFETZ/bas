@@ -29,7 +29,7 @@ jobs:
       - name: Bash syntax (bash -n)
         run: |
           set -e
-          for f in $(find scripts -name '*.sh'); do bash -n "$f"; done
+          for f in install.sh $(find scripts -name '*.sh'); do bash -n "$f"; done
           echo "bash -n: OK"
 
       - name: Shellcheck (advisory)
@@ -37,7 +37,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends shellcheck
           # Advisory: не фейлим сборку на стилевых warning'ах.
-          shellcheck -S error -e SC1091,SC2086,SC2155,SC2046 scripts/*.sh || true
+          shellcheck -S error -e SC1091,SC2086,SC2155,SC2046 install.sh scripts/*.sh || true
 
       - name: Python compile (syntax gate)
         run: |

@@ -30,6 +30,29 @@
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Установка в одну строку
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh)
+```
+
+Команда скачает репозиторий в `~/bas`, поставит системные зависимости,
+поднимет `.venv`, Playwright и Docker-образы. После установки:
+
+```bash
+cd ~/bas
+bash scripts/demo.sh
+```
+
+Для полного набора с Sionna RT:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh) --full
+```
+
+Опции: `--dir /path/to/bas`, `--no-docker`, `--no-gpu`, `--skip-bootstrap`.
+Детали: [docs/INSTALL.md](docs/INSTALL.md).
+
 ## 📚 С чего начать (навигация)
 
 | Хочу… | Открыть |
@@ -62,14 +85,16 @@
 ## Быстрый старт
 
 ```bash
-# 1. Установка (~15 мин, требует sudo, тянет 1.3 ГБ моделей AirSim
-#    опционально)
-sudo bash scripts/bootstrap.sh
+# 1. Установка с GitHub в одну строку
+bash <(curl -fsSL https://raw.githubusercontent.com/AFETZ/bas/main/install.sh)
 
-# 2. Запуск любого demo (см. таблицу выше)
+# 2. Перейти в скачанный проект
+cd ~/bas
+
+# 3. Запуск любого demo (см. таблицу выше)
 sudo bash scripts/run_stage_2_4_auto_demo.sh
 
-# 3. Открыть http://127.0.0.1:8765/ или дождаться авто-видео в
+# 4. Открыть http://127.0.0.1:8765/ или дождаться авто-видео в
 #    logs/<run_id>/demo_report.md
 ```
 
