@@ -109,7 +109,8 @@ class BridgeConfig:
     max_seconds: float = 0.0
     connect_wait_s: float = 90.0   # ретраить подключение к AirSim до N с (cold boot)
     gcs_state_url: str = ""        # если задан — берём live-позу из GCS /api/state
-    state_period_s: float = 0.1    # период опроса /api/state
+    state_period_s: float = 0.05   # период опроса /api/state (20 Гц → плавнее)
+    smooth_alpha: float = 0.25     # EMA-сглаживание позы (0 = off, ~1 = резко)
 
 
 def tail_flight_events(events_path: Path, from_start: bool = False):
@@ -243,22 +244,49 @@ def connect_airsim_with_retry(cfg: BridgeConfig,
         time.sleep(interval_s)
 
 
+class PoseSmoother:
+    """Экспоненциальное сглаживание (EMA low-pass) позы. Без него мост
+    телепортирует дрона на каждую (слегка шумящую) позицию из GCS → дрожь.
+    alpha ближе к 1 = резче/меньше лага; ближе к 0 = плавнее/больше лага."""
+    def __init__(self, alpha: float = 0.25) -> None:
+        self.a = max(0.01, min(1.0, alpha))
+        self.s: list[float] | None = None
+
+    def update(self, n: float, e: float, alt: float,
+               yaw_deg: float) -> tuple[float, float, float, float]:
+        if self.s is None:
+            self.s = [n, e, alt, yaw_deg]
+        else:
+            self.s[0] += self.a * (n - self.s[0])
+            self.s[1] += self.a * (e - self.s[1])
+            self.s[2] += self.a * (alt - self.s[2])
+            # yaw — angle-aware (wrap ±180).
+            d = ((yaw_deg - self.s[3] + 180.0) % 360.0) - 180.0
+            self.s[3] += self.a * d
+        return self.s[0], self.s[1], self.s[2], self.s[3]
+
+
 def forward_pose(
     client: AirSimRpcClient | None,
     event: dict[str, float],
     cfg: BridgeConfig,
+    smoother: "PoseSmoother | None" = None,
 ) -> dict:
     """Конвертирует event → AirSim Pose; шлёт через RPC если есть.
 
     Если в event есть готовый NED (north/east из GCS /api/state) — используем
     его напрямую (точное совпадение с картой GCS); иначе считаем из lat/lon.
+    smoother (если задан) сглаживает позу → плавное движение без дрожи.
     """
     if "north" in event and "east" in event:
         x_north, y_east = float(event["north"]), float(event["east"])
     else:
         x_north, y_east = haversine_xy_m(event["lat"], event["lon"])
     alt = event["alt_rel_m"]
-    yaw = math.radians(event.get("yaw_deg", 0.0))
+    yaw_deg = float(event.get("yaw_deg", 0.0))
+    if smoother is not None:
+        x_north, y_east, alt, yaw_deg = smoother.update(x_north, y_east, alt, yaw_deg)
+    yaw = math.radians(yaw_deg)
 
     pose = Pose(
         position=Vector3r(x=x_north, y=y_east, z=-alt),   # NED: down positive
@@ -349,6 +377,10 @@ def main() -> int:
                     help="Брать live-позу из Web GCS /api/state (напр. "
                          "http://127.0.0.1:8765). Если задан — приоритетнее "
                          "events.jsonl (реальная телеметрия дрона).")
+    ap.add_argument("--smooth-alpha", type=float,
+                    default=float(os.environ.get("BAS_AIRSIM_SMOOTH", "0.25")),
+                    help="EMA-сглаживание позы AirSim (0 = выкл/резко, ~1 = без "
+                         "сглаживания). Лечит дрожание дрона.")
     args = ap.parse_args()
 
     cfg = BridgeConfig(
@@ -365,6 +397,7 @@ def main() -> int:
         max_seconds=args.max_seconds,
         connect_wait_s=args.airsim_connect_wait,
         gcs_state_url=args.gcs_state_url,
+        smooth_alpha=args.smooth_alpha,
     )
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     pose_log = cfg.log_dir / cfg.pose_log_name
@@ -380,9 +413,12 @@ def main() -> int:
     last_image_t = 0.0
     pose_count = 0
 
+    smoother: PoseSmoother | None = None
     if cfg.gcs_state_url:
-        print(f"[airsim-bridge] pose source: GCS {cfg.gcs_state_url}/api/state",
-              flush=True)
+        if cfg.smooth_alpha > 0:
+            smoother = PoseSmoother(cfg.smooth_alpha)
+        print(f"[airsim-bridge] pose source: GCS {cfg.gcs_state_url}/api/state"
+              f" (smooth_alpha={cfg.smooth_alpha})", flush=True)
         source = poll_gcs_state(cfg.gcs_state_url, cfg.state_period_s)
     else:
         print(f"[airsim-bridge] pose source: events.jsonl ({cfg.events_path})",
@@ -392,7 +428,7 @@ def main() -> int:
     try:
         with pose_log.open("a", encoding="utf-8") as poses_fp:
             for ev in source:
-                record = forward_pose(client, ev, cfg)
+                record = forward_pose(client, ev, cfg, smoother=smoother)
                 poses_fp.write(json.dumps(record, separators=(",", ":")) + "\n")
                 poses_fp.flush()
                 pose_count += 1
