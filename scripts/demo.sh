@@ -43,8 +43,13 @@ print_menu() {
     printf "  %2d) %-32s %s\n" "$i" "$name" "$what"
     i=$((i + 1))
   done
+  echo "   c) сбросить состояние симуляции (если прошлое демо упало/зависло)"
   echo "   q) выход"
   echo "--------------------------------------------------------------------------"
+  echo "  ⏱  Полётные демо грузятся ~1-2 мин (Docker Gazebo + SITL + ns-3 + Web GCS)"
+  echo "      — терминал притихает на это время, это норма, не зависание."
+  echo "  🧹 Если демо не стартует после прерванного прогона:"
+  echo "      sudo bash scripts/clean_sim_state.sh"
   echo "  Подробности: docs/SCENARIOS.md (связки) · docs/MODULE_MAP.md (модули)"
   echo "=========================================================================="
 }
@@ -91,6 +96,10 @@ if [ "${1:-}" = "--list" ] || [ "${1:-}" = "-l" ]; then
   print_menu
   exit 0
 fi
+if [ "${1:-}" = "c" ] || [ "${1:-}" = "clean" ]; then
+  sudo bash "${SCRIPT_DIR}/clean_sim_state.sh"
+  exit $?
+fi
 
 if [ "${1:-}" != "" ]; then
   dispatch "$1"
@@ -99,8 +108,9 @@ fi
 
 # Interactive.
 print_menu
-read -r -p "  Выбор [1-${#ITEMS[@]} / q]: " choice
+read -r -p "  Выбор [1-${#ITEMS[@]} / c / q]: " choice
 case "$choice" in
   q|Q|"") echo "выход"; exit 0 ;;
+  c|C) sudo bash "${SCRIPT_DIR}/clean_sim_state.sh" ;;
   *) dispatch "$choice" ;;
 esac
