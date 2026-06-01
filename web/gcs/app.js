@@ -600,3 +600,60 @@ async function pollAlerts() {
 
 pollAlerts();
 setInterval(pollAlerts, 2000);
+
+// --- Integration E: RF-покрытие (heatmap) на тактической карте --------------
+// /api/rf_heatmap считает RSSI в сетке тем же LOS/obstacle-моделью, что и
+// RF-панель → видно тени радиосвязи за зданиями ДО полёта туда.
+let rfHeatmapOn = false;
+let rfHeatmapTimer = null;
+
+function rfCellStyle(c) {
+  if (!c.los || c.rssi < -88) return { color: "#f43f5e", op: 0.42 };  // тень/слабо
+  if (c.rssi < -72) return { color: "#f4b860", op: 0.30 };            // средне
+  return { color: "#36d6a0", op: 0.16 };                              // сильно
+}
+
+function drawRfHeatmap(data) {
+  const host = el("rf-heatmap");
+  if (!host) return;
+  const cells = (data && Array.isArray(data.grid)) ? data.grid : [];
+  const step = Number(data && data.step_m) || 18;
+  host.innerHTML = cells.map((c) => {
+    const e = Number(c.east);
+    const n = Number(c.north);
+    if (!Number.isFinite(e) || !Number.isFinite(n)) return "";
+    const x = (e - step / 2).toFixed(1);
+    const y = (-n - step / 2).toFixed(1);
+    const st = rfCellStyle(c);
+    return `<rect x="${x}" y="${y}" width="${step.toFixed(1)}" height="${step.toFixed(1)}" fill="${st.color}" fill-opacity="${st.op}"/>`;
+  }).join("");
+}
+
+async function loadRfHeatmap() {
+  try {
+    const res = await fetch("/api/rf_heatmap", { cache: "no-store" });
+    if (!res.ok) return;
+    drawRfHeatmap(await res.json());
+  } catch (_e) {
+    /* heatmap опционален */
+  }
+}
+
+function toggleRfHeatmap() {
+  rfHeatmapOn = !rfHeatmapOn;
+  const host = el("rf-heatmap");
+  const btn = el("rf-heatmap-toggle");
+  if (rfHeatmapOn) {
+    if (host) host.classList.remove("hidden");
+    if (btn) btn.classList.add("active");
+    loadRfHeatmap();
+    rfHeatmapTimer = setInterval(loadRfHeatmap, 3000);
+  } else {
+    if (host) host.classList.add("hidden");
+    if (btn) btn.classList.remove("active");
+    if (rfHeatmapTimer) { clearInterval(rfHeatmapTimer); rfHeatmapTimer = null; }
+  }
+}
+
+const rfHeatmapBtn = el("rf-heatmap-toggle");
+if (rfHeatmapBtn) rfHeatmapBtn.addEventListener("click", toggleRfHeatmap);

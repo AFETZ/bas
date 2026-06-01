@@ -61,6 +61,7 @@
               <p class="eyebrow">Local NED</p>
               <h2>Command Map</h2>
             </div>
+            <button class="icon-button" id="rf-heatmap-toggle" title="RF-покрытие (тени за зданиями)">📶</button>
             <button class="icon-button" id="center-map" title="Center map">+</button>
           </div>
           <div class="map-canvas-wrap">
@@ -88,6 +89,7 @@
               </pattern>
             </defs>
             <rect x="-160" y="-160" width="320" height="320" rx="0" fill="url(#grid-large)"/>
+            <g id="rf-heatmap" class="rf-heatmap hidden" aria-label="RF-покрытие (Sionna/LOS модель)"></g>
             <line x1="-160" y1="0" x2="160" y2="0" class="axis"/>
             <line x1="0" y1="-160" x2="0" y2="160" class="axis"/>
             <g id="geofence" class="geofence" aria-label="Запретные зоны (no-fly)"></g>

@@ -507,6 +507,14 @@ h2 {
 .detour circle { fill: rgba(54, 214, 231, .18); stroke: var(--cyan); stroke-width: 1.6; }
 .detour path { stroke: var(--cyan); stroke-width: 1.6; }
 
+/* Integration E: RF-покрытие (heatmap) — ячейки RSSI на карте пульта. */
+.rf-heatmap rect { stroke: none; }
+.icon-button.active {
+  background: rgba(54, 214, 160, .2);
+  border-color: var(--green);
+  color: var(--green);
+}
+
 .control-panel {
   padding: 14px;
   display: flex;

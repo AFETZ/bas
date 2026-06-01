@@ -24,7 +24,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import urllib.request
 import urllib.error
 
@@ -765,6 +765,72 @@ class OperatorController:
         tmp_path.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
         tmp_path.replace(path)
 
+    def _rf_point(self, north: float, east: float, alt_m: float
+                  ) -> tuple[float, float, str | None, float]:
+        """RSSI/path-loss/blocker/distance в точке (north,east,alt) от НПУ (RF_GCS).
+
+        Единый источник физики для RF-панели и для RF-heatmap (integration E):
+        LOS от НПУ к точке, перекрытие зданием (ray height < obstacle height) →
+        NLOS → +28 dB потерь. Тень за зданиями видна на heatmap.
+        """
+        g_n = float(RF_GCS["north"])
+        g_e = float(RF_GCS["east"])
+        g_h = float(RF_GCS["height_m"])
+        dn = north - g_n
+        de = east - g_e
+        dz = alt_m - g_h
+        distance_m = max(math.sqrt(dn * dn + de * de + dz * dz), 1.0)
+        blocker: str | None = None
+        for obstacle in RF_OBSTACLES:
+            half_n = float(obstacle["size_north_m"]) / 2.0
+            half_e = float(obstacle["size_east_m"]) / 2.0
+            rect = (
+                float(obstacle["north"]) - half_n,
+                float(obstacle["east"]) - half_e,
+                float(obstacle["north"]) + half_n,
+                float(obstacle["east"]) + half_e,
+            )
+            clip = segment_rect_clip((g_n, g_e), (north, east), rect)
+            if clip is None:
+                continue
+            t_mid = (clip[0] + clip[1]) / 2.0
+            ray_height = g_h + t_mid * dz
+            if ray_height <= float(obstacle["height_m"]):
+                blocker = str(obstacle["id"])
+                break
+        path_loss_db = 40.05 + 20.0 * math.log10(distance_m)
+        if blocker:
+            path_loss_db += 28.0
+        rssi_dbm = 20.0 - path_loss_db
+        return rssi_dbm, path_loss_db, blocker, distance_m
+
+    def rf_heatmap(self, alt_m: float | None = None, cells: int = 18,
+                   extent: float = 160.0) -> dict[str, Any]:
+        """Сетка RSSI по NED (integration E): покрытие/тени за зданиями.
+
+        Считает RSSI в центре каждой ячейки тем же _rf_point, что и RF-панель —
+        оператор видит, ГДЕ связь просядет, ещё до полёта туда.
+        """
+        if alt_m is None:
+            alt_m = max(float(self.state.last_relative_alt_m or 0.0), 10.0)
+        cells = int(clamp(cells, 6, 40))
+        step = (2.0 * extent) / cells
+        grid: list[dict[str, Any]] = []
+        for i in range(cells):
+            north = -extent + step * (i + 0.5)
+            for j in range(cells):
+                east = -extent + step * (j + 0.5)
+                rssi, _pl, blocker, _d = self._rf_point(north, east, alt_m)
+                grid.append({
+                    "north": round(north, 1), "east": round(east, 1),
+                    "rssi": round(rssi, 1), "los": blocker is None,
+                })
+        return {
+            "ok": True, "alt_m": round(alt_m, 1), "cells": cells,
+            "step_m": round(step, 1), "extent_m": extent,
+            "gcs": RF_GCS, "grid": grid,
+        }
+
     def compute_rf_link(self, xy: tuple[float, float] | None) -> dict[str, Any]:
         enabled = bool(self.args.rf_demo or self.args.rf_channel_path)
         base = {
@@ -788,37 +854,7 @@ class OperatorController:
 
         north, east = xy
         alt_m = max(float(self.state.last_relative_alt_m or 0.0), 0.0)
-        g_n = float(RF_GCS["north"])
-        g_e = float(RF_GCS["east"])
-        g_h = float(RF_GCS["height_m"])
-        dn = north - g_n
-        de = east - g_e
-        dz = alt_m - g_h
-        distance_m = max(math.sqrt(dn * dn + de * de + dz * dz), 1.0)
-
-        blocker: str | None = None
-        for obstacle in RF_OBSTACLES:
-            half_n = float(obstacle["size_north_m"]) / 2.0
-            half_e = float(obstacle["size_east_m"]) / 2.0
-            rect = (
-                float(obstacle["north"]) - half_n,
-                float(obstacle["east"]) - half_e,
-                float(obstacle["north"]) + half_n,
-                float(obstacle["east"]) + half_e,
-            )
-            clip = segment_rect_clip((g_n, g_e), (north, east), rect)
-            if clip is None:
-                continue
-            t_mid = (clip[0] + clip[1]) / 2.0
-            ray_height = g_h + t_mid * dz
-            if ray_height <= float(obstacle["height_m"]):
-                blocker = str(obstacle["id"])
-                break
-
-        path_loss_db = 40.05 + 20.0 * math.log10(distance_m)
-        if blocker:
-            path_loss_db += 28.0
-        rssi_dbm = 20.0 - path_loss_db
+        rssi_dbm, path_loss_db, blocker, distance_m = self._rf_point(north, east, alt_m)
         loss_ratio = 1.0 / (1.0 + math.exp(0.26 * (rssi_dbm + 86.0)))
         if not blocker:
             loss_ratio *= 0.08
@@ -993,6 +1029,14 @@ class GcsHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/alerts":
             alerts = tail_cyber_alerts()
             self.send_json({"ok": True, "count": len(alerts), "alerts": alerts})
+            return
+        if parsed.path == "/api/rf_heatmap":
+            qs = parse_qs(parsed.query)
+            try:
+                alt = float(qs["alt"][0]) if "alt" in qs else None
+            except (ValueError, IndexError):
+                alt = None
+            self.send_json(self.controller.rf_heatmap(alt_m=alt))
             return
         if parsed.path == "/camera.mjpg":
             self._proxy_fpv()
