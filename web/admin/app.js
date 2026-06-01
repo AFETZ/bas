@@ -528,3 +528,79 @@ setInterval(() => {
   const active = document.querySelector('.tab-panel.active');
   if (active && active.id === 'tab-multi') loadMulti();
 }, 1500);
+
+// --- Deep integration D: кибер-алерты от defense monitor на витрине ----------
+// /api/admin/alerts (общий NDJSON-файл с пультом) → красный баннер на всех
+// вкладках + «подменённая позиция» на карте БАС для gps_spoof. Ту же атаку
+// видит оператор на пульте — единая картина инцидента.
+const CYBER_LABELS_ADMIN = {
+  gps_spoof: 'GPS-СПУФИНГ',
+  cmd_injection: 'ИНЪЕКЦИЯ КОМАНД',
+  rf_jamming: 'РЧ-ГЛУШЕНИЕ',
+};
+let spoofLayer = null;
+
+function renderCyberBannerAdmin(alerts) {
+  const banner = document.getElementById('cyber-banner');
+  if (!banner) return;
+  if (!alerts.length) {
+    banner.classList.add('hidden');
+    banner.classList.remove('warn');
+    banner.innerHTML = '';
+    return;
+  }
+  const top = alerts[0];
+  const kind = CYBER_LABELS_ADMIN[top.kind] || String(top.kind || 'АТАКА').toUpperCase();
+  const more = alerts.length > 1 ? ` <span class="cyber-more">+${alerts.length - 1}</span>` : '';
+  banner.classList.toggle('warn', top.severity === 'warn');
+  banner.classList.remove('hidden');
+  banner.innerHTML = '<span class="cyber-icon">⚠</span>' +
+    `<span class="cyber-kind">КИБЕРАТАКА · ${kind}</span>` +
+    `<span class="cyber-detail">${escapeHtml(top.detail || '')}</span>${more}`;
+}
+
+function spoofIcon() {
+  return L.divIcon({
+    className: 'spoof-icon',
+    html: '<span class="spoof-x">✖</span>',
+    iconSize: [20, 20],
+    iconAnchor: [10, 10],
+  });
+}
+
+function drawSpoofMarkers(alerts) {
+  if (!multiMap) return;   // карта БАС ещё не открывалась
+  if (!spoofLayer) spoofLayer = L.layerGroup().addTo(multiMap);
+  spoofLayer.clearLayers();
+  alerts.filter(a => a.kind === 'gps_spoof' && a.extra).forEach(a => {
+    const e = a.extra;
+    const nlat = Number(e.new_lat);
+    const nlon = Number(e.new_lon);
+    if (!Number.isFinite(nlat) || !Number.isFinite(nlon)) return;
+    L.marker([nlat, nlon], { icon: spoofIcon() })
+      .bindTooltip(`⚠ GPS-спуфинг: подменённая позиция<br>${nlat.toFixed(5)}, ${nlon.toFixed(5)}`)
+      .addTo(spoofLayer);
+    const plat = Number(e.prev_lat);
+    const plon = Number(e.prev_lon);
+    if (Number.isFinite(plat) && Number.isFinite(plon)) {
+      L.polyline([[plat, plon], [nlat, nlon]],
+        { color: '#ff5470', weight: 2, dashArray: '6 6', opacity: 0.9 })
+        .addTo(spoofLayer);
+    }
+  });
+}
+
+async function pollAlerts() {
+  let alerts = [];
+  try {
+    const data = await api('/api/admin/alerts');
+    alerts = Array.isArray(data.alerts) ? data.alerts : [];
+  } catch (e) {
+    alerts = [];
+  }
+  renderCyberBannerAdmin(alerts);
+  drawSpoofMarkers(alerts);
+}
+
+pollAlerts();
+setInterval(pollAlerts, 2000);

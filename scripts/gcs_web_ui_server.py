@@ -85,6 +85,40 @@ def fetch_issgr(path: str, timeout: float = 3.0) -> dict[str, Any]:
         return {}
 
 
+# Deep integration D: кибер-алерты от cyber_defense_monitor (NDJSON-файл).
+# Пульт показывает их живьём баннером. Файл общий с витриной (Admin),
+# путь задаётся BAS_CYBER_ALERTS (demo-обёртка ставит автоматически).
+CYBER_ALERTS_PATH = os.environ.get("BAS_CYBER_ALERTS", "/tmp/bas_cyber_alerts.jsonl")
+CYBER_ALERT_WINDOW_S = 90.0
+
+
+def tail_cyber_alerts(window_s: float = CYBER_ALERT_WINDOW_S,
+                      limit: int = 20) -> list[dict[str, Any]]:
+    """Свежие алерты из NDJSON (cyber_defense_monitor --log-file), новые сверху."""
+    path = Path(CYBER_ALERTS_PATH)
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    now = time.time()
+    out: list[dict[str, Any]] = []
+    for line in lines[-300:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if now - float(rec.get("ts", 0.0)) > window_s:
+            continue
+        out.append(rec)
+    out.sort(key=lambda r: r.get("ts", 0.0), reverse=True)
+    return out[:limit]
+
+
 RF_GCS = {
     "north": -60.0,
     "east": 0.0,
@@ -819,6 +853,10 @@ class GcsHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/detections":
             self.send_json(self._detections())
+            return
+        if parsed.path == "/api/alerts":
+            alerts = tail_cyber_alerts()
+            self.send_json({"ok": True, "count": len(alerts), "alerts": alerts})
             return
         if parsed.path == "/camera.mjpg":
             self._proxy_fpv()

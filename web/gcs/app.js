@@ -512,3 +512,51 @@ async function pollDetections() {
 
 pollDetections();
 setInterval(pollDetections, 1500);
+
+// --- Deep integration D: кибер-алерты от defense monitor на пульте -----------
+// cyber_defense_monitor пишет алерты в общий NDJSON → /api/alerts → красный
+// баннер у оператора. Та же атака видна и на витрине (Admin).
+const CYBER_LABELS = {
+  gps_spoof: "GPS-СПУФИНГ",
+  cmd_injection: "ИНЪЕКЦИЯ КОМАНД",
+  rf_jamming: "РЧ-ГЛУШЕНИЕ",
+};
+
+function escapeHtmlGcs(s) {
+  return String(s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function renderCyberBanner(alerts = []) {
+  const banner = el("cyber-banner");
+  if (!banner) return;
+  if (!alerts.length) {
+    banner.classList.add("hidden");
+    banner.classList.remove("warn");
+    banner.innerHTML = "";
+    return;
+  }
+  const top = alerts[0];
+  const kind = CYBER_LABELS[top.kind] || String(top.kind || "АТАКА").toUpperCase();
+  const more = alerts.length > 1
+    ? ` <span class="cyber-more">+${alerts.length - 1}</span>` : "";
+  banner.classList.toggle("warn", top.severity === "warn");
+  banner.classList.remove("hidden");
+  banner.innerHTML = `<span class="cyber-icon">⚠</span>` +
+    `<span class="cyber-kind">КИБЕРАТАКА · ${kind}</span>` +
+    `<span class="cyber-detail">${escapeHtmlGcs(top.detail || "")}</span>${more}`;
+}
+
+async function pollAlerts() {
+  try {
+    const res = await fetch("/api/alerts", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderCyberBanner(Array.isArray(data.alerts) ? data.alerts : []);
+  } catch (_e) {
+    /* пульт работает и без монитора — баннер опционален */
+  }
+}
+
+pollAlerts();
+setInterval(pollAlerts, 2000);

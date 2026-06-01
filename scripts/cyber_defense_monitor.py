@@ -301,11 +301,20 @@ def main() -> int:
     p.add_argument("--max-seconds", type=int, default=0)
     p.add_argument("--auth-gcs", action="append", type=int, default=[],
                    help="Authorized GCS sysid (repeat). Default [255, 252].")
+    p.add_argument("--jump-window-ms", type=float, default=None,
+                   help="GPS jump detection window (default 1000ms; шире = "
+                        "ловит более медленные teleport'ы)")
+    p.add_argument("--jump-threshold-m", type=float, default=None,
+                   help="GPS jump distance threshold (default 100m)")
     args = p.parse_args()
 
     cfg = DefenseConfig()
     if args.auth_gcs:
         cfg.authorized_gcs_sysids = tuple(args.auth_gcs)
+    if args.jump_window_ms is not None:
+        cfg.jump_window_ms = args.jump_window_ms
+    if args.jump_threshold_m is not None:
+        cfg.position_jump_threshold_m = args.jump_threshold_m
 
     log_fp = args.log_file.open("a", encoding="utf-8") if args.log_file else None
 

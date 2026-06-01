@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import threading
 import time
@@ -92,6 +93,40 @@ def fetch_gcs(path: str, timeout: float = 2.0) -> dict[str, Any]:
             return json.loads(r.read().decode("utf-8"))
     except (urllib.error.URLError, json.JSONDecodeError, OSError):
         return {}
+
+
+# Deep integration D: кибер-алерты от cyber_defense_monitor (NDJSON-файл).
+# Витрина показывает их живьём баннером + spoof-метку на карте. Файл общий
+# с пультом (Web GCS), путь — BAS_CYBER_ALERTS (demo-обёртка ставит).
+CYBER_ALERTS_PATH = os.environ.get("BAS_CYBER_ALERTS", "/tmp/bas_cyber_alerts.jsonl")
+CYBER_ALERT_WINDOW_S = 90.0
+
+
+def tail_cyber_alerts(window_s: float = CYBER_ALERT_WINDOW_S,
+                      limit: int = 20) -> list[dict[str, Any]]:
+    """Свежие алерты из NDJSON (cyber_defense_monitor --log-file), новые сверху."""
+    path = Path(CYBER_ALERTS_PATH)
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    now = time.time()
+    out: list[dict[str, Any]] = []
+    for line in lines[-300:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if now - float(rec.get("ts", 0.0)) > window_s:
+            continue
+        out.append(rec)
+    out.sort(key=lambda r: r.get("ts", 0.0), reverse=True)
+    return out[:limit]
 
 
 def forward_to_gcs(path: str, payload: dict, timeout: float = 8.0) -> tuple[int, dict]:
@@ -245,6 +280,12 @@ class AdminHandler(BaseHTTPRequestHandler):
             st = fetch_gcs("/api/state")
             return self._send_json({"ok": bool(st), "state": st,
                                     "has_gcs": bool(GCS_URL)})
+
+        # Deep integration D: кибер-алерты от defense monitor (общий файл с пультом).
+        if path == "/api/admin/alerts":
+            alerts = tail_cyber_alerts()
+            return self._send_json({"ok": True, "count": len(alerts),
+                                    "alerts": alerts})
 
         if path == "/api/admin/collections":
             top = fetch_issgr("/collections")
