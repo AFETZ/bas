@@ -483,6 +483,30 @@ h2 {
   .cyber-banner { animation: none; }
 }
 
+/* Deep integration B: запретные зоны (no-fly) + точка облёта на карте пульта. */
+.nofly-body {
+  fill: rgba(244, 63, 94, .16);
+  stroke: var(--red);
+  stroke-width: 1.4;
+}
+.nofly-margin {
+  fill: none;
+  stroke: rgba(244, 63, 94, .5);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.nofly text {
+  fill: #ffd9de;
+  font-size: 7px;
+  font-weight: 600;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: rgba(7, 18, 11, .85);
+  stroke-width: 2px;
+}
+.detour circle { fill: rgba(54, 214, 231, .18); stroke: var(--cyan); stroke-width: 1.6; }
+.detour path { stroke: var(--cyan); stroke-width: 1.6; }
+
 .control-panel {
   padding: 14px;
   display: flex;

@@ -180,6 +180,83 @@ RF_OBSTACLES = (
     RF_OBSTACLES_URBAN if _PROFILE == "urban" else RF_OBSTACLES_BASIC
 )
 
+# ---------------------------------------------------------------------------
+# Deep integration B: geofence — дрон облетает/не входит в запретные зоны.
+# Источник зон — RF_OBSTACLES (объекты сцены, те же что публикуются в ИССГР):
+# общая картина препятствий ВЛИЯЕТ на маршрут борта. goto проверяет цель и
+# прямой путь; если цель в зоне — блок, если путь пересекает — облёт через
+# промежуточную точку (waypoint), которую отрабатывает guidance_loop.
+# ---------------------------------------------------------------------------
+GEOFENCE_MARGIN_M = float(os.environ.get("BAS_GEOFENCE_MARGIN_M", "8.0"))
+
+
+def _inflated_rect(obs: dict[str, Any], margin: float) -> tuple[float, float, float, float]:
+    """NED-прямоугольник препятствия + запас безопасности → (n0,n1,e0,e1)."""
+    hn = obs.get("size_north_m", 0.0) / 2.0 + margin
+    he = obs.get("size_east_m", 0.0) / 2.0 + margin
+    n = obs.get("north", 0.0)
+    e = obs.get("east", 0.0)
+    return (n - hn, n + hn, e - he, e + he)
+
+
+def _point_in_rect(n: float, e: float, rect: tuple[float, float, float, float]) -> bool:
+    n0, n1, e0, e1 = rect
+    return n0 <= n <= n1 and e0 <= e <= e1
+
+
+def _seg_hits_rect(na: float, ea: float, nb: float, eb: float,
+                   rect: tuple[float, float, float, float], steps: int = 28) -> bool:
+    """Пересекает ли отрезок (na,ea)->(nb,eb) прямоугольник (сэмплинг)."""
+    for i in range(steps + 1):
+        t = i / steps
+        if _point_in_rect(na + (nb - na) * t, ea + (eb - ea) * t, rect):
+            return True
+    return False
+
+
+def _detour_waypoint(na: float, ea: float, nb: float, eb: float,
+                     obs: dict[str, Any], margin: float,
+                     zones: list[dict[str, Any]]) -> tuple[float, float]:
+    """Точка облёта сбоку от препятствия (перпендикуляр к пути, короче из двух)."""
+    on = obs.get("north", 0.0)
+    oe = obs.get("east", 0.0)
+    dn = nb - na
+    de = eb - ea
+    length = math.hypot(dn, de) or 1.0
+    pn, pe = -de / length, dn / length    # единичный перпендикуляр
+    hn = obs.get("size_north_m", 0.0) / 2.0 + margin
+    he = obs.get("size_east_m", 0.0) / 2.0 + margin
+    off = math.hypot(hn, he) + 6.0
+    best: tuple[float, tuple[float, float]] | None = None
+    for sign in (1.0, -1.0):
+        wn = on + pn * sign * off
+        we = oe + pe * sign * off
+        if any(_point_in_rect(wn, we, _inflated_rect(o, margin)) for o in zones):
+            continue
+        total = math.hypot(wn - na, we - ea) + math.hypot(nb - wn, eb - we)
+        if best is None or total < best[0]:
+            best = (total, (wn, we))
+    if best is not None:
+        return best[1]
+    return (on + pn * off, oe + pe * off)
+
+
+def geofence_plan(start: tuple[float, float], target: tuple[float, float],
+                  zones: list[dict[str, Any]], margin: float
+                  ) -> tuple[str, tuple[float, float] | None, str | None]:
+    """('clear'|'blocked'|'reroute', detour|None, zone_name|None)."""
+    tn, te = target
+    for o in zones:
+        if _point_in_rect(tn, te, _inflated_rect(o, margin)):
+            return ("blocked", None, o.get("name") or o.get("id") or "?")
+    sn, se = start
+    for o in zones:
+        if _seg_hits_rect(sn, se, tn, te, _inflated_rect(o, margin)):
+            return ("reroute",
+                    _detour_waypoint(sn, se, tn, te, o, margin, zones),
+                    o.get("name") or o.get("id") or "?")
+    return ("clear", None, None)
+
 MAV_FRAME_LOCAL_NED = 1
 POSITION_TARGET_LOCAL_NED_POS_ONLY_MASK = 3576
 DEFAULT_TARGET_SYSTEM = 1
@@ -236,6 +313,10 @@ class OperatorController:
         self.recent_events: list[dict[str, Any]] = []
         self.target_ne: tuple[float, float] | None = None
         self.goto_active = False
+        # Deep integration B: geofence. Очередь промежуточных точек облёта +
+        # статус последнего goto (clear/blocked/rerouted) для UI.
+        self.waypoint_queue: list[tuple[float, float]] = []
+        self.last_goto_status: dict[str, Any] = {"state": "clear"}
         self.demo_position = [0.0, 0.0]
         self.demo_velocity = [0.0, 0.0]
         self.demo_armed = False
@@ -538,23 +619,54 @@ class OperatorController:
         north = clamp(float(payload["north"]), -250.0, 250.0)
         east = clamp(float(payload["east"]), -250.0, 250.0)
         altitude = clamp(float(payload.get("altitude", self.args.takeoff_alt)), 2.0, 80.0)
+        start = self._derive_local_ne() or (0.0, 0.0)
+        plan, detour, zone = geofence_plan(start, (north, east), RF_OBSTACLES,
+                                           GEOFENCE_MARGIN_M)
+
+        # Цель внутри запретной зоны — goto заблокирован (зря не взлетаем).
+        if plan == "blocked":
+            reason = f"Цель в запретной зоне «{zone}» — goto заблокирован"
+            with self.lock:
+                self.last_goto_status = {"state": "blocked", "zone": zone, "reason": reason}
+            self.record_event("ui_goto_blocked", north_m=north, east_m=east, zone=zone)
+            return {"ok": False, "blocked": True, "zone": zone, "reason": reason,
+                    "geofence": "blocked", "target": {"north": north, "east": east}}
+
         with self.command_lock:
             if not self.is_airborne():
                 self.ensure_airborne(altitude)
             self.ensure_guided()
             with self.lock:
-                self.target_ne = (north, east)
                 self.goto_altitude_m = altitude
                 self.goto_active = True
+                if plan == "reroute" and detour is not None:
+                    self.waypoint_queue = [(north, east)]
+                    self.target_ne = detour
+                    self.last_goto_status = {
+                        "state": "rerouted", "zone": zone,
+                        "via": {"north": round(detour[0], 1), "east": round(detour[1], 1)},
+                        "reason": f"Облёт препятствия «{zone}»",
+                    }
+                else:
+                    self.waypoint_queue = []
+                    self.target_ne = (north, east)
+                    self.last_goto_status = {"state": "clear", "zone": None, "reason": ""}
+                first = self.target_ne
             self.record_event(
                 "ui_goto_target_set",
-                north_m=north,
-                east_m=east,
-                altitude_m=altitude,
+                north_m=north, east_m=east, altitude_m=altitude,
+                geofence=plan, zone=zone or "",
                 command_name="goto_local_position",
-                command=self.goto_local_command(north, east, altitude),
+                command=self.goto_local_command(first[0], first[1], altitude),
             )
-        return {"ok": True, "target": {"north": north, "east": east}}
+        result: dict[str, Any] = {"ok": True, "target": {"north": north, "east": east},
+                                  "geofence": plan}
+        if plan == "reroute" and detour is not None:
+            result["rerouted"] = True
+            result["via"] = {"north": round(detour[0], 1), "east": round(detour[1], 1)}
+            result["zone"] = zone
+            result["reason"] = f"Облёт препятствия «{zone}»"
+        return result
 
     def goto_local_command(self, north: float, east: float, altitude_m: float) -> str:
         # MAVProxy's built-in `velocity`/`position` commands use BODY_NED.
@@ -583,6 +695,17 @@ class OperatorController:
                 dy = target[1] - xy[1]
                 dist = math.hypot(dx, dy)
                 if dist <= self.args.goto_tolerance:
+                    # Deep integration B: достигли точки облёта — идём к финалу.
+                    nxt = None
+                    with self.lock:
+                        if self.waypoint_queue:
+                            nxt = self.waypoint_queue.pop(0)
+                            self.target_ne = nxt
+                    if nxt is not None:
+                        self.record_event("ui_goto_waypoint_advance",
+                                          north_m=nxt[0], east_m=nxt[1])
+                        time.sleep(0.2)
+                        continue
                     self.goto_active = False
                     try:
                         self.send_raw(STOP_MOVE_COMMAND, "goto_stop")
@@ -774,6 +897,19 @@ class OperatorController:
             "local_source": "ned" if self.state.last_local_xy is not None else ("derived" if xy else None),
             "rf": self.compute_rf_link(xy),
             "target": {"north": target[0], "east": target[1], "active": self.goto_active} if target else None,
+            # Deep integration B: запретные зоны (общая картина препятствий) +
+            # статус последнего goto (clear/blocked/rerouted) для обоих UI.
+            "geofence": {
+                "margin_m": GEOFENCE_MARGIN_M,
+                "zones": [
+                    {"id": o.get("id"), "name": o.get("name"),
+                     "north": o.get("north"), "east": o.get("east"),
+                     "size_north_m": o.get("size_north_m"),
+                     "size_east_m": o.get("size_east_m")}
+                    for o in RF_OBSTACLES
+                ],
+            },
+            "goto_status": self.last_goto_status,
             "log_dir": str(self.log_dir),
             "endpoint_chain": "Web GCS -> MAVProxy CLI -> ns-3 control -> mavbridge -> SITL",
             "ui_url": self.public_url,

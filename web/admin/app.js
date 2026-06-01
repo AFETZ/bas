@@ -456,7 +456,7 @@ async function loadSync() {
 let controlTargetMarker = null;
 let controlHasGcs = false;
 
-async function postControl(path, body) {
+async function postControl(path, body, silent = false) {
   try {
     const r = await fetch(path, {
       method: 'POST',
@@ -464,16 +464,62 @@ async function postControl(path, body) {
       body: JSON.stringify(body),
     });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.ok === false) {
-      showToast('Команда не прошла: ' + (d.error || ('HTTP ' + r.status)));
-    } else {
-      showToast('Команда отправлена ✓');
+    if (!silent) {
+      if (!r.ok || d.ok === false) {
+        showToast('Команда не прошла: ' + (d.error || ('HTTP ' + r.status)));
+      } else {
+        showToast('Команда отправлена ✓');
+      }
     }
     return d;
   } catch (e) {
-    showToast('Ошибка связи с витриной');
+    if (!silent) showToast('Ошибка связи с витриной');
     return { ok: false };
   }
+}
+
+// Deep integration B: NED ↔ lat/lon для рисования запретных зон на карте витрины.
+function nedToLatLon(north, east) {
+  const lat = ORIGIN_LAT + north / 111319.9;
+  const lon = ORIGIN_LON + east / (111319.9 * Math.cos(ORIGIN_LAT * Math.PI / 180));
+  return [lat, lon];
+}
+
+let geofenceLayer = null;
+let detourMarker = null;
+
+// Запретные зоны из снапшота GCS (geofence.zones — те же препятствия, что в
+// ИССГР) рисуются красными пунктирными прямоугольниками на карте БАС.
+function drawGeofenceZones(st) {
+  if (!multiMap) return;
+  const gf = (st && st.geofence) || {};
+  const zones = Array.isArray(gf.zones) ? gf.zones : [];
+  const margin = Number(gf.margin_m) || 8;
+  if (!geofenceLayer) geofenceLayer = L.layerGroup().addTo(multiMap);
+  geofenceLayer.clearLayers();
+  zones.forEach(z => {
+    const n = Number(z.north);
+    const e = Number(z.east);
+    const hn = Number(z.size_north_m) / 2 + margin;
+    const he = Number(z.size_east_m) / 2 + margin;
+    if (![n, e, hn, he].every(Number.isFinite)) return;
+    const sw = nedToLatLon(n - hn, e - he);
+    const ne = nedToLatLon(n + hn, e + he);
+    L.rectangle([sw, ne], {
+      color: '#f43f5e', weight: 1.4, fillColor: '#f43f5e',
+      fillOpacity: 0.14, dashArray: '5 4',
+    }).bindTooltip(`⛔ запретная зона: ${escapeHtml(z.name || z.id || 'no-fly')}`)
+      .addTo(geofenceLayer);
+  });
+}
+
+function drawDetour(via) {
+  if (!multiMap || !via) return;
+  const [lat, lon] = nedToLatLon(Number(via.north), Number(via.east));
+  if (detourMarker) multiMap.removeLayer(detourMarker);
+  detourMarker = L.circleMarker([lat, lon], {
+    radius: 7, color: '#36d6e7', fillColor: '#36d6e7', fillOpacity: 0.5, weight: 2,
+  }).bindTooltip('↪ точка облёта').addTo(multiMap);
 }
 
 async function onMapClickFly(ev) {
@@ -484,8 +530,19 @@ async function onMapClickFly(ev) {
   if (controlTargetMarker) multiMap.removeLayer(controlTargetMarker);
   controlTargetMarker = L.marker([lat, lon]).addTo(multiMap)
     .bindTooltip('🎯 цель goto').openTooltip();
-  showToast(`Лететь → N=${north.toFixed(0)} E=${east.toFixed(0)} м`);
-  await postControl('/api/admin/control/goto', { north, east, altitude: 15 });
+  const d = await postControl('/api/admin/control/goto', { north, east, altitude: 15 }, true);
+  // Реакция геозоны: блок / облёт / чисто.
+  if (d && d.blocked) {
+    showToast(`⛔ ${d.reason || 'Цель в запретной зоне «' + (d.zone || '') + '»'}`);
+    controlTargetMarker.bindTooltip('⛔ в запретной зоне').openTooltip();
+  } else if (d && d.rerouted && d.via) {
+    showToast(`↪ Облёт препятствия «${d.zone || ''}» через точку`);
+    drawDetour(d.via);
+  } else if (d && d.ok) {
+    showToast(`Лететь → N=${north.toFixed(0)} E=${east.toFixed(0)} м`);
+  } else {
+    showToast('Команда не прошла');
+  }
 }
 
 async function refreshControlState() {
@@ -497,10 +554,18 @@ async function refreshControlState() {
   if (el) {
     if (!d || !d.has_gcs) el.textContent = 'GCS не настроен (admin без --gcs-url)';
     else if (!controlHasGcs) el.textContent = 'нет связи с Web GCS (:8765) — запусти полётное демо';
-    else el.textContent =
-      `${st.armed ? '🟢 ARMED' : '⚪ disarmed'} · ${st.current_mode || '?'} · ` +
-      `${Number(st.altitude_m || 0).toFixed(1)} м · ${st.connected ? 'link OK' : 'no link'}`;
+    else {
+      const gs = st.goto_status || {};
+      let geo = '';
+      if (gs.state === 'rerouted') geo = ` · ↪ облёт «${gs.zone || ''}»`;
+      else if (gs.state === 'blocked') geo = ` · ⛔ цель в зоне «${gs.zone || ''}»`;
+      el.textContent =
+        `${st.armed ? '🟢 ARMED' : '⚪ disarmed'} · ${st.current_mode || '?'} · ` +
+        `${Number(st.altitude_m || 0).toFixed(1)} м · ${st.connected ? 'link OK' : 'no link'}${geo}`;
+    }
   }
+  // Deep integration B: запретные зоны на карте БАС (из снапшота GCS).
+  if (controlHasGcs) drawGeofenceZones(st);
   document.querySelectorAll('.ctl-btn').forEach(b => { b.disabled = !controlHasGcs; });
 }
 

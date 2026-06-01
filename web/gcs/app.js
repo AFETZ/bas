@@ -162,6 +162,7 @@ function updateRfChart(rf) {
 }
 
 function updateMap(s) {
+  drawGeofence(s);   // deep integration B: запретные зоны + точка облёта
   const local = s.local;
   if (!local) {
     el("north-value").textContent = "--";
@@ -195,11 +196,50 @@ function updateMap(s) {
     const t = localToSvg(target.north, target.east);
     targetNode.classList.remove("hidden");
     targetNode.setAttribute("transform", `translate(${t.x} ${t.y})`);
-    el("target-value").textContent = `${fmt(target.north)}, ${fmt(target.east)}${target.active ? " active" : ""}`;
+    const gs = s.goto_status || {};
+    let tag = target.active ? " active" : "";
+    if (gs.state === "rerouted") tag = " ↪ облёт";
+    el("target-value").textContent = `${fmt(target.north)}, ${fmt(target.east)}${tag}`;
   } else {
     targetNode.classList.add("hidden");
     el("target-value").textContent = "--";
   }
+}
+
+// Deep integration B: запретные зоны (no-fly) + точка облёта на карте пульта.
+// Зоны приходят из /api/state (geofence.zones — те же препятствия, что в ИССГР).
+function drawGeofence(s) {
+  const host = el("geofence");
+  if (!host) return;
+  const gf = s.geofence || {};
+  const zones = Array.isArray(gf.zones) ? gf.zones : [];
+  const margin = Number(gf.margin_m) || 8;
+  const status = s.goto_status || {};
+  let html = zones.map((z) => {
+    const w = Number(z.size_east_m);
+    const h = Number(z.size_north_m);
+    const e = Number(z.east);
+    const n = Number(z.north);
+    if (![w, h, e, n].every(Number.isFinite)) return "";
+    const fx = e - w / 2;
+    const fy = -(n + h / 2);
+    const iw = w + margin * 2;
+    const ih = h + margin * 2;
+    const ix = e - iw / 2;
+    const iy = -(n + ih / 2);
+    return `<g class="nofly">
+      <rect class="nofly-margin" x="${ix}" y="${iy}" width="${iw}" height="${ih}" rx="2"/>
+      <rect class="nofly-body" x="${fx}" y="${fy}" width="${w}" height="${h}" rx="1.5"/>
+      <text x="${e}" y="${-n + 2.5}">${z.name || z.id || "no-fly"}</text>
+    </g>`;
+  }).join("");
+  if (status.via && Number.isFinite(Number(status.via.east))) {
+    const vx = Number(status.via.east);
+    const vy = -Number(status.via.north);
+    html += `<g class="detour" transform="translate(${vx} ${vy})">
+      <circle r="5"/><path d="M-8 0H8M0-8V8"/></g>`;
+  }
+  host.innerHTML = html;
 }
 
 function updateEvents(events) {
