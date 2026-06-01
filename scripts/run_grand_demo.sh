@@ -110,15 +110,21 @@ echo; echo "==> BACKEND: ИССГР двойник + sync + onboard"
 launch issgr_a "$VENV" "${SCRIPT_DIR}/issgr_api_server.py" --port "$ISSGR_A" --seed-profile urban
 launch issgr_b "$VENV" "${SCRIPT_DIR}/issgr_api_server.py" --port "$ISSGR_B" --no-seed
 wait_port "$ISSGR_A" "ИССГР-A"; wait_port "$ISSGR_B" "ИССГР-B"
-launch sync_pub "$VENV" "${SCRIPT_DIR}/issgr_sync_publisher.py" \
-    --issgr-url "http://127.0.0.1:${ISSGR_A}" --group "$MCAST_GROUP" --port "$MCAST_PORT" \
-    --ttl 1 --interval 1.0 --node-id grand-pub --stats-port "$SYNC_STATS" \
-    --max-seconds "$BAS_DEMO_DURATION"
-launch sync_sub "$VENV" "${SCRIPT_DIR}/issgr_sync_subscriber.py" \
-    --issgr-url "http://127.0.0.1:${ISSGR_B}" --group "$MCAST_GROUP" --port "$MCAST_PORT" \
-    --max-seconds "$BAS_DEMO_DURATION"
-launch onboard "$VENV" "${SCRIPT_DIR}/issgr_onboard_demo.py" \
-    --db-path "$ONBOARD_DB" --synth-hz 5 --max-seconds "$BAS_DEMO_DURATION"
+# BAS_GRAND_LIGHT=1 — пропустить multicast sync + onboard (меньше нагрузки,
+# напр. для записи видео). UI пульта/витрины от этого не зависит.
+if [ "${BAS_GRAND_LIGHT:-0}" = "1" ]; then
+    echo "  (light mode: пропускаю sync + onboard)"
+else
+    launch sync_pub "$VENV" "${SCRIPT_DIR}/issgr_sync_publisher.py" \
+        --issgr-url "http://127.0.0.1:${ISSGR_A}" --group "$MCAST_GROUP" --port "$MCAST_PORT" \
+        --ttl 1 --interval 1.0 --node-id grand-pub --stats-port "$SYNC_STATS" \
+        --max-seconds "$BAS_DEMO_DURATION"
+    launch sync_sub "$VENV" "${SCRIPT_DIR}/issgr_sync_subscriber.py" \
+        --issgr-url "http://127.0.0.1:${ISSGR_B}" --group "$MCAST_GROUP" --port "$MCAST_PORT" \
+        --max-seconds "$BAS_DEMO_DURATION"
+    launch onboard "$VENV" "${SCRIPT_DIR}/issgr_onboard_demo.py" \
+        --db-path "$ONBOARD_DB" --synth-hz 5 --max-seconds "$BAS_DEMO_DURATION"
+fi
 
 # --- ПОЛЁТНЫЙ СТЕК + UI -----------------------------------------------------
 echo; echo "==> ПОЛЁТ + UI: AirSim FPV + пульт + publisher + cyber + витрина"
