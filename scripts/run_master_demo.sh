@@ -250,6 +250,10 @@ EOF
 # ---------------------------------------------------------------------------
 echo "==> [10/14] Cyber defense monitor (watch MAVLink + RF channel)"
 mkdir -p "${LOG_DIR}/cyber"
+# Integration D: общий путь алертов → витрина (Admin :8810) показывает красный
+# баннер «КИБЕРАТАКА» когда монитор детектит запланированные атаки. export —
+# чтобы admin_web_server (шаг 12) прочитал тот же файл через /api/admin/alerts.
+export BAS_CYBER_ALERTS="${LOG_DIR}/cyber/defense_alerts.jsonl"
 SIONNA_CHAN_FILE="${LOG_DIR}/sionna_channel.json"
 echo '{"loss_ratio": 0.01, "rssi_dbm": -60.0, "extra_delay_ms": 5}' \
     > "$SIONNA_CHAN_FILE"
@@ -257,7 +261,8 @@ launch cyber_defense \
     "$VENV" "${SCRIPT_DIR}/cyber_defense_monitor.py" \
     --mavlink-port 14559 \
     --channel-file "$SIONNA_CHAN_FILE" \
-    --log-file "${LOG_DIR}/cyber/defense_alerts.jsonl" \
+    --log-file "$BAS_CYBER_ALERTS" \
+    --jump-window-ms 2500 \
     --max-seconds "$BAS_DEMO_DURATION"
 
 # Optional: schedule attack injection в середине demo для demonstration.
