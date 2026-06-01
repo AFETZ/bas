@@ -9,7 +9,9 @@ rm -rf "$CLONE"
 git clone "$WIKI_URL" "$CLONE"
 cp wiki-build/*.md "$CLONE"/
 mkdir -p "$CLONE/images"
-cp wiki-build/images/*.png "$CLONE/images"/
+# Картинки и анимации (png + gif). MP4 в вики не кладём (ссылаемся на репо).
+cp wiki-build/images/*.png "$CLONE/images"/ 2>/dev/null || true
+cp wiki-build/images/*.gif "$CLONE/images"/ 2>/dev/null || true
 cd "$CLONE"
 git add -A
 if git diff --cached --quiet; then
