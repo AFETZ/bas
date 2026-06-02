@@ -48,9 +48,18 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 
 ### Раздел: Среда моделирования (совместно с Андрончевым, Карповым)
 
+ТЗ требует среду моделирования **для трёх классов техники**: БАС, наземный
+**дорожный** транспорт и наземный транспорт **вне дорог**. Все три закрыты на
+едином ArduPilot-стеке (тот же MAVLink/ns-3/ИССГР, минимум нового кода): БАС —
+ArduCopter, наземный транспорт — ArduRover (frame `rover`=ackermann/дорожный,
+`rover-skid`=skid-steer/вне дорог).
+
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
-| Базовый симулятор: ArduPilot ArduCopter SITL | ✅ | 1.2 | `docker/ardupilot-sitl/Dockerfile`, mission AUTO работает на обоих профилях |
+| БАС — базовый симулятор: ArduPilot ArduCopter SITL | ✅ | 1.2 | `docker/ardupilot-sitl/Dockerfile`, mission AUTO работает на обоих профилях; real SITL e2e — `_real_sitl_e2e_smoke.py` (ARM + takeoff) |
+| **Наземный дорожный транспорт: ArduPilot ArduRover (frame=rover)** | ✅ | **5** | Закрыто: `ardurover` SITL (frame `rover`, ackermann-рулёж = дорожный автомобиль), HEARTBEAT type=10 (GROUND_ROVER). Ручное вождение под MANUAL + RC override. Smoke `_rover_sitl_smoke.py`: GPS lock → ARM → проехал >10 м к цели (verified «Drove 35.1 м → closest 4.9 м to target»). Интеграция в цифровой двойник — `rover_to_issgr_publisher.py` (класс `operational_situation.ground_vehicle.wheeled`), live-демо `run_stage_5_ground_vehicle_demo.sh`: машина едет ~120 м и двигается в ИССГР рядом с БАС |
+| **Наземный транспорт вне дорог: ArduPilot ArduRover (frame=rover-skid)** | ✅ | **5** | Закрыто: `ardurover` SITL (frame `rover-skid`, skid-steer = вездеход вне дорог), класс `operational_situation.ground_vehicle.offroad`. Загружается/армится/едет под MANUAL; тот же publisher/двойник-конвейер, что и для дорожного. `BAS_ROVER_FRAME=rover-skid bash scripts/run_stage_5_ground_vehicle_demo.sh` |
+| Базовые движки среды (Unreal/CARLA/AirSim/Gazebo) | ✅/⚠️ | 1.2 / 2.2 | Gazebo (физика БАС + наземки, `ardupilot_gazebo`) ✅; AirSim/UE5 (визуал + сенсоры, real RTX рендер) ✅ Stage 2.2; CARLA — не интегрирован (наземный транспорт закрыт через ArduRover SITL на ArduPilot-стеке вместо отдельного CARLA-движка) ⚠️ |
 
 ### Раздел: 2 канала связи по стандартным протоколам (ЛИЧНЫЙ Физулинский)
 
@@ -117,12 +126,13 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 
 | Категория | Закрыто | Намечено | Всего | % |
 |---|---:|---:|---:|---:|
+| Среда моделирования: наземный транспорт — дорожный + вне дорог (совместная) | 2 | 0 | 2 | **100%** |
 | Каналы связи (личная) | 5 | 0 | 5 | **100%** |
 | ns-3 / Sionna RT (личная) | 5 | 0 | 5 | **100%** |
 | Карта 3D (личная) | 2 | 0 | 2 | **100%** |
 | MAVROS интеграция (личная) | 1 | 0 | 1 | **100%** |
 | Моделирование БАС (совместная) | 2 | 0 | 2 | **100%** |
-| **Итого по Физулинской зоне** | **15** | **0** | **15** | **100%** |
+| **Итого по Физулинской зоне** | **17** | **0** | **17** | **100%** |
 
 Stage 2.4 закрыт live Web GCS UI, smoke-прогоном через MAVProxy и отдельным
 RF/LOS demo с препятствиями, RSSI/loss/delay графиком; личная зона Физулина по

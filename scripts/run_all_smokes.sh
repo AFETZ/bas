@@ -48,6 +48,7 @@ LIVE=(
   "admin_web_integration|$VENV scripts/_admin_web_integration_smoke.py"
   "sionna_scenes_live|bash scripts/_run_scenes_smoke.sh"
   "real_sitl_e2e|$VENV scripts/_real_sitl_e2e_smoke.py"
+  "rover_sitl_ground|$VENV scripts/_rover_sitl_smoke.py"
 )
 
 run_one() {

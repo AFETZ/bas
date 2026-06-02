@@ -39,6 +39,11 @@ class IssgrClass(str, Enum):
     OPS_UAV_ROTARY = "operational_situation.uav.rotary_wing"
     OPS_UAV_FIXED = "operational_situation.uav.fixed_wing"
     OPS_UAV_VTOL = "operational_situation.uav.vtol"
+    # Наземный транспорт (ТЗ: дорожный + способный двигаться вне дорог).
+    # Базовый автопилот — ArduPilot ArduRover SITL; wheeled=дорожный (ackermann),
+    # offroad=вне дорог (skid-steer/all-terrain).
+    OPS_GROUND_WHEELED = "operational_situation.ground_vehicle.wheeled"
+    OPS_GROUND_OFFROAD = "operational_situation.ground_vehicle.offroad"
     OPS_MISSION = "operational_situation.mission.waypoint_route"
     OPS_TARGET = "operational_situation.target.point"
 
