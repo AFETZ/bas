@@ -54,12 +54,18 @@ REST/OGC API для имитаторов АСУ, обработка видовы
 ArduCopter, наземный транспорт — ArduRover (frame `rover`=ackermann/дорожный,
 `rover-skid`=skid-steer/вне дорог).
 
+**Движок наземного транспорта — на выбор** (`run_stage_5_ground_vehicle_demo.sh
+--engine ardupilot|carla`): ArduPilot ArduRover SITL (по умолчанию) или **CARLA**
+(пакет 0.9.12 из стека CAVISE). Оба пишут в ИССГР один формат
+`ground_vehicle.{wheeled,offroad}` под ручным управлением — пользователь сам
+выбирает симулятор. См. `docs/stage_5_ground_vehicle.md`.
+
 | Пункт ТЗ | Состояние | Этап | Артефакты |
 |---|---|---|---|
 | БАС — базовый симулятор: ArduPilot ArduCopter SITL | ✅ | 1.2 | `docker/ardupilot-sitl/Dockerfile`, mission AUTO работает на обоих профилях; real SITL e2e — `_real_sitl_e2e_smoke.py` (ARM + takeoff) |
 | **Наземный дорожный транспорт: ArduPilot ArduRover (frame=rover)** | ✅ | **5** | Закрыто: `ardurover` SITL (frame `rover`, ackermann-рулёж = дорожный автомобиль), HEARTBEAT type=10 (GROUND_ROVER). Ручное вождение под MANUAL + RC override. Smoke `_rover_sitl_smoke.py`: GPS lock → ARM → проехал >10 м к цели (verified «Drove 35.1 м → closest 4.9 м to target»). Интеграция в цифровой двойник — `rover_to_issgr_publisher.py` (класс `operational_situation.ground_vehicle.wheeled`), live-демо `run_stage_5_ground_vehicle_demo.sh`: машина едет ~120 м и двигается в ИССГР рядом с БАС |
 | **Наземный транспорт вне дорог: ArduPilot ArduRover (frame=rover-skid)** | ✅ | **5** | Закрыто: `ardurover` SITL (frame `rover-skid`, skid-steer = вездеход вне дорог), класс `operational_situation.ground_vehicle.offroad`. Загружается/армится/едет под MANUAL; тот же publisher/двойник-конвейер, что и для дорожного. `BAS_ROVER_FRAME=rover-skid bash scripts/run_stage_5_ground_vehicle_demo.sh` |
-| Базовые движки среды (Unreal/CARLA/AirSim/Gazebo) | ✅/⚠️ | 1.2 / 2.2 | Gazebo (физика БАС + наземки, `ardupilot_gazebo`) ✅; AirSim/UE5 (визуал + сенсоры, real RTX рендер) ✅ Stage 2.2; CARLA — не интегрирован (наземный транспорт закрыт через ArduRover SITL на ArduPilot-стеке вместо отдельного CARLA-движка) ⚠️ |
+| Базовые движки среды (Unreal/CARLA/AirSim/Gazebo) | ✅ | 1.2 / 2.2 / 5 | Gazebo (физика БАС + наземки, `ardupilot_gazebo`) ✅; AirSim/UE5 (визуал + сенсоры, real RTX рендер) ✅ Stage 2.2; **CARLA** — интегрирован как движок наземного транспорта **на выбор** (`--engine carla`, пакет `carla` 0.9.12 из стека CAVISE): `scripts/carla_ground_vehicle.py` режимы live (реальный CARLA сервер :2000, spawn vehicle + VehicleControl + transform_to_geolocation) и kinematic (bicycle-модель, CI без GPU). Smoke `carla_ground_kinematic` PASS (машина 62 м в ИССГР); live-клиент verified до точки connect (нужен запущенный сервер на GPU-хосте) ✅ |
 
 ### Раздел: 2 канала связи по стандартным протоколам (ЛИЧНЫЙ Физулинский)
 

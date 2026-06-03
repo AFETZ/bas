@@ -1,10 +1,34 @@
-# Stage 5 — Наземный транспорт (ArduRover) в среде моделирования
+# Stage 5 — Наземный транспорт в среде моделирования (движок на выбор)
 
 Закрывает пункт ТЗ «Разработка среды моделирования для БАС, **наземного
 дорожного транспорта** и **наземного транспорта вне дорог**». БАС уже был на
-ArduPilot ArduCopter; наземная техника добавлена на том же ArduPilot-стеке через
-**ArduRover SITL** — это даёт переиспользование MAVLink/ns-3/ИССГР-инфраструктуры
-без нового симулятора.
+ArduPilot ArduCopter; наземная техника добавлена с **выбором движка**:
+
+| Движок | Чем хорош | Запуск |
+|---|---|---|
+| **ardupilot** (по умолч.) | ArduRover SITL — тот же ArduPilot-стек, что у БАС; реальная физика автопилота, MANUAL+RC | `--engine ardupilot` |
+| **carla** | CARLA (пакет 0.9.12) — фотореалистичный UE4-движок из стека CAVISE; vehicle blueprints, реальные карты Town | `--engine carla` |
+
+Пользователь сам выбирает, на чём моделировать наземный транспорт. **Оба движка
+пишут в ИССГР один формат** `ground_vehicle.{wheeled,offroad}` под ручным
+управлением — витрина и двойник показывают машину одинаково, независимо от
+движка.
+
+```bash
+# ArduPilot ArduRover (реальный SITL):
+bash scripts/run_stage_5_ground_vehicle_demo.sh --engine ardupilot
+
+# CARLA (kinematic — без GPU; live — с запущенным CARLA сервером):
+bash scripts/run_stage_5_ground_vehicle_demo.sh --engine carla --carla-mode kinematic
+bash scripts/run_stage_5_ground_vehicle_demo.sh --engine carla --carla-mode live
+```
+
+---
+
+## Движок 1 — ArduPilot ArduRover
+
+ArduRover SITL даёт переиспользование MAVLink/ns-3/ИССГР-инфраструктуры без
+нового симулятора.
 
 ## Что именно закрыто
 
@@ -43,10 +67,45 @@ ArduPilot ArduCopter; наземная техника добавлена на т
 publisher читает телеметрию из **SERIAL1** (5772) — так два клиента не
 конфликтуют за единственный TCP-слот primary-порта SITL.
 
+## Движок 2 — CARLA
+
+CARLA приносит наземный транспорт из стека **CAVISE** (пакет `carla` 0.9.12,
+conda-env `msvan3t_carla`). Реализован `scripts/carla_ground_vehicle.py` с двумя
+под-режимами (`--carla-mode`):
+
+| Режим | Что делает | Когда |
+|---|---|---|
+| `live` | Реальный CARLA сервер :2000: `world.spawn_actor(vehicle.*)` → ручной `carla.VehicleControl(throttle/steer)` → `Map.transform_to_geolocation` → ИССГР | есть запущенный CARLA UE4 сервер (GPU-хост) |
+| `kinematic` | Велосипедная (bicycle) модель на чистом stdlib, та же геопривязка → ИССГР | без GPU/сервера (CI, демо) |
+| `auto` | Пробует `live`; если сервера/пакета нет — `kinematic` | по умолчанию |
+
+```
+   ручное управление (throttle/steer S-маневр)
+   carla.VehicleControl ──► CARLA сервер :2000 ──► vehicle.get_location()
+        (live)                (vehicle.tesla/jeep)        │ transform_to_geolocation
+                                                          ▼
+   bicycle-модель (kinematic) ──► (восток_м, север_м) ──► lat/lon ──► ИССГР upsert
+                                                                      ground_vehicle.*
+```
+
+Класс blueprints: дорожный (`wheeled`) → `vehicle.tesla.model3`; вне дорог
+(`offroad`) → `vehicle.jeep.wrangler_rubicon` (4×4). Геопривязка единая: машина
+выдаёт локальное ENU-смещение от референс-точки (по умолчанию home ArduRover),
+поэтому CARLA-машина появляется там же, где ездил бы rover — рядом с БАС в
+двойнике.
+
+**Почему kinematic fallback, а не «нет CARLA — нет наземки»:** CARLA UE4 сервер,
+как и AirSim, требует GPU-хост (в headless WSL2 — nullrhi). Kinematic-режим даёт
+рабочую наземную модель в CI и без GPU, а live-путь активируется автоматически,
+как только поднят сервер. Это тот же паттерн двух режимов, что у AirSim
+(stub/linux/windows).
+
 ## Артефакты
 
 | Файл | Роль |
 |---|---|
+| `scripts/carla_ground_vehicle.py` | **CARLA движок**: live (carla 0.9.12 spawn+VehicleControl+geoloc) + kinematic (bicycle) + ИССГР upsert |
+| `scripts/_carla_ground_smoke.py` | Smoke CARLA kinematic → ИССГР (проехала >10 м). Вшит в `run_all_smokes.sh` (offline, CI) как `carla_ground_kinematic` |
 | `scripts/_rover_sitl_smoke.py` | End-to-end smoke: SITL → GPS → ARM → проехал >10 м к цели. Вшит в `run_all_smokes.sh --live` как `rover_sitl_ground` |
 | `scripts/rover_manual_drive.py` | Ручное вождение: MANUAL + force-ARM + RC throttle/steering с S-манёвром |
 | `scripts/rover_to_issgr_publisher.py` | Интерфейс «наземный транспорт ↔ ИССГР»: MAVLink-телеметрия → upsert объекта `ground_vehicle.*` |

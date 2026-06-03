@@ -31,6 +31,7 @@ OFFLINE=(
   "admin_web|$VENV scripts/_admin_web_smoke.py"
   "osm_import_offline|$VENV scripts/_osm_import_smoke.py"
   "terrain_offline|$VENV scripts/_terrain_smoke.py"
+  "carla_ground_kinematic|$VENV scripts/_carla_ground_smoke.py"
 )
 
 # sionna scene resolution требует sionna_env (TensorFlow + sionna) — добавляем
