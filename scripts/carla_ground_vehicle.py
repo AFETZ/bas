@@ -39,6 +39,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import socket
+import subprocess
 import sys
 import time
 import urllib.request
@@ -73,6 +75,35 @@ DRAG_PER_S = 0.06            # линейное сопротивление (со
 
 OBJ_UUID = "00000000-0000-0000-0000-0000000000a2"   # стабильный → upsert
 # (rover использует ...a1; CARLA-машина — отдельный объект ...a2)
+
+
+def resolve_carla_host(host: str) -> str:
+    """`auto` → IP Windows-хоста из WSL2. В NAT-режиме это default gateway
+    (CARLA сервер на Windows слушает :2000, WSL достаёт его по gateway-IP).
+    В mirrored-режиме gateway недоступен → localhost. Любое явное значение
+    возвращается как есть."""
+    if host != "auto":
+        return host
+    try:
+        out = subprocess.check_output(
+            ["ip", "route", "show", "default"], text=True, timeout=3)
+        parts = out.split()
+        if "via" in parts:
+            return parts[parts.index("via") + 1]
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+
+def probe_tcp(host: str, port: int, timeout: float = 2.0) -> bool:
+    """Быстрая проверка, что CARLA RPC-порт достижим (иначе carla.Client висит
+    10 с и даёт невнятный таймаут — а тут сразу ясно про firewall/сервер)."""
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+        s.close()
+        return True
+    except OSError:
+        return False
 
 
 def enu_to_latlon(ref_lat: float, ref_lon: float,
@@ -117,7 +148,10 @@ def manual_control(t: float) -> tuple[float, float]:
     держит газ и плавно водит рулём — то же поведение, что rover_manual_drive.
     """
     throttle = 0.6
-    steer = 0.4 * math.sin(t * 0.4)
+    # Мягкий руль: на реальной дороге CARLA сильный S-манёвр (0.4) за ~3с
+    # уводит машину в здание и она застревает. 0.08 = лёгкие правки курса,
+    # машина едет вперёд и в kinematic (открытое поле) рисует пологую кривую.
+    steer = 0.08 * math.sin(t * 0.25)
     return throttle, steer
 
 
@@ -189,14 +223,27 @@ def run_live(args: argparse.Namespace) -> int:
         return 2
 
     issgr_class = FRAME_TO_CLASS[args.frame]
-    print(f"[carla-gv] mode=live connect {args.carla_host}:{args.carla_port} "
-          f"frame={args.frame}", flush=True)
+    host = resolve_carla_host(args.carla_host)
+    print(f"[carla-gv] mode=live connect {host}:{args.carla_port} "
+          f"(--carla-host {args.carla_host}) frame={args.frame}", flush=True)
 
-    client = carla.Client(args.carla_host, args.carla_port)
-    client.set_timeout(10.0)
+    # Preflight: порт достижим? (Windows CARLA + WSL2 NAT — нужен firewall-allow
+    # на :2000, иначе carla.Client молча висит весь таймаут.)
+    if not probe_tcp(host, args.carla_port):
+        print(f"[carla-gv] {host}:{args.carla_port} недостижим. Проверьте: "
+              f"(1) CARLA сервер запущен; (2) Windows Firewall пускает порт "
+              f"{args.carla_port}; (3) для WSL2 NAT — сервер слушает 0.0.0.0",
+              flush=True)
+        return 2
+
+    client = carla.Client(host, args.carla_port)
+    client.set_timeout(20.0)
     try:
+        # reload/load → ЧИСТЫЙ мир в async-состоянии. Критично: если прошлый
+        # прогон оборвался (timeout/SIGTERM) не восстановив async, мир остаётся
+        # в synchronous и новый клиент не может прогнать физику — машина стоит.
         world = (client.load_world(args.map) if args.map
-                 else client.get_world())
+                 else client.reload_world())
     except Exception as e:
         print(f"[carla-gv] нет CARLA сервера на "
               f"{args.carla_host}:{args.carla_port} ({e})", flush=True)
@@ -207,7 +254,10 @@ def run_live(args: argparse.Namespace) -> int:
     try:
         settings = world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = max(0.02, args.period_s)
+        # 0.05с — стабильная физика колёс. CARLA substepping требует
+        # fixed_delta <= max_substep_delta(0.01) × max_substeps(10) = 0.1;
+        # ровно на пределе (0.1) физика машины не интегрируется и она стоит.
+        settings.fixed_delta_seconds = 0.05
         world.apply_settings(settings)
 
         bp_lib = world.get_blueprint_library()
@@ -226,19 +276,52 @@ def run_live(args: argparse.Namespace) -> int:
             print("[carla-gv] на карте нет spawn points", flush=True)
             return 1
         vehicle = world.spawn_actor(blueprint, spawn_points[0])
+        # Warmup: дать машине осесть на дорогу (спавн чуть над землёй) и только
+        # потом снять origin — иначе get_location() сразу после spawn даёт (0,0)
+        # и появляется ложное смещение.
+        for _ in range(20):
+            world.tick()
         origin = vehicle.get_location()
         print(f"[carla-gv] spawned {blueprint.id} на "
               f"({origin.x:.1f},{origin.y:.1f})", flush=True)
 
         t0 = time.time()
+        last_pub = 0.0
         n = 0
         max_dist = 0.0
+        stuck_since = None       # когда газуем, но скорость ~0
+        recover_until = 0.0      # до этого времени — задний ход (вы-застревание)
         while time.time() - t0 < args.seconds:
             t = time.time() - t0
-            throttle, steer = manual_control(t)
-            vehicle.apply_control(
-                carla.VehicleControl(throttle=throttle, steer=steer, brake=0.0))
+            now = time.time()
+            if now < recover_until:
+                # Упёрлись (город CARLA) → задний ход с поворотом, чтобы
+                # выехать и продолжить ручное движение вперёд.
+                vehicle.apply_control(carla.VehicleControl(
+                    throttle=0.5, steer=0.6, brake=0.0, reverse=True))
+            else:
+                throttle, steer = manual_control(t)
+                vehicle.apply_control(carla.VehicleControl(
+                    throttle=throttle, steer=steer, brake=0.0))
             world.tick()
+
+            vel = vehicle.get_velocity()
+            speed = math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
+            # Детект застревания: газуем вперёд, но скорость ~0 дольше 1.2с.
+            if now >= recover_until:
+                if speed < 0.7:
+                    if stuck_since is None:
+                        stuck_since = now
+                    elif now - stuck_since > 1.2:
+                        recover_until = now + 1.2
+                        stuck_since = None
+                else:
+                    stuck_since = None
+
+            # Публикуем в ИССГР не каждый tick, а раз в period_s.
+            if now - last_pub < args.period_s:
+                continue
+            last_pub = now
             loc = vehicle.get_location()
             # CARLA left-handed (x вперёд, y вправо). Для ИССГР-демо мапим
             # x→восток, -y→север (точная ориентация некритична для движения).
@@ -246,8 +329,6 @@ def run_live(args: argparse.Namespace) -> int:
             north_m = -(loc.y - origin.y)
             lat, lon = enu_to_latlon(args.ref_lat, args.ref_lon,
                                      east_m, north_m)
-            vel = vehicle.get_velocity()
-            speed = math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
             hdg = vehicle.get_transform().rotation.yaw % 360.0
             dist = math.hypot(east_m, north_m)
             max_dist = max(max_dist, dist)
@@ -255,12 +336,12 @@ def run_live(args: argparse.Namespace) -> int:
                               args.sysid, lat, lon, REF_ALT, hdg, speed,
                               "MANUAL"):
                 n += 1
-                if n % 20 == 0:
+                if n % 10 == 0:
                     print(f"[carla-gv] {n} upserts; ({lat:.6f},{lon:.6f}) "
                           f"v={speed:.1f} m/s dist={dist:.1f}m", flush=True)
         print(f"[carla-gv] live done — {n} upserts, max_dist={max_dist:.1f}m",
               flush=True)
-        return 0 if max_dist > 1.0 else 1
+        return 0 if max_dist > 5.0 else 1
     finally:
         if vehicle is not None:
             try:

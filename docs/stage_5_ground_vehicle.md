@@ -100,6 +100,39 @@ conda-env `msvan3t_carla`). Реализован `scripts/carla_ground_vehicle.p
 как только поднят сервер. Это тот же паттерн двух режимов, что у AirSim
 (stub/linux/windows).
 
+### Live CARLA через Windows-хост (как AirSim) — ПРОВЕРЕНО
+
+CARLA сервер запускается на Windows с RTX (off-screen), WSL-клиент достаёт его по
+сети:
+
+```powershell
+# 1) Windows: поднять CARLA сервер (off-screen, использует GPU):
+C:\CARLA_0.9.12\WindowsNoEditor\CarlaUE4.exe -carla-rpc-port=2000 `
+    -quality-level=Low -RenderOffScreen -nosound
+```
+```bash
+# 2) WSL: запустить наземку на движке CARLA (host резолвится сам):
+bash scripts/run_stage_5_ground_vehicle_demo.sh --engine carla --carla-mode live
+```
+
+`--carla-host auto` сам находит Windows-хост: в WSL2 NAT это default gateway
+(`ip route`), сервер на нём слушает `:2000`. Перед запуском клиент делает
+preflight-probe порта (если firewall блокирует — сразу понятная ошибка, а не
+10-секундное зависание).
+
+**Проверено на реальном сервере** (CARLA 0.9.12 на Windows RTX, WSL2→`172.30.16.1:2000`):
+`reload_world` → spawn `vehicle.tesla.model3` в Town10HD → ручной throttle/steer
+(до **11 м/с**) с авто-вы-застреванием (реверс при упоре в здание) → машина live
+в ИССГР как `ground_vehicle.wheeled`, MANUAL, armed=True, max_dist ~76 м.
+
+Тонкости, найденные при доводке live (закрыты в коде с комментариями):
+- `client.reload_world()` на старте — иначе залипший после прошлого прогона
+  synchronous-режим не даёт прогнать физику и машина стоит;
+- `fixed_delta_seconds=0.05` (не 0.1) — на пределе substepping CARLA физика
+  колёс не интегрируется;
+- мягкий руль (0.08) — сильный S-манёвр за ~3с уводит машину в здание;
+- origin снимается после 20 warmup-тиков (спавн чуть над землёй даёт (0,0)).
+
 ## Артефакты
 
 | Файл | Роль |

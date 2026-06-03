@@ -28,7 +28,7 @@ ENGINE="${BAS_GROUND_ENGINE:-ardupilot}"     # ardupilot | carla
 FRAME="${BAS_ROVER_FRAME:-rover}"            # rover|rover-skid (ardupilot)
 CARLA_MODE="${BAS_CARLA_MODE:-auto}"         # auto | live | kinematic
 CARLA_PY="${BAS_CARLA_PYTHON:-$HOME/miniforge3/envs/msvan3t_carla/bin/python}"
-CARLA_HOST="${BAS_CARLA_HOST:-127.0.0.1}"
+CARLA_HOST="${BAS_CARLA_HOST:-auto}"   # auto = резолв Windows-хоста из WSL2 (live)
 CARLA_PORT="${BAS_CARLA_PORT:-2000}"
 CARLA_MAP="${BAS_CARLA_MAP:-}"
 ISSGR_PORT="${BAS_ISSGR_PORT:-8770}"
