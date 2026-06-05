@@ -157,8 +157,9 @@ consistency check), `check_sionna_gpu_runtime` output, pre-scan map.
 
 - **run_id:** `stage24_rf_stress_final_20260605T132014Z`
 - **run commit:** `9b312f25d2501a5f9b68614b464bcebcaf54e01e` (worktree dirty at run time)
-- **tooling commit:** the commit that introduces this C4 evidence package
-  (audit/figure/GPU scripts + reports + IEEE figures + processed CSVs). See `git log`.
+- **tooling commit:** `8d151bfe0b7bd636e772eb5f53d3faef92e1b455`
+  (introduces the C4 evidence package: audit/figure/GPU scripts + reports +
+  processed CSVs; parent = run commit `9b312f2`).
 
 ### Committed processed data (SHA-256)
 
