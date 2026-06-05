@@ -23,11 +23,61 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np  # type: ignore
+
+
+def _gpu_total_used_mib() -> int:
+    """Общая занятая GPU-память (MiB) по nvidia-smi. -1 если недоступно.
+
+    На WSL2 per-process GPU-память НЕ видна (`--query-compute-apps` пуст из-за
+    paravirtualized /dev/dxg), поэтому GPU доказывается дельтой ОБЩЕЙ памяти
+    вокруг контролируемой CUDA-аллокации.
+    """
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            text=True, timeout=5)
+        return int(out.strip().splitlines()[0])
+    except Exception:
+        return -1
+
+
+def _tf_gpu_list() -> list:
+    """Список GPU, которые видит TensorFlow (вторично: Sionna RT использует
+    Mitsuba/Dr.Jit, не TF — но логируем для полноты GPU-evidence)."""
+    try:
+        import tensorflow as tf  # type: ignore
+        return [d.name for d in tf.config.list_physical_devices("GPU")]
+    except Exception:
+        return []
+
+
+def _verify_mitsuba_gpu(mi) -> tuple[bool, int]:
+    """Доказывает, что Mitsuba cuda-variant РЕАЛЬНО считает на GPU: маленький
+    cuda-render и замер дельты общей GPU-памяти. Возвращает (gpu_verified,
+    mem_delta_mib). Только string-вариант 'cuda' НЕ является доказательством."""
+    if "cuda" not in str(mi.variant()):
+        return (False, 0)
+    base = _gpu_total_used_mib()
+    if base < 0:
+        return (False, 0)
+    try:
+        import drjit as dr  # type: ignore
+        sc = mi.load_dict({"type": "scene", "integrator": {"type": "path"},
+            "sensor": {"type": "perspective",
+                       "film": {"type": "hdrfilm", "width": 256, "height": 256}},
+            "emitter": {"type": "constant"}, "shape": {"type": "sphere"}})
+        _ = mi.render(sc, spp=128)
+        dr.sync_thread()
+        delta = _gpu_total_used_mib() - base
+        return (delta >= 50, int(delta))   # 50 MiB > фоновый шум
+    except Exception:
+        return (False, 0)
 
 
 # Origin для маппинга lat/lon -> метры. iris в Gazebo стартует в этой точке,
@@ -126,6 +176,8 @@ class LiveRTChannel:
         tx_power_dbm: float = 23.0,
         carrier_hz: float = 2.4e9,
         max_depth: int = 2,
+        mitsuba_variant: str | None = None,
+        require_gpu: bool = False,
     ) -> None:
         # Lazy import — модуль импортируется ТОЛЬКО если оператор включил
         # --rt-online (иначе sionna_env не обязателен).
@@ -134,11 +186,37 @@ class LiveRTChannel:
         import mitsuba as _mi
         # CUDA в WSL2 без OptiX SDK — pinned LLVM. На bare Linux можно
         # переопределить через MITSUBA_VARIANT env.
-        variant = _os.environ.get("MITSUBA_VARIANT", "llvm_ad_mono_polarized")
+        requested_variant = (mitsuba_variant
+                             or _os.environ.get("MITSUBA_VARIANT", "llvm_ad_mono_polarized"))
         if _mi.variant() is None:
-            _mi.set_variant(variant)
+            _mi.set_variant(requested_variant)
+        actual_variant = str(_mi.variant())
+
+        # GPU-evidence: проверяем РЕАЛЬНЫЙ backend, а не только строку variant.
+        # Строка 'cuda_ad_mono_polarized' может стоять, но окружение/WSL2 могут
+        # молча считать на CPU — поэтому меряем дельту GPU-памяти на cuda-render.
+        tf_gpus = _tf_gpu_list()
+        gpu_verified, gpu_mem_delta = _verify_mitsuba_gpu(_mi)
+        print(f"[rt-live] requested_mitsuba_variant={requested_variant}")
+        print(f"[rt-live] actual_mitsuba_variant={actual_variant}")
+        print(f"[rt-live] tensorflow_gpus={tf_gpus}")
+        print(f"[rt-live] require_gpu={require_gpu}")
+        print(f"[rt-live] gpu_verified={gpu_verified} (cuda-render GPU mem "
+              f"delta={gpu_mem_delta} MiB; WSL2 per-process GPU mem unavailable)")
+        if require_gpu and not gpu_verified:
+            raise RuntimeError(
+                f"BAS_SIONNA_REQUIRE_GPU set, but GPU backend NOT confirmed: "
+                f"variant={actual_variant} tf_gpus={tf_gpus} "
+                f"cuda_render_mem_delta_mib={gpu_mem_delta}. Refusing to silently "
+                f"run on CPU.")
         import sionna.rt as _rt   # type: ignore
 
+        self.requested_variant = requested_variant
+        self.actual_variant = actual_variant
+        self.tf_gpus = tf_gpus
+        self.gpu_verified = gpu_verified
+        self.gpu_mem_delta_mib = gpu_mem_delta
+        self.require_gpu = require_gpu
         print(f"[rt-live] Mitsuba variant: {_mi.variant()}")
         print(f"[rt-live] loading scene {scene_path}")
         t0 = time.time()
@@ -164,8 +242,10 @@ class LiveRTChannel:
         self._max_depth = max_depth
         self._tx_position = tx_position
         self.tx_pos = np.array(tx_position)
+        self.tx_position = tx_position
         self.carrier_hz = carrier_hz
         self.tx_power_dbm = tx_power_dbm
+        self.variant = str(_mi.variant())
 
         # Warm-up: LLVM JIT компилирует kernel при первом вызове (~2 сек).
         # Делаем здесь чтобы UI не зависал на первом UAV update.
@@ -251,6 +331,9 @@ def tail_flight_positions(events_path: Path, from_start: bool = False):
         if "lat" not in pos:
             continue
         yield (
+            float(ev.get("wall_time", time.time())),
+            float(ev.get("wall_dt", ev.get("sim_time", 0.0))),
+            float(ev.get("sim_time", ev.get("wall_dt", 0.0))),
             float(pos["lat"]),
             float(pos["lon"]),
             float(pos.get("alt_rel_m", 0.0)),
@@ -271,12 +354,18 @@ def main() -> int:
                     help="Transmitter position 'x,y,z' для live RT")
     ap.add_argument("--rt-max-depth", type=int, default=2,
                     help="Max reflection depth для PathSolver (выше = точнее, медленнее)")
+    ap.add_argument("--mitsuba-variant", default=os.environ.get("MITSUBA_VARIANT", ""),
+                    help="Mitsuba variant, e.g. cuda_ad_mono_polarized")
+    ap.add_argument("--require-gpu", action="store_true",
+                    help="Fail unless the selected Mitsuba variant is CUDA")
     ap.add_argument("--out", default="/tmp/sionna_channel.json")
     ap.add_argument("--interval-ms", type=int, default=100)
     ap.add_argument("--max-seconds", type=float, default=0.0,
                     help="Auto-stop после N секунд (0 = forever)")
     ap.add_argument("--replay", action="store_true",
                     help="Прочитать events.jsonl с начала (smoke на завершённых прогонах)")
+    ap.add_argument("--history-out", default="",
+                    help="Optional JSONL history of published RSSI/channel samples")
     args = ap.parse_args()
 
     # Channel model: offline radio map (default) либо live PathSolver.
@@ -289,6 +378,8 @@ def main() -> int:
             scene_path=Path(args.rt_scene),
             tx_position=tx_xyz,           # type: ignore[arg-type]
             max_depth=args.rt_max_depth,
+            mitsuba_variant=args.mitsuba_variant or None,
+            require_gpu=args.require_gpu,
         )
     else:
         if not args.radio_map:
@@ -296,6 +387,9 @@ def main() -> int:
         rm = RadioMap(Path(args.radio_map))
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path = Path(args.history_out) if args.history_out else None
+    if history_path is not None:
+        history_path.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.time()
     last_write = 0.0
@@ -305,7 +399,7 @@ def main() -> int:
     print(f"==> publishing to {out_path} every {args.interval_ms} ms "
           f"(reading {args.events})")
 
-    for lat, lon, alt in tail_flight_positions(Path(args.events), from_start=args.replay):
+    for event_wall_time, wall_dt, sim_time, lat, lon, alt in tail_flight_positions(Path(args.events), from_start=args.replay):
         last_pos = (lat, lon, alt)
         now = time.time()
         if now - last_write < interval_s:
@@ -313,6 +407,7 @@ def main() -> int:
         last_write = now
 
         x, y = haversine_xy_m(lat, lon)
+        tx_pos = np.asarray(getattr(rm, "tx_pos", np.array([0.0, 0.0, 0.0])), dtype=float)
         rt_t0 = time.time()
         rss_db, path_loss_db = rm.lookup(x, y, alt)   # type: ignore[arg-type]
         rt_latency_ms = (time.time() - rt_t0) * 1000.0
@@ -322,11 +417,21 @@ def main() -> int:
         record = {
             "wall_time": now,
             "wall_dt": now - start,
+            "source_event_wall_time": event_wall_time,
+            "source_event_wall_dt": wall_dt,
+            "sim_time": sim_time,
             "uav_lat": lat,
             "uav_lon": lon,
             "uav_alt_rel_m": alt,
             "uav_x_north": x,
             "uav_y_east": y,
+            "uav_z_m": alt,
+            "gcs_x_north": float(tx_pos[0]) if tx_pos.size > 0 else 0.0,
+            "gcs_y_east": float(tx_pos[1]) if tx_pos.size > 1 else 0.0,
+            "gcs_z_m": float(tx_pos[2]) if tx_pos.size > 2 else 0.0,
+            "tx_x_north": float(tx_pos[0]) if tx_pos.size > 0 else 0.0,
+            "tx_y_east": float(tx_pos[1]) if tx_pos.size > 1 else 0.0,
+            "tx_z_m": float(tx_pos[2]) if tx_pos.size > 2 else 0.0,
             "rss_db": rss_db,
             "path_loss_db": path_loss_db,
             "loss_ratio": loss_ratio,
@@ -334,9 +439,20 @@ def main() -> int:
             "channel_model": "rt_online" if args.rt_online else "radio_map_lookup",
             "channel_latency_ms": rt_latency_ms,
         }
+        if args.rt_online:
+            record["rt_variant"] = getattr(rm, "variant", "")
+            record["requested_mitsuba_variant"] = getattr(rm, "requested_variant", "")
+            record["actual_mitsuba_variant"] = getattr(rm, "actual_variant", "")
+            record["tensorflow_gpus"] = getattr(rm, "tf_gpus", [])
+            record["require_gpu"] = getattr(rm, "require_gpu", False)
+            record["gpu_verified"] = getattr(rm, "gpu_verified", False)
+            record["gpu_mem_delta_mib"] = getattr(rm, "gpu_mem_delta_mib", 0)
         tmp_path = out_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(record, separators=(",", ":")))
         tmp_path.replace(out_path)   # atomic rename
+        if history_path is not None:
+            with history_path.open("a", encoding="utf-8") as hf:
+                hf.write(json.dumps(record, separators=(",", ":")) + "\n")
 
         if args.max_seconds and (now - start) > args.max_seconds:
             print("max-seconds reached")

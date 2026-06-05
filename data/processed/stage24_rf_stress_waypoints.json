@@ -1,0 +1,242 @@
+[
+  {
+    "label": "guided",
+    "api": "command",
+    "payload": {
+      "action": "guided"
+    },
+    "wait_s": 2.0
+  },
+  {
+    "label": "arm",
+    "api": "command",
+    "payload": {
+      "action": "arm",
+      "altitude": 10.0
+    },
+    "wait_s": 3.0,
+    "screenshot": "01_armed"
+  },
+  {
+    "label": "takeoff_10m",
+    "api": "command",
+    "payload": {
+      "action": "takeoff",
+      "altitude": 10.0
+    },
+    "wait_s": 10.0,
+    "screenshot": "02_takeoff"
+  },
+  {
+    "label": "rf_out_01_target_-72dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": -240.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": -240.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": "03_rf_out_01_target_-72dbm",
+    "prescan_target_rssi_db": -72.0,
+    "prescan_rssi_db": -71.458,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_out_02_target_-74dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": -120.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": -120.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -74.0,
+    "prescan_rssi_db": -73.955,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_out_03_target_-76dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 0.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 0.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -76.0,
+    "prescan_rssi_db": -75.893,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_out_04_target_-78dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 180.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 180.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -78.0,
+    "prescan_rssi_db": -78.172,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_out_05_target_-80dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 240.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 240.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": "07_rf_out_05_target_-80dbm",
+    "prescan_target_rssi_db": -80.0,
+    "prescan_rssi_db": -78.815,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_back_06_target_-78dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 180.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 180.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -78.0,
+    "prescan_rssi_db": -78.172,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_back_07_target_-76dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 0.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 0.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -76.0,
+    "prescan_rssi_db": -75.893,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_back_08_target_-74dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": -120.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": -120.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": null,
+    "prescan_target_rssi_db": -74.0,
+    "prescan_rssi_db": -73.955,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "rf_back_09_target_-72dbm",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": -240.0,
+      "altitude": 10.0
+    },
+    "wait_s": 220.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": -240.0,
+    "reach_alt": 10.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": "11_rf_back_09_target_-72dbm",
+    "prescan_target_rssi_db": -72.0,
+    "prescan_rssi_db": -71.458,
+    "prescan_selection_status": "ok"
+  },
+  {
+    "label": "return_home",
+    "api": "goto",
+    "payload": {
+      "north": 0.0,
+      "east": 0.0,
+      "altitude": 10.0
+    },
+    "wait_s": 3.0,
+    "reach_check": true,
+    "reach_north": 0.0,
+    "reach_east": 0.0,
+    "reach_tol_m": 10.0,
+    "reach_timeout_s": 160.0,
+    "screenshot": "route_home"
+  },
+  {
+    "label": "land",
+    "api": "command",
+    "payload": {
+      "action": "land"
+    },
+    "wait_s": 10.0
+  },
+  {
+    "label": "disarm_safety",
+    "api": "command",
+    "payload": {
+      "action": "disarm"
+    },
+    "wait_s": 2.0
+  }
+]

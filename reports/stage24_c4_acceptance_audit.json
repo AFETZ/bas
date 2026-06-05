@@ -1,0 +1,174 @@
+{
+  "status": "PASS",
+  "run_id": "stage24_rf_stress_final_20260605T132014Z",
+  "commit": "9b312f25d2501a5f9b68614b464bcebcaf54e01e",
+  "worktree_dirty": true,
+  "n_pass": 24,
+  "n_fail": 0,
+  "blocking_failures": [],
+  "numbers": {
+    "route_rows": 45116,
+    "control_packets": 23091,
+    "payload_route_packets": 22025,
+    "received_total": 33020,
+    "dropped_total": 12096,
+    "payload_entering_ns3": 21433,
+    "payload_leaving_ns3": 15811,
+    "payload_dropped_by_ns3": 5622,
+    "post_ns3_rtp_received": 14130,
+    "decoded_frames": 799,
+    "interruptions": 568,
+    "rssi_used_min_dbm": -78.813,
+    "rssi_used_max_dbm": -71.463,
+    "max_rssi_delta_abs": 0.0,
+    "sentinel_floor_rows": 0,
+    "normal_bins": 10,
+    "floor_bins": 0
+  },
+  "checks": [
+    {
+      "n": 1,
+      "criterion": "single run_id (route+payload)",
+      "pass": true,
+      "detail": "route={'stage24_rf_stress_final_20260605T132014Z': 45116} payload={'stage24_rf_stress_final_20260605T132014Z': 22549}"
+    },
+    {
+      "n": 2,
+      "criterion": "no synthetic RSSI targets (route trace source = ns-3 error model only)",
+      "pass": true,
+      "detail": "ns3_trace_source={'ReceiveErrorModel::DoCorrupt': 45116}"
+    },
+    {
+      "n": 3,
+      "criterion": "only rt_online + is_live + sample_valid rows",
+      "pass": true,
+      "detail": "channel_model={'rt_online': 45116} is_live={'True': 45116} sample_valid={'True': 45116}"
+    },
+    {
+      "n": 4,
+      "criterion": "RSSI_from_Sionna == RSSI_used (max delta ~0)",
+      "pass": true,
+      "detail": "max_delta_abs=0.0 count_nonzero_delta=0"
+    },
+    {
+      "n": 5,
+      "criterion": "drop_reason = phy_rf_bernoulli for all drops",
+      "pass": true,
+      "detail": "drop_reason={'none': 33020, 'phy_rf_bernoulli': 12096} err_reason={'sionna_rt_loss': 45116}"
+    },
+    {
+      "n": 6,
+      "criterion": "control packets >= 3000",
+      "pass": true,
+      "detail": "control=23091"
+    },
+    {
+      "n": 7,
+      "criterion": "payload route packets >= 10000",
+      "pass": true,
+      "detail": "payload_route=22025"
+    },
+    {
+      "n": 8,
+      "criterion": "payload entering ns-3 >= 10000",
+      "pass": true,
+      "detail": "entering_ns3=21433"
+    },
+    {
+      "n": 9,
+      "criterion": "payload leaving ns-3 > 0",
+      "pass": true,
+      "detail": "leaving_ns3=15811"
+    },
+    {
+      "n": 10,
+      "criterion": "payload dropped by ns-3 > 0",
+      "pass": true,
+      "detail": "dropped_by_ns3=5622"
+    },
+    {
+      "n": 11,
+      "criterion": "post-ns3 RTP received > 0",
+      "pass": true,
+      "detail": "rtp_received=14130"
+    },
+    {
+      "n": 12,
+      "criterion": "decoded frames > 0",
+      "pass": true,
+      "detail": "decoded_frames_csv=799"
+    },
+    {
+      "n": 13,
+      "criterion": "interruptions present (>=0, reported)",
+      "pass": true,
+      "detail": "interruptions=568 frame_gap_events_csv=798"
+    },
+    {
+      "n": 14,
+      "criterion": "payload_bypass = false",
+      "pass": true,
+      "detail": "payload_bypass=False payload_bypass_disabled=True"
+    },
+    {
+      "n": 15,
+      "criterion": "require_ns3_payload = true",
+      "pass": true,
+      "detail": "require_ns3_payload=True"
+    },
+    {
+      "n": 16,
+      "criterion": "valid_payload_route_audit = true",
+      "pass": true,
+      "detail": "valid_payload_route_audit=True"
+    },
+    {
+      "n": 17,
+      "criterion": "no-coverage/sentinel floor rows = 0 in route CSV",
+      "pass": true,
+      "detail": "sentinel_rows(RSSI<=-119.0)=0"
+    },
+    {
+      "n": 18,
+      "criterion": "RSSI range (excl floor) is a finite transition corridor",
+      "pass": true,
+      "detail": "rssi_used_range=-78.813..-71.463 dBm"
+    },
+    {
+      "n": 19,
+      "criterion": "normal RSSI bins present",
+      "pass": true,
+      "detail": "normal_bins=10 floor_bins=0"
+    },
+    {
+      "n": 20,
+      "criterion": "bins pass packet-count threshold",
+      "pass": true,
+      "detail": "bins_attempted>=200: 10/10; low_confidence_any=False"
+    },
+    {
+      "n": 21,
+      "criterion": "weak/transition bin loss > 0.2 exists",
+      "pass": true,
+      "detail": "weak_bins=[('control', '-80.0', 0.543), ('control', '-78.0', 0.33), ('control', '-76.0', 0.254), ('payload', '-80.0', 0.536), ('payload', '-78.0', 0.346), ('payload', '-76.0', 0.243)]"
+    },
+    {
+      "n": 22,
+      "criterion": "strong bin loss < 0.05 exists",
+      "pass": true,
+      "detail": "strong_bins=[('control', '-72.0', 0.039), ('payload', '-72.0', 0.034)]"
+    },
+    {
+      "n": 23,
+      "criterion": "IEEE figures regenerated (png+pdf+svg present)",
+      "pass": true,
+      "detail": "figures_present={'stage24_route_rssi_loss_bins_ieee': True, 'stage24_route_rssi_map_ieee': True, 'stage24_route_rssi_packet_trace_ieee': True, 'stage24_payload_goodput_ieee': True, 'stage24_payload_interruptions_ieee': True}"
+    },
+    {
+      "n": 24,
+      "criterion": "no old/failed run mixed (all processed CSV single run_id)",
+      "pass": true,
+      "detail": "processed route+payload CSVs carry exactly one run_id"
+    }
+  ]
+}
