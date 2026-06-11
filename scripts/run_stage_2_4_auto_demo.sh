@@ -51,6 +51,11 @@ mkdir -p "$LOG_DIR"
 echo "==> RUN_ID=${RUN_ID}"
 echo "==> LOG_DIR=${LOG_DIR}"
 echo "==> STACK=${STACK_SCRIPT}"
+AUTO_DEMO_DURATION_BUDGET_S="${BAS_AUTO_DEMO_DURATION_BUDGET_S:-240}"
+AUTO_DEMO_UI_PORT_WAIT_S="${BAS_AUTO_DEMO_UI_PORT_WAIT_S:-120}"
+AUTO_DEMO_UI_READY_TIMEOUT_S="${BAS_AUTO_DEMO_UI_READY_TIMEOUT_S:-120}"
+echo "==> RECORDER_DURATION_BUDGET_S=${AUTO_DEMO_DURATION_BUDGET_S}"
+echo "==> UI_PORT_WAIT_S=${AUTO_DEMO_UI_PORT_WAIT_S}"
 
 ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
 ensure_root
@@ -84,7 +89,7 @@ echo "  stack pid=${STACK_PID}, log=${STACK_LOG}"
 echo "[auto_demo] wait for Web GCS UI"
 # Просто ждём что Python web server откроет TCP:UI_PORT. Само api/health
 # проверяется внутри recorder'а.
-for i in $(seq 1 120); do
+for i in $(seq 1 "$AUTO_DEMO_UI_PORT_WAIT_S"); do
     if ss -tln 2>/dev/null | grep -q ":${UI_PORT}\b"; then
         echo "  UI port :${UI_PORT} listening (${i}s)"
         break
@@ -106,7 +111,8 @@ echo "[auto_demo] start recorder (Playwright + ffmpeg)"
 "${REPO_ROOT}/.venv/bin/python" "${SCRIPT_DIR}/auto_demo_recorder.py" \
     --ui-url "$UI_URL" \
     --log-dir "$LOG_DIR" \
-    --duration-budget-s 240 \
+    --ui-ready-timeout "$AUTO_DEMO_UI_READY_TIMEOUT_S" \
+    --duration-budget-s "$AUTO_DEMO_DURATION_BUDGET_S" \
     2>&1 | tee "$RECORDER_LOG"
 RECORDER_RC=${PIPESTATUS[0]}
 

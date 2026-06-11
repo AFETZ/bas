@@ -48,5 +48,7 @@ export BAS_SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-both}"
 # FPV overlay по умолчанию включен — оператор видит и RT-physics, и POV.
 export BAS_GCS_FPV="${BAS_GCS_FPV:-1}"
 export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
+export BAS_REQUIRE_NS3_PAYLOAD="${BAS_REQUIRE_NS3_PAYLOAD:-1}"
+export BAS_PAYLOAD_BYPASS="${BAS_PAYLOAD_BYPASS:-0}"
 
 exec bash "${SCRIPT_DIR}/run_stage_2_4_mavproxy_gcs.sh" ui

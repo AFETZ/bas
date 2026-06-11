@@ -43,11 +43,12 @@ fi
 # Pre-compute RUN_ID -- этот же ID будет использован run_stage_1_5_2_mission.sh
 # (через BAS_RUN_ID env), и publisher будет ждать LOG_DIR именно по этому RUN_ID.
 PROFILE="${PROFILE:-wifi_good}"
-RUN_ID="stage_2_1_sionna_${PROFILE}_$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_ID="${BAS_RUN_ID:-stage_2_1_sionna_${PROFILE}_$(date -u +%Y%m%dT%H%M%SZ)}"
 LOG_DIR="${REPO_ROOT}/logs/${RUN_ID}"
 export BAS_RUN_ID="$RUN_ID"
 echo "==> RUN_ID=$RUN_ID"
 echo "==> LOG_DIR=$LOG_DIR"
+echo "==> BAS_SIONNA_TARGET_FLOW=${BAS_SIONNA_TARGET_FLOW:-payload}"
 
 # Сбрасываем stale файл, чтобы ns-3 не подхватил предыдущий прогон.
 rm -f "$SIONNA_JSON"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import platform
 import random
+import os
 import sys
 import time
 import uuid
@@ -204,7 +205,11 @@ def _run_real(
 
     try:
         runner = MissionRunner(stack=stack, mission=scenario.mission, logger=logger)
-        runner.upload_and_start()
+        gps_wait_timeout_s = None
+        raw_gps_timeout = os.environ.get("BAS_GPS_WAIT_TIMEOUT_S")
+        if raw_gps_timeout:
+            gps_wait_timeout_s = float(raw_gps_timeout)
+        runner.upload_and_start(gps_wait_timeout_s=gps_wait_timeout_s)
 
         wall_start = time.time()
         deadline = wall_start + scenario.max_duration_s

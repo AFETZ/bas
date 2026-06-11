@@ -69,6 +69,19 @@ case "$PROFILE" in
     *) echo "Неизвестный профиль: $PROFILE" >&2; exit 1 ;;
 esac
 
+# PAPER_V2: optional explicit impairment overrides on top of the profile defaults.
+# Without these env vars the behaviour is byte-identical to the profile above.
+# Used by PAPER_V2/scripts/run_paper_experiments_v2.sh to sweep ns-3 packet loss
+# (and, if ever needed, delay/outage) on the control and payload channels
+# independently. Values are passed straight through to the ns-3 two_channel CLI
+# and are logged verbatim in ns3_events.jsonl (traceable applied impairment).
+CTRL_LOSS="${BAS_CTRL_LOSS:-$CTRL_LOSS}"
+CTRL_DELAY_MS="${BAS_CTRL_DELAY_MS:-$CTRL_DELAY_MS}"
+CTRL_OUTAGE="${BAS_CTRL_OUTAGE-$CTRL_OUTAGE}"
+PLOAD_LOSS="${BAS_PLOAD_LOSS:-$PLOAD_LOSS}"
+PLOAD_DELAY_MS="${BAS_PLOAD_DELAY_MS:-$PLOAD_DELAY_MS}"
+PLOAD_OUTAGE="${BAS_PLOAD_OUTAGE-$PLOAD_OUTAGE}"
+
 # Длительность ns-3.
 if [ -z "${NS3_DURATION:-}" ]; then
     if [ "$PROFILE" = "degraded_lora" ]; then NS3_DURATION=600; else NS3_DURATION=300; fi
@@ -319,8 +332,11 @@ NS3_ARGS="${NS3_ARGS} --ploadDelayMs=${PLOAD_DELAY_MS} --ploadLoss=${PLOAD_LOSS}
 # Этап 2.1.d: если задан BAS_SIONNA_CHANNEL_PATH, ns-3 будет каждые 100 мс
 # читать его и обновлять payload-канал RateErrorModel (dynamic Sionna RT).
 if [ -n "${BAS_SIONNA_CHANNEL_PATH:-}" ]; then
+    SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-payload}"
     NS3_ARGS="${NS3_ARGS} --sionnaChannelPath=${BAS_SIONNA_CHANNEL_PATH}"
+    NS3_ARGS="${NS3_ARGS} --sionnaTargetFlow=${SIONNA_TARGET_FLOW}"
     echo "[sionna] ns-3 будет читать ${BAS_SIONNA_CHANNEL_PATH} каждые 100 мс"
+    echo "[sionna] target_flow=${SIONNA_TARGET_FLOW}"
 fi
 
 sg docker -c "docker rm -f bas-ns3-stage15 2>/dev/null" >/dev/null 2>&1 || true

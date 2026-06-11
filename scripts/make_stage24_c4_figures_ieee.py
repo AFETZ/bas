@@ -138,6 +138,7 @@ def fig_c_trace():
     t_rssi, rssi = [], []
     # windowed loss
     win = 5.0
+    min_packets_per_window = 20
     agg = defaultdict(lambda: defaultdict(lambda: [0, 0]))  # flow -> wbin -> [att, drop]
     tmin, tmax = 1e18, -1e18
     for t, fl, rs, dec, xn, ye in stream_route():
@@ -155,10 +156,15 @@ def fig_c_trace():
     step = max(1, len(t_rssi) // 4000)
     ax1.plot(t_rssi[::step], rssi[::step], color="#2c7fb8", lw=0.8)
     ax1.set_ylabel("RSSI (dBm)")
-    ax1.set_title("Stage 2.4 live Sionna RT RSSI and windowed packet loss")
+    ax1.set_title("C4 online Sionna RT RSSI and windowed packet loss")
     # windowed loss per flow
     for fl, color in (("control", C_CTRL), ("payload", C_PAY)):
-        wbs = sorted(agg[fl])
+        # Exclude partial edge windows, whose one-packet ratios otherwise appear
+        # as artificial 0 or 1 spikes at stream startup/shutdown.
+        wbs = sorted(
+            wb for wb, (attempts, _) in agg[fl].items()
+            if attempts >= min_packets_per_window
+        )
         tx = [wb * win + win / 2 for wb in wbs]
         ly = [agg[fl][wb][1] / agg[fl][wb][0] if agg[fl][wb][0] else np.nan for wb in wbs]
         ax2.plot(tx, ly, "-", color=color, lw=1.4, label=f"{fl} loss ({int(win)} s window)")

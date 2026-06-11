@@ -36,6 +36,9 @@ FPV_UPSTREAM_PORT = int(os.environ.get("BAS_FPV_UPSTREAM_PORT", "8766"))
 FPV_BOUNDARY = os.environ.get("BAS_FPV_BOUNDARY", "spionkop")
 FPV_CONNECT_TIMEOUT_S = float(os.environ.get("BAS_FPV_CONNECT_TIMEOUT_S", "3.0"))
 FPV_CHUNK_BYTES = 4096
+FPV_REQUIRE_NS3_PAYLOAD = os.environ.get("BAS_REQUIRE_NS3_PAYLOAD", "0") == "1"
+FPV_PAYLOAD_BYPASS = os.environ.get("BAS_PAYLOAD_BYPASS", "0") == "1"
+FPV_NS3_PAYLOAD = os.environ.get("BAS_NS3_PAYLOAD", "0") == "1"
 
 from mavproxy_stage_2_4_driver import (
     ARM_COMMAND,
@@ -328,6 +331,7 @@ class OperatorController:
         self.last_rf_status: str | None = None
         self.last_rf_rssi: float | None = None
         self.goto_altitude_m: float | None = None
+        self.start_wall_time = time.time()
         # Home reference captured at the first GPS fix BEFORE arming.
         # Used to derive local NED from GLOBAL_POSITION_INT when the
         # SITL never publishes LOCAL_POSITION_NED (ArduCopter default
@@ -379,6 +383,7 @@ class OperatorController:
 
         threading.Thread(target=self.reader_loop, name="mavproxy-reader", daemon=True).start()
         threading.Thread(target=self.guidance_loop, name="goto-guidance", daemon=True).start()
+        threading.Thread(target=self.flight_event_loop, name="flight-events", daemon=True).start()
         if self.args.rf_demo or self.args.rf_channel_path:
             self.write_rf_channel(self.rf_snapshot())
             threading.Thread(target=self.rf_loop, name="rf-channel", daemon=True).start()
@@ -415,6 +420,63 @@ class OperatorController:
             self.recent_events = self.recent_events[-160:]
         if self.events:
             self.events.emit(event_type, **fields)
+
+    def flight_event_loop(self) -> None:
+        while not self.stop_event.is_set():
+            event = self.flight_event_snapshot()
+            if event is not None and self.events is not None:
+                self.events.emit("flight", **event)
+            time.sleep(0.2)
+
+    def flight_event_snapshot(self) -> dict[str, Any] | None:
+        with self.lock:
+            xy = self._derive_local_ne()
+            lat = self.state.last_lat_deg
+            lon = self.state.last_lon_deg
+            alt_rel = self.state.last_relative_alt_m
+            alt_amsl = self.state.last_global_alt_m
+            heading = self.state.last_heading_deg
+            groundspeed = self.state.last_groundspeed_mps
+            mode = self.state.current_mode or self.demo_mode
+            armed = self.state.current_armed
+        if xy is None and lat is None and lon is None:
+            return None
+        north_m = xy[0] if xy is not None else 0.0
+        east_m = xy[1] if xy is not None else 0.0
+        if lat is None or lon is None:
+            origin_lat = self.home_lat if self.home_lat is not None else DEFAULT_ORIGIN_LAT
+            origin_lon = self.home_lon if self.home_lon is not None else DEFAULT_ORIGIN_LON
+            deg2m_lat = 111319.9
+            deg2m_lon = 111319.9 * max(math.cos(math.radians(origin_lat)), 0.01)
+            lat = origin_lat + north_m / deg2m_lat
+            lon = origin_lon + east_m / deg2m_lon
+        alt_rel = float(alt_rel or 0.0)
+        if alt_amsl is None:
+            alt_amsl = alt_rel
+        wall_time = time.time()
+        wall_dt = wall_time - self.start_wall_time
+        return {
+            "wall_time": wall_time,
+            "wall_dt": wall_dt,
+            "sim_time": wall_dt,
+            "vehicle_id": "uav-1",
+            "position": {
+                "lat": lat,
+                "lon": lon,
+                "alt_amsl_m": alt_amsl,
+                "alt_rel_m": alt_rel,
+                "north_m": north_m,
+                "east_m": east_m,
+            },
+            "velocity_mps": {
+                "groundspeed": groundspeed,
+            },
+            "heading_deg": heading,
+            "flight_mode": mode,
+            "armed": armed,
+            "mission_state": "in_progress" if armed or alt_rel > 0.5 else "ground",
+            "source": "stage24_web_gcs",
+        }
 
     def reader_loop(self) -> None:
         next_poll = time.monotonic() + 1.0
@@ -948,6 +1010,11 @@ class OperatorController:
             "goto_status": self.last_goto_status,
             "log_dir": str(self.log_dir),
             "endpoint_chain": "Web GCS -> MAVProxy CLI -> ns-3 control -> mavbridge -> SITL",
+            "payload_endpoint_chain": (
+                "Gazebo/video source -> UAV netns -> ns-3 payload -> receiver -> Web GCS"
+                if FPV_NS3_PAYLOAD and not FPV_PAYLOAD_BYPASS
+                else "Payload path bypassed ns-3; payload metrics invalid"
+            ),
             "ui_url": self.public_url,
             "events": events,
             "mavproxy_running": bool(self.session and self.session.is_running()) if not self.args.demo else True,
@@ -1145,12 +1212,20 @@ class GcsHandler(BaseHTTPRequestHandler):
             return {
                 "ok": True,
                 "upstream": f"{FPV_UPSTREAM_HOST}:{FPV_UPSTREAM_PORT}",
+                "ns3_payload_required": FPV_REQUIRE_NS3_PAYLOAD,
+                "ns3_payload_path": FPV_NS3_PAYLOAD and not FPV_PAYLOAD_BYPASS,
+                "payload_bypass": FPV_PAYLOAD_BYPASS,
+                "valid_for_payload_metrics": FPV_NS3_PAYLOAD and not FPV_PAYLOAD_BYPASS,
             }
         except OSError as exc:
             return {
                 "ok": False,
                 "upstream": f"{FPV_UPSTREAM_HOST}:{FPV_UPSTREAM_PORT}",
                 "error": str(exc),
+                "ns3_payload_required": FPV_REQUIRE_NS3_PAYLOAD,
+                "ns3_payload_path": FPV_NS3_PAYLOAD and not FPV_PAYLOAD_BYPASS,
+                "payload_bypass": FPV_PAYLOAD_BYPASS,
+                "valid_for_payload_metrics": False,
             }
 
     def _proxy_fpv(self) -> None:
@@ -1162,6 +1237,12 @@ class GcsHandler(BaseHTTPRequestHandler):
         байты как есть. Без re-encoding и без буферизации (sync=false на
         gst-стороне обеспечивает realtime).
         """
+        if FPV_REQUIRE_NS3_PAYLOAD and FPV_PAYLOAD_BYPASS:
+            self.send_error(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "Payload path bypassed ns-3, payload metrics are invalid for network experiment.",
+            )
+            return
         try:
             upstream = socket.create_connection(
                 (FPV_UPSTREAM_HOST, FPV_UPSTREAM_PORT),

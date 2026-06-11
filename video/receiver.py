@@ -14,6 +14,7 @@ ENV:
     BAS_VIDEO_LISTEN_PORT  — default 5000
     BAS_VIDEO_LOG          — default /work/logs/video_rx.jsonl
     BAS_VIDEO_RECORD_MP4   — optional path to write received H.264 as MP4
+    BAS_VIDEO_MJPEG_PORT   — optional TCP multipart MJPEG endpoint after decode
 """
 from __future__ import annotations
 
@@ -95,6 +96,7 @@ def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
           tee name=t
             t. ! queue ! rtph264depay ! avdec_h264 ! fakesink sync=false
             t. ! queue ! rtph264depay ! h264parse ! mp4mux ! filesink (optional)
+            t. ! queue ! rtph264depay ! avdec_h264 ! jpegenc ! tcpserversink (optional)
     """
     pipeline_parts = [
         f"udpsrc name=net_src port={args.listen_port} "
@@ -102,7 +104,8 @@ def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
         f"encoding-name=H264,payload=96\" ! "
         f"tee name=t "
         f"t. ! queue leaky=downstream max-size-buffers=200 ! "
-        f"rtph264depay ! avdec_h264 ! fakesink sync=false async=false"
+        f"rtph264depay ! avdec_h264 ! videoconvert ! "
+        f"fakesink name=decode_sink sync=false async=false"
     ]
     if args.record_mp4:
         record_path = Path(args.record_mp4)
@@ -112,6 +115,17 @@ def build_pipeline(args: argparse.Namespace) -> Gst.Pipeline:
             f"rtph264depay ! h264parse config-interval=-1 ! "
             f"mp4mux faststart=true ! "
             f"filesink location={record_path} async=false"
+        )
+    if args.mjpeg_port > 0:
+        pipeline_parts.append(
+            f"t. ! queue leaky=downstream max-size-buffers=200 ! "
+            f"rtph264depay ! avdec_h264 ! videoconvert ! videoscale ! "
+            f"video/x-raw,width={args.mjpeg_width},height={args.mjpeg_height} ! "
+            f"videorate ! video/x-raw,framerate={args.mjpeg_fps}/1 ! "
+            f"jpegenc quality={args.mjpeg_quality} ! "
+            f"multipartmux boundary={args.mjpeg_boundary} ! "
+            f"tcpserversink host=0.0.0.0 port={args.mjpeg_port} "
+            f"sync=false recover-policy=keyframe"
         )
 
     pipeline_str = " ".join(pipeline_parts)
@@ -154,6 +168,44 @@ def on_rx_buffer_probe(
     return Gst.PadProbeReturn.OK
 
 
+class FrameProbeState:
+    def __init__(self) -> None:
+        self.frame_id = 0
+
+
+def _clock_value(value: int) -> int | None:
+    if value == Gst.CLOCK_TIME_NONE:
+        return None
+    return int(value)
+
+
+def on_decoded_frame_probe(
+    _pad: Gst.Pad,
+    info: Gst.PadProbeInfo,
+    writer: JsonlWriter,
+    start_wall: float,
+    state: FrameProbeState,
+) -> Gst.PadProbeReturn:
+    buf = info.get_buffer()
+    if buf is None:
+        return Gst.PadProbeReturn.OK
+    state.frame_id += 1
+    wall = time.time()
+    writer.write({
+        "event_type": "video_frame",
+        "tap": "decode_sink_sink_pad",
+        "timing_source": "gst_pad_probe",
+        "wall_time": wall,
+        "wall_dt": wall - start_wall,
+        "frame_id": state.frame_id,
+        "pts_ns": _clock_value(buf.pts),
+        "dts_ns": _clock_value(buf.dts),
+        "duration_ns": _clock_value(buf.duration),
+        "size_bytes": int(buf.get_size()),
+    })
+    return Gst.PadProbeReturn.OK
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen-port", type=int,
@@ -162,6 +214,18 @@ def main() -> int:
                     default=os.environ.get("BAS_VIDEO_LOG", "/work/logs/video_rx.jsonl"))
     ap.add_argument("--record-mp4",
                     default=os.environ.get("BAS_VIDEO_RECORD_MP4", ""))
+    ap.add_argument("--mjpeg-port", type=int,
+                    default=int(os.environ.get("BAS_VIDEO_MJPEG_PORT", "0")))
+    ap.add_argument("--mjpeg-width", type=int,
+                    default=int(os.environ.get("BAS_VIDEO_MJPEG_WIDTH", "640")))
+    ap.add_argument("--mjpeg-height", type=int,
+                    default=int(os.environ.get("BAS_VIDEO_MJPEG_HEIGHT", "480")))
+    ap.add_argument("--mjpeg-fps", type=int,
+                    default=int(os.environ.get("BAS_VIDEO_MJPEG_FPS", "15")))
+    ap.add_argument("--mjpeg-quality", type=int,
+                    default=int(os.environ.get("BAS_VIDEO_MJPEG_QUALITY", "70")))
+    ap.add_argument("--mjpeg-boundary",
+                    default=os.environ.get("BAS_VIDEO_MJPEG_BOUNDARY", "spionkop"))
     ap.add_argument("--max-seconds", type=float, default=0.0)
     args = ap.parse_args()
 
@@ -172,6 +236,8 @@ def main() -> int:
     print(f"[video-receiver] log → {log_path}", flush=True)
     if args.record_mp4:
         print(f"[video-receiver] record mp4 → {args.record_mp4}", flush=True)
+    if args.mjpeg_port > 0:
+        print(f"[video-receiver] post-ns3 MJPEG TCP → 0.0.0.0:{args.mjpeg_port}", flush=True)
 
     start_wall = time.time()
     writer.write({
@@ -179,6 +245,8 @@ def main() -> int:
         "wall_time": start_wall,
         "listen_port": args.listen_port,
         "record_mp4": args.record_mp4 or None,
+        "mjpeg_port": args.mjpeg_port if args.mjpeg_port > 0 else None,
+        "mjpeg_boundary": args.mjpeg_boundary if args.mjpeg_port > 0 else None,
         "tap": "udpsrc_src_pad",
         "timing_source": "gst_pad_probe",
     })
@@ -190,6 +258,18 @@ def main() -> int:
     src_pad = net_src.get_static_pad("src")
     assert src_pad is not None, "src-pad udpsrc net_src не найден"
     src_pad.add_probe(Gst.PadProbeType.BUFFER, on_rx_buffer_probe, writer, start_wall)
+    decode_sink = pipeline.get_by_name("decode_sink")
+    assert decode_sink is not None, "decode_sink не найден"
+    decode_pad = decode_sink.get_static_pad("sink")
+    assert decode_pad is not None, "sink-pad decode_sink не найден"
+    frame_state = FrameProbeState()
+    decode_pad.add_probe(
+        Gst.PadProbeType.BUFFER,
+        on_decoded_frame_probe,
+        writer,
+        start_wall,
+        frame_state,
+    )
 
     loop = GLib.MainLoop()
 

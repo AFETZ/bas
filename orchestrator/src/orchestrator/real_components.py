@@ -945,8 +945,20 @@ class MissionRunner:
 
     def _wait_for_gps_fix(self, min_fix: int, timeout_s: float) -> None:
         self.logger.emit("component", component=self.name, phase="wait_gps_fix", min_fix=min_fix)
+        mav = self.stack.mav
+        assert mav is not None
         deadline = time.time() + timeout_s
+        last_request = 0.0
         while time.time() < deadline:
+            if time.time() - last_request >= 3.0:
+                mav.mav.command_long_send(
+                    self.stack._sys_id, self.stack._comp_id,
+                    mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
+                    0, mavutil.mavlink.MAVLINK_MSG_ID_GPS_RAW_INT, 0, 0, 0, 0, 0, 0,
+                )
+                last_request = time.time()
+                self.logger.emit("component", component=self.name,
+                                 phase="gps_raw_int_requested")
             if self.stack.last_gps_fix >= min_fix:
                 self.logger.emit("component", component=self.name, phase="gps_fix_ok",
                                  fix_type=self.stack.last_gps_fix)

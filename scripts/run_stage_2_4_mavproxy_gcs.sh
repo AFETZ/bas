@@ -24,14 +24,37 @@ SIONNA_CONTAINER_PATH=""
 # Sionna live hook target flow: payload (back-compat default) | control | both.
 # В FPV+RF демо имеет смысл "both" — за зданием падает и видео, и команды.
 SIONNA_TARGET_FLOW="${BAS_SIONNA_TARGET_FLOW:-payload}"
+STAGE24_PACKET_AUDIT="${BAS_STAGE24_PACKET_AUDIT:-0}"
+STAGE24_PACKET_AUDIT_SEED="${BAS_STAGE24_PACKET_AUDIT_SEED:-1337}"
+STAGE24_PACKET_AUDIT_CSV="${BAS_STAGE24_PACKET_AUDIT_CSV:-${LOG_DIR}/stage24_route_rssi_packets_raw.csv}"
+BAS_REQUIRE_NS3_PAYLOAD="${BAS_REQUIRE_NS3_PAYLOAD:-0}"
+BAS_PAYLOAD_BYPASS="${BAS_PAYLOAD_BYPASS:-0}"
 
-# Stage 2.4 FPV livestream: при BAS_GCS_FPV=1 поднимаем bas-fpv-mjpeg в
-# bas-uav netns, который принимает RTP H.264 от Gazebo iris_with_gimbal
-# (GstCameraPlugin → UDP loopback 5600) и раздаёт как multipart MJPEG TCP
-# 0.0.0.0:8766. Web GCS проксирует это в /camera.mjpg → <img> в браузере.
+# Stage 2.4 FPV/payload:
+#   default network-realistic path:
+#     Gazebo camera/video source -> bas-uav eth1 -> tap-pload-near ->
+#     ns-3 payload channel -> tap-pload-far -> bas-pload-far-net receiver ->
+#     receiver-side MJPEG TCP -> Web GCS.
+#   debug-only bypass:
+#     BAS_PAYLOAD_BYPASS=1 keeps the old bas-fpv-mjpeg UAV-side path.
+#   BAS_REQUIRE_NS3_PAYLOAD=1 makes bypass invalid and fails the experiment if
+#   video_rx/packet audit do not prove the post-ns-3 payload path.
 BAS_GCS_FPV="${BAS_GCS_FPV:-0}"
 export BAS_CAMERA_UDP_PORT="${BAS_CAMERA_UDP_PORT:-5600}"
 export BAS_FPV_MJPEG_PORT="${BAS_FPV_MJPEG_PORT:-8766}"
+if [ "$BAS_REQUIRE_NS3_PAYLOAD" = "1" ] && [ "$BAS_PAYLOAD_BYPASS" = "1" ]; then
+    echo "Payload path bypassed ns-3, payload metrics are invalid for network experiment." >&2
+    exit 2
+fi
+BAS_NS3_PAYLOAD="${BAS_NS3_PAYLOAD:-0}"
+if [ "$BAS_REQUIRE_NS3_PAYLOAD" = "1" ]; then
+    BAS_NS3_PAYLOAD=1
+    STAGE24_PACKET_AUDIT=1
+fi
+if [ "$BAS_GCS_FPV" = "1" ] && [ "$BAS_PAYLOAD_BYPASS" != "1" ]; then
+    BAS_NS3_PAYLOAD=1
+fi
+export BAS_NS3_PAYLOAD
 
 # QGroundControl bridge: заменяет mavbridge (socat 1↔1) на bluenviron/mavp2p,
 # который держит один TCP client к SITL и serves MAVLink на нескольких UDP
@@ -58,9 +81,12 @@ BAS_SIONNA_RT_ONLINE="${BAS_SIONNA_RT_ONLINE:-0}"
 export BAS_RT_SCENE_PATH="${BAS_RT_SCENE_PATH:-${REPO_ROOT}/scene/iris_runway.xml}"
 export BAS_RT_TX_POS="${BAS_RT_TX_POS:-0,-60,1.5}"
 export BAS_RT_MAX_DEPTH="${BAS_RT_MAX_DEPTH:-2}"
+export BAS_MITSUBA_VARIANT="${BAS_MITSUBA_VARIANT:-${MITSUBA_VARIANT:-}}"
+export BAS_SIONNA_REQUIRE_GPU="${BAS_SIONNA_REQUIRE_GPU:-0}"
 # Online RT пишет в отдельный JSON чтобы не конфликтовать с Web UI rf_loop
 # (тот продолжает обслуживать UI panel). ns-3 поллит RT файл напрямую.
 export BAS_RT_CHANNEL_PATH="${BAS_RT_CHANNEL_PATH:-/tmp/bas_stage24_rt.json}"
+export BAS_RT_HISTORY_PATH="${BAS_RT_HISTORY_PATH:-${LOG_DIR}/sionna_rt_history.jsonl}"
 if [ "$BAS_SIONNA_RT_ONLINE" = "1" ]; then
     # Override SIONNA_CHANNEL_PATH — ns-3 теперь поллит RT live JSON
     SIONNA_CHANNEL_PATH="$BAS_RT_CHANNEL_PATH"
@@ -75,6 +101,32 @@ export BAS_FPV_QUALITY="${BAS_FPV_QUALITY:-70}"
 export BAS_FPV_CPUS="${BAS_FPV_CPUS:-0.6}"
 export BAS_FPV_GST_DEBUG="${BAS_FPV_GST_DEBUG:-2}"
 export BAS_CAMERA_ENABLE_TOPIC="${BAS_CAMERA_ENABLE_TOPIC:-/world/iris_runway/model/iris_with_gimbal/model/gimbal/link/pitch_link/sensor/camera/image/enable_streaming}"
+export BAS_VIDEO_SOURCE_RAW="${BAS_VIDEO_SOURCE:-camera}"
+case "$BAS_VIDEO_SOURCE_RAW" in
+    camera) export BAS_VIDEO_SOURCE="udpsrc:${BAS_CAMERA_UDP_PORT}" ;;
+    *)      export BAS_VIDEO_SOURCE="$BAS_VIDEO_SOURCE_RAW" ;;
+esac
+export BAS_VIDEO_DEST_HOST="${BAS_VIDEO_DEST_HOST:-10.20.0.3}"
+export BAS_VIDEO_DEST_PORT="${BAS_VIDEO_DEST_PORT:-5000}"
+export BAS_VIDEO_BITRATE_KBPS="${BAS_VIDEO_BITRATE_KBPS:-2000}"
+export BAS_VIDEO_FPS="${BAS_VIDEO_FPS:-30}"
+export BAS_VIDEO_WIDTH="${BAS_VIDEO_WIDTH:-640}"
+export BAS_VIDEO_HEIGHT="${BAS_VIDEO_HEIGHT:-480}"
+export BAS_VIDEO_TX_LOG="/work/logs/${RUN_ID}/video_tx.jsonl"
+export BAS_VIDEO_RX_LOG="/work/logs/${RUN_ID}/video_rx.jsonl"
+export BAS_VIDEO_RECORD_MP4="${BAS_VIDEO_RECORD_MP4:-/work/logs/${RUN_ID}/video_rx.mp4}"
+export BAS_VIDEO_MJPEG_PORT="${BAS_VIDEO_MJPEG_PORT:-$BAS_FPV_MJPEG_PORT}"
+export BAS_VIDEO_MJPEG_WIDTH="${BAS_VIDEO_MJPEG_WIDTH:-$BAS_FPV_WIDTH}"
+export BAS_VIDEO_MJPEG_HEIGHT="${BAS_VIDEO_MJPEG_HEIGHT:-$BAS_FPV_HEIGHT}"
+export BAS_VIDEO_MJPEG_FPS="${BAS_VIDEO_MJPEG_FPS:-$BAS_FPV_FPS}"
+export BAS_VIDEO_MJPEG_QUALITY="${BAS_VIDEO_MJPEG_QUALITY:-$BAS_FPV_QUALITY}"
+export BAS_VIDEO_MJPEG_BOUNDARY="${BAS_VIDEO_MJPEG_BOUNDARY:-spionkop}"
+export BAS_NS3_PAYLOAD_WARMUP_SECONDS="${BAS_NS3_PAYLOAD_WARMUP_SECONDS:-45}"
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    export BAS_FPV_UPSTREAM_HOST="${BAS_FPV_UPSTREAM_HOST:-10.20.0.3}"
+    export BAS_FPV_UPSTREAM_PORT="${BAS_FPV_UPSTREAM_PORT:-$BAS_VIDEO_MJPEG_PORT}"
+    export BAS_FPV_BOUNDARY="${BAS_FPV_BOUNDARY:-$BAS_VIDEO_MJPEG_BOUNDARY}"
+fi
 # Для FPV-режима фиксируем мир с onboard камерой (тот же что в 1.5.2.b).
 # Если оператор хочет RF-демо + FPV одновременно — это пока несовместимо
 # (iris_runway_rf_demo.sdf не имеет камеры). Можно объединить миры позже.
@@ -139,16 +191,23 @@ cleanup() {
     fi
     pkill -f "sionna_channel_publisher.*rt-online" 2>/dev/null || true
     timeout 30 sg docker -c "docker rm -f bas-ns3-stage24 2>/dev/null" >/dev/null 2>&1
-    timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg 2>/dev/null" >/dev/null 2>&1
+    timeout 30 sg docker -c "docker rm -f bas-fpv-mjpeg bas-video-sender bas-video-receiver bas-pload-far-net 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-mavrouter 2>/dev/null" >/dev/null 2>&1
     timeout 30 sg docker -c "docker rm -f bas-mavrouter-multi bas-sitl2 2>/dev/null" >/dev/null 2>&1
     timeout 60 sg docker -c "docker compose -f ${COMPOSE_FILE} --profile fpv --profile qgc --profile multi down -v 2>/dev/null" >/dev/null 2>&1
     # FPV host-IP cleanup (idemptotent: del fails silently если не было).
     ip addr del 10.10.0.254/24 dev br-ctrl-near 2>/dev/null || true
+    ip addr del 10.20.0.254/24 dev br-pload-far 2>/dev/null || true
     ip link del veth-uav-br >/dev/null 2>&1 || true
     ip link del veth-uav >/dev/null 2>&1 || true
+    ip link del veth-upl-br >/dev/null 2>&1 || true
+    ip link del veth-upl >/dev/null 2>&1 || true
+    ip link del veth-pfar-br >/dev/null 2>&1 || true
+    ip link del veth-pfar >/dev/null 2>&1 || true
     umount /var/run/netns/bas-uav >/dev/null 2>&1 || true
+    umount /var/run/netns/bas-pload-far-pod >/dev/null 2>&1 || true
     rm -f /var/run/netns/bas-uav
+    rm -f /var/run/netns/bas-pload-far-pod
     set -e
 }
 
@@ -172,6 +231,7 @@ discover_camera_enable_topic() {
 
 start_fpv_pipeline() {
     [ "$BAS_GCS_FPV" = "1" ] || return 0
+    [ "$BAS_PAYLOAD_BYPASS" = "1" ] || return 0
 
     # Хост по умолчанию не имеет IP на br-ctrl-near, поэтому gcs_web_ui_server
     # (запущен в host netns) не может достучаться до 10.10.0.2:8766 в bas-uav
@@ -222,6 +282,126 @@ start_fpv_pipeline() {
     if ! ip netns exec bas-uav ss -tln 2>/dev/null | grep -q ":${BAS_FPV_MJPEG_PORT}"; then
         echo "  WARN: fpv-mjpeg did not open :${BAS_FPV_MJPEG_PORT} within ${waited}s" >&2
         sg docker -c "docker logs --tail 40 bas-fpv-mjpeg 2>&1" | sed 's/^/  fpv: /' >&2 || true
+    fi
+}
+
+enable_gazebo_camera_stream() {
+    [ "$BAS_VIDEO_SOURCE_RAW" = "camera" ] || return 0
+
+    echo "[camera] enable iris_with_gimbal GstCameraPlugin"
+    local discovered=0
+    for _ in $(seq 1 20); do
+        if discover_camera_enable_topic; then discovered=1; break; fi
+        sleep 1
+    done
+    if [ "$discovered" -ne 1 ]; then
+        echo "  camera enable topic not in gz topic -l; trying default"
+    fi
+    echo "  enable topic: ${BAS_CAMERA_ENABLE_TOPIC}"
+
+    local ok=0
+    for _ in $(seq 1 3); do
+        if sg docker -c "docker exec bas-gazebo gz topic -t '${BAS_CAMERA_ENABLE_TOPIC}' -m gz.msgs.Boolean -p 'data: true' >/tmp/bas_camera_enable.log 2>&1"; then
+            ok=1
+        fi
+        sleep 1
+    done
+    if [ "$ok" -ne 1 ]; then
+        echo "  WARN: enable_streaming publish failed — camera RTP may not appear" >&2
+        sg docker -c "docker exec bas-gazebo cat /tmp/bas_camera_enable.log 2>/dev/null" >&2 || true
+        return 1
+    fi
+}
+
+setup_ns3_payload_netns() {
+    [ "$BAS_NS3_PAYLOAD" = "1" ] || return 0
+
+    echo "  setup payload path: bas-uav eth1=10.20.0.2/24 -> ns-3 payload -> bas-pload-far-net eth0=10.20.0.3/24"
+
+    ip link del veth-upl-br >/dev/null 2>&1 || true
+    ip link del veth-upl >/dev/null 2>&1 || true
+    ip link del veth-pfar-br >/dev/null 2>&1 || true
+    ip link del veth-pfar >/dev/null 2>&1 || true
+
+    ip link add veth-upl type veth peer name veth-upl-br
+    ip link set veth-upl-br master br-pload-near
+    ip link set veth-upl-br up
+    ip link set veth-upl netns bas-uav
+    ip -n bas-uav link set veth-upl name eth1
+    ip -n bas-uav addr add 10.20.0.2/24 dev eth1
+    ip -n bas-uav link set eth1 up
+
+    PFAR_PID="$(wait_for_container_netns bas-pload-far-net bas-pload-far-pod)"
+    echo "  bas-pload-far-net netns: PID=${PFAR_PID}"
+    ip link add veth-pfar type veth peer name veth-pfar-br
+    ip link set veth-pfar-br master br-pload-far
+    ip link set veth-pfar-br up
+    ip link set veth-pfar netns bas-pload-far-pod
+    ip -n bas-pload-far-pod link set veth-pfar name eth0
+    ip -n bas-pload-far-pod addr add 10.20.0.3/24 dev eth0
+    ip -n bas-pload-far-pod link set eth0 up
+    ip -n bas-pload-far-pod link set lo up
+
+    if ! ip -4 addr show br-pload-far 2>/dev/null | grep -q "10.20.0.254/24"; then
+        ip addr add 10.20.0.254/24 dev br-pload-far 2>/dev/null || true
+        echo "  br-pload-far host IP: 10.20.0.254/24 (route to post-ns3 receiver)"
+    fi
+}
+
+start_ns3_payload_pipeline() {
+    [ "$BAS_NS3_PAYLOAD" = "1" ] || return 0
+
+    echo "[payload] start post-ns3 video receiver (${BAS_VIDEO_DEST_PORT}/udp, MJPEG ${BAS_FPV_UPSTREAM_HOST}:${BAS_FPV_UPSTREAM_PORT})"
+    sg docker -c "docker compose -f ${COMPOSE_FILE} up -d video-receiver" 2>&1 | tail -3
+    sleep 3
+    sg docker -c "docker logs --tail 8 bas-video-receiver 2>&1" | sed 's/^/  rx: /'
+
+    echo "[payload] start video sender: ${BAS_VIDEO_SOURCE_RAW} (${BAS_VIDEO_SOURCE}) -> ${BAS_VIDEO_DEST_HOST}:${BAS_VIDEO_DEST_PORT}"
+    sg docker -c "docker compose -f ${COMPOSE_FILE} up -d video-sender" 2>&1 | tail -3
+    sleep 3
+    sg docker -c "docker logs --tail 8 bas-video-sender 2>&1" | sed 's/^/  tx: /'
+    enable_gazebo_camera_stream || true
+    check_ns3_payload_flow
+}
+
+check_ns3_payload_flow() {
+    [ "$BAS_NS3_PAYLOAD" = "1" ] || return 0
+
+    local tx_log="${LOG_DIR}/video_tx.jsonl"
+    local rx_log="${LOG_DIR}/video_rx.jsonl"
+    local tx_lines=0
+    local rx_lines=0
+    local payload_audit_rows=0
+    local waited=0
+    while [ "$waited" -le "$BAS_NS3_PAYLOAD_WARMUP_SECONDS" ]; do
+        [ -f "$tx_log" ] && tx_lines=$(wc -l < "$tx_log" 2>/dev/null || echo 0)
+        [ -f "$rx_log" ] && rx_lines=$(wc -l < "$rx_log" 2>/dev/null || echo 0)
+        if [ "$STAGE24_PACKET_AUDIT" = "1" ] && [ -f "$STAGE24_PACKET_AUDIT_CSV" ]; then
+            payload_audit_rows=$(awk -F, 'NR>1 && $4=="payload"{n++} END{print n+0}' "$STAGE24_PACKET_AUDIT_CSV" 2>/dev/null || echo 0)
+        fi
+        if [ "${tx_lines:-0}" -gt 1 ] && [ "${rx_lines:-0}" -gt 1 ] && { [ "$STAGE24_PACKET_AUDIT" != "1" ] || [ "${payload_audit_rows:-0}" -gt 0 ]; }; then
+            break
+        fi
+        if ! sg docker -c "docker inspect -f '{{.State.Running}}' bas-video-sender 2>/dev/null" | grep -q true; then
+            break
+        fi
+        if ! sg docker -c "docker inspect -f '{{.State.Running}}' bas-video-receiver 2>/dev/null" | grep -q true; then
+            break
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    echo "  payload sanity: video_tx=${tx_lines:-0} video_rx=${rx_lines:-0} ns3_payload_audit=${payload_audit_rows:-0} (${waited}s)"
+    if [ "${tx_lines:-0}" -le 1 ] || [ "${rx_lines:-0}" -le 1 ] || { [ "$STAGE24_PACKET_AUDIT" = "1" ] && [ "${payload_audit_rows:-0}" -le 0 ]; }; then
+        local msg="Payload path bypassed ns-3, payload metrics are invalid for network experiment."
+        echo "  WARN: ${msg}" >&2
+        sg docker -c "docker logs bas-video-sender 2>&1"   > "${LOG_DIR}/video_sender.log" 2>&1 || true
+        sg docker -c "docker logs bas-video-receiver 2>&1" > "${LOG_DIR}/video_receiver.log" 2>&1 || true
+        if [ "$BAS_REQUIRE_NS3_PAYLOAD" = "1" ]; then
+            echo "${msg}" >&2
+            exit 5
+        fi
     fi
 }
 
@@ -315,8 +495,26 @@ start_sionna_rt_publisher() {
     printf '{"loss_ratio":0.0,"extra_delay_ms":0.0,"rss_db":-55.0,"status":"LOS","los":true,"channel_model":"rt_online_warmup"}\n' \
         > "$BAS_RT_CHANNEL_PATH"
 
+    local gpu_args=()
+    if [ -n "$BAS_MITSUBA_VARIANT" ]; then
+        gpu_args+=(--mitsuba-variant "$BAS_MITSUBA_VARIANT")
+    fi
+    if [ "$BAS_SIONNA_REQUIRE_GPU" = "1" ]; then
+        gpu_args+=(--require-gpu)
+    fi
+    local history_args=()
+    if [ -n "$BAS_RT_HISTORY_PATH" ]; then
+        history_args+=(--history-out "$BAS_RT_HISTORY_PATH")
+    fi
+    local launcher=()
+    if [ "$BAS_SIONNA_REQUIRE_GPU" = "1" ] || [[ "$BAS_MITSUBA_VARIANT" == cuda* ]]; then
+        launcher=(bash "${REPO_ROOT}/scripts/run_sionna_live.sh" --)
+    fi
+
     echo "[sionna-rt] start live PathSolver publisher (scene=${BAS_RT_SCENE_PATH##*/})"
-    nohup "$venv_python" "${REPO_ROOT}/scripts/sionna_channel_publisher.py" \
+    echo "  history: ${BAS_RT_HISTORY_PATH:-disabled}"
+    nohup "${launcher[@]}" \
+        "$venv_python" "${REPO_ROOT}/scripts/sionna_channel_publisher.py" \
         --events "${LOG_DIR}/events.jsonl" \
         --rt-online \
         --rt-scene "$BAS_RT_SCENE_PATH" \
@@ -324,6 +522,8 @@ start_sionna_rt_publisher() {
         --rt-max-depth "$BAS_RT_MAX_DEPTH" \
         --out "$BAS_RT_CHANNEL_PATH" \
         --interval-ms 100 \
+        "${gpu_args[@]}" \
+        "${history_args[@]}" \
         > "${LOG_DIR}/sionna_rt_publisher.log" 2>&1 &
     echo $! > /tmp/bas_sionna_rt.pid
     echo "  pid=$(cat /tmp/bas_sionna_rt.pid) → ${BAS_RT_CHANNEL_PATH}"
@@ -415,6 +615,14 @@ echo "==> mode: ${MODE}"
 echo "==> MAVProxy master: ${MAVPROXY_MASTER}"
 [ -n "$SIONNA_CHANNEL_PATH" ] && echo "==> RF/Sionna channel: ${SIONNA_CHANNEL_PATH}"
 echo "==> chain: MAVProxy -> bas-ctrl-far netns -> ns-3 control -> mavbridge -> SITL"
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    echo "==> payload chain: Gazebo/video source -> bas-uav eth1 -> ns-3 payload -> bas-pload-far-net receiver -> Web GCS"
+    echo "==> payload bypass: disabled"
+    echo "==> require ns-3 payload: ${BAS_REQUIRE_NS3_PAYLOAD}"
+elif [ "$BAS_PAYLOAD_BYPASS" = "1" ]; then
+    echo "==> payload bypass: enabled (debug only; payload metrics invalid for network experiments)"
+    echo "==> require ns-3 payload: ${BAS_REQUIRE_NS3_PAYLOAD}"
+fi
 
 "${REPO_ROOT}/.venv/bin/mavproxy.py" --help > "${LOG_DIR}/mavproxy_help.txt" 2>&1 || true
 "${REPO_ROOT}/.venv/bin/mavproxy.py" --version > "${LOG_DIR}/mavproxy_version.txt" 2>&1 || true
@@ -423,15 +631,20 @@ if grep -q -- "--script" "${LOG_DIR}/mavproxy_help.txt"; then
     exit 2
 fi
 
-echo "[1/7] prepare control bridges/TAPs"
+echo "[1/7] prepare control+payload bridges/TAPs"
 bash "${REPO_ROOT}/scripts/setup_radio_net.sh" down >/dev/null 2>&1 || true
 bash "${REPO_ROOT}/scripts/setup_radio_net.sh" up | tail -3
 
 echo "[2/7] stop default compose stack"
 sg docker -c "docker compose -f ${DEFAULT_COMPOSE_FILE} down -v 2>/dev/null" >/dev/null 2>&1 || true
 
-echo "[3/7] start uav-net pause container and inject control veth"
-sg docker -c "docker compose -f ${COMPOSE_FILE} up -d uav-net" 2>&1 | tail -3
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    echo "[3/7] start uav-net + pload-far-net pause containers and inject veths"
+    sg docker -c "docker compose -f ${COMPOSE_FILE} up -d uav-net pload-far-net" 2>&1 | tail -4
+else
+    echo "[3/7] start uav-net pause container and inject control veth"
+    sg docker -c "docker compose -f ${COMPOSE_FILE} up -d uav-net" 2>&1 | tail -3
+fi
 UAV_PID="$(wait_for_container_netns bas-uav-net bas-uav)"
 echo "  bas-uav netns: PID=${UAV_PID}"
 
@@ -445,6 +658,7 @@ ip -n bas-uav link set veth-uav name eth0
 ip -n bas-uav addr add 10.10.0.2/24 dev eth0
 ip -n bas-uav link set eth0 up
 ip -n bas-uav link set lo up
+setup_ns3_payload_netns
 
 if [ "$BAS_GCS_MULTI_UAV" = "1" ]; then
     echo "[4/7] start Gazebo (multi-UAV world), SITL1+SITL2, mavrouter-multi"
@@ -483,9 +697,8 @@ if ! ip netns exec bas-uav ss -tln 2>/dev/null | grep -q ":5760"; then
 fi
 sleep 10
 
-# Если оператор включил FPV, поднимем mjpeg-стрим параллельно с ns-3, не
-# блокируя основной пайплайн при ошибках камеры (start_fpv_pipeline печатает
-# WARN'ы но не падает).
+# Debug-only bypass FPV. Network-realistic Stage 2.4 payload uses
+# start_ns3_payload_pipeline() after ns-3 readiness below.
 start_fpv_pipeline
 # QGC host-side relay поднимаем здесь же — mavrouter уже стартовал в [4/7]
 # когда BAS_GCS_QGC=1, нам осталось только пробросить UDP с хоста.
@@ -502,6 +715,11 @@ if [ -n "$SIONNA_CONTAINER_PATH" ]; then
     NS3_ARGS="${NS3_ARGS} --sionnaChannelPath=${SIONNA_CONTAINER_PATH}"
     NS3_ARGS="${NS3_ARGS} --sionnaTargetFlow=${SIONNA_TARGET_FLOW}"
     echo "==> Sionna target flow: ${SIONNA_TARGET_FLOW}"
+fi
+if [ "$STAGE24_PACKET_AUDIT" = "1" ]; then
+    NS3_ARGS="${NS3_ARGS} --packetAuditCsv=/work/logs/${RUN_ID}/$(basename "$STAGE24_PACKET_AUDIT_CSV")"
+    NS3_ARGS="${NS3_ARGS} --packetAuditSeed=${STAGE24_PACKET_AUDIT_SEED}"
+    echo "==> packet audit CSV: ${STAGE24_PACKET_AUDIT_CSV}"
 fi
 
 NS3_TMP_MOUNT=""
@@ -542,10 +760,18 @@ if [ ! -s "$NS3_LOG" ]; then
 fi
 echo "  ns-3 control channel is ready"
 sleep 5
+start_ns3_payload_pipeline
 
 ip netns exec bas-ctrl-far ip neigh flush all 2>/dev/null || true
 ip netns exec bas-uav ip neigh flush all 2>/dev/null || true
-for ns in bas-ctrl-far bas-uav; do
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    ip netns exec bas-pload-far-pod ip neigh flush all 2>/dev/null || true
+fi
+NEIGH_NETNS=(bas-ctrl-far bas-uav)
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    NEIGH_NETNS+=(bas-pload-far-pod)
+fi
+for ns in "${NEIGH_NETNS[@]}"; do
     ip netns exec "$ns" sysctl -w net.ipv4.neigh.default.mcast_solicit=5 >/dev/null 2>&1 || true
     ip netns exec "$ns" sysctl -w net.ipv4.neigh.default.ucast_solicit=5 >/dev/null 2>&1 || true
     ip netns exec "$ns" sysctl -w net.ipv4.neigh.default.retrans_time_ms=2000 >/dev/null 2>&1 || true
@@ -605,12 +831,43 @@ sg docker -c "docker logs bas-sitl 2>&1" > "${LOG_DIR}/sitl.log" 2>&1 || true
 sg docker -c "docker logs bas-gazebo 2>&1" > "${LOG_DIR}/gazebo.log" 2>&1 || true
 sg docker -c "docker logs bas-mavbridge 2>&1" > "${LOG_DIR}/mavbridge.log" 2>&1 || true
 sg docker -c "docker logs bas-ns3-stage24 2>&1" > "${LOG_DIR}/ns3_stdout.log" 2>&1 || true
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    sleep 3
+    sg docker -c "docker logs bas-video-sender 2>&1"   > "${LOG_DIR}/video_sender.log" 2>&1 || true
+    sg docker -c "docker logs bas-video-receiver 2>&1" > "${LOG_DIR}/video_receiver.log" 2>&1 || true
+    TX_LINES=$(wc -l < "${LOG_DIR}/video_tx.jsonl" 2>/dev/null || echo 0)
+    RX_RTP_LINES=$(grep -c '"event_type":"video_rx"' "${LOG_DIR}/video_rx.jsonl" 2>/dev/null || echo 0)
+    RX_FRAME_LINES=$(grep -c '"event_type":"video_frame"' "${LOG_DIR}/video_rx.jsonl" 2>/dev/null || echo 0)
+    PAYLOAD_AUDIT_ROWS=0
+    if [ "$STAGE24_PACKET_AUDIT" = "1" ] && [ -f "$STAGE24_PACKET_AUDIT_CSV" ]; then
+        PAYLOAD_AUDIT_ROWS=$(awk -F, 'NR>1 && $4=="payload"{n++} END{print n+0}' "$STAGE24_PACKET_AUDIT_CSV" 2>/dev/null || echo 0)
+    fi
+    cat > "${LOG_DIR}/payload_path_runtime.md" <<PAYLOAD_RUNTIME
+# Stage 2.4 Payload Runtime Check
+
+- Path: Gazebo/video source -> bas-uav eth1 -> tap-pload-near -> ns-3 payload channel -> tap-pload-far -> bas-pload-far-net receiver -> Web GCS
+- Bypass disabled: true
+- Require ns-3 payload: ${BAS_REQUIRE_NS3_PAYLOAD}
+- Video source: ${BAS_VIDEO_SOURCE_RAW} (${BAS_VIDEO_SOURCE})
+- Web GCS FPV upstream: ${BAS_FPV_UPSTREAM_HOST}:${BAS_FPV_UPSTREAM_PORT}
+- video_tx log rows: ${TX_LINES}
+- video_rx RTP packet rows: ${RX_RTP_LINES}
+- decoded frame rows: ${RX_FRAME_LINES}
+- ns-3 payload audit rows: ${PAYLOAD_AUDIT_ROWS}
+PAYLOAD_RUNTIME
+fi
 ip netns exec bas-ctrl-far ip addr > "${LOG_DIR}/bas_ctrl_far_addr.txt" 2>&1 || true
 ip netns exec bas-uav ip addr > "${LOG_DIR}/bas_uav_addr.txt" 2>&1 || true
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    ip netns exec bas-pload-far-pod ip addr > "${LOG_DIR}/bas_pload_far_addr.txt" 2>&1 || true
+fi
 
 echo
 echo "Stage 2.4 MAVProxy GCS result:"
 echo "  exit=${RC}"
 echo "  logs=${LOG_DIR}"
 echo "  report=${LOG_DIR}/report.md"
+if [ "$BAS_NS3_PAYLOAD" = "1" ]; then
+    echo "  payload_runtime=${LOG_DIR}/payload_path_runtime.md"
+fi
 exit "$RC"
