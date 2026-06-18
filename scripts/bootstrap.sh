@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
 # bas-prototype one-command bootstrap.
 #
-# Подготавливает свежую WSL2 / Ubuntu 22.04+ машину к запуску любого
+# Подготавливает свежую Ubuntu 22.04+ / WSL2 машину к запуску любого
 # scripts/run_stage_*_demo.sh: ставит apt deps, Docker, Python venv,
-# Playwright Chromium, опционально GPU Vulkan ICD (Dozen) и Sionna RT.
+# Playwright Chromium, собирает Docker-образы, опционально GPU Vulkan ICD
+# (Dozen для WSL2) и Sionna RT.
 #
 # Idempotent — повторный запуск проверяет каждый шаг и пропускает уже
-# выполненные.
+# выполненные. Полностью неинтерактивен (никаких debconf/needrestart prompt).
 #
 # Usage:
-#   sudo bash scripts/bootstrap.sh                # минимальный (без Sionna и AirSim)
-#   sudo bash scripts/bootstrap.sh --full         # включая Sionna venv + Cosys-AirSim
-#   sudo bash scripts/bootstrap.sh --no-docker    # пропустить Docker install
+#   sudo bash scripts/bootstrap.sh                # базовая среда + Docker-образы
+#   sudo bash scripts/bootstrap.sh --full         # + Sionna RT venv (TensorFlow)
+#   sudo bash scripts/bootstrap.sh --no-docker    # пропустить Docker + сборку образов
+#   sudo bash scripts/bootstrap.sh --no-gpu       # пропустить GPU Vulkan (Dozen)
 #
-# Время: ~5 мин минимум, ~20 мин full (с Sionna + AirSim download)
+# Время: ~5–8 мин базовая (с первой сборкой образов ~15 мин), ~25 мин --full.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_USER="${SUDO_USER:-${USER:-afetz}}"
+RUN_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6 2>/dev/null || echo "/home/${RUN_USER}")"
+
+# Полностью неинтерактивный apt — иначе debconf/needrestart могут «подвесить»
+# установку, ожидая ввод (особенно при выводе в /dev/null).
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 
 FULL=0
 SKIP_DOCKER=0
@@ -36,17 +44,56 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-ensure_root() { [ "$EUID" -eq 0 ] || { echo "sudo only" >&2; exit 1; }; }
+ensure_root() { [ "$EUID" -eq 0 ] || { echo "Запускать только под sudo: sudo bash scripts/bootstrap.sh" >&2; exit 1; }; }
 ensure_root
 
-log() { echo "[bootstrap] $*"; }
+# ---- Прогресс-вывод (этап / проценты / бар / время) ----------------------
+TOTAL_STEPS=7
+STEP=0
+T_START="$(date +%s)"
+if [ -t 1 ]; then
+    C_HDR=$'\033[1;36m'; C_OK=$'\033[1;32m'; C_SUB=$'\033[0;33m'; C_ERR=$'\033[1;31m'; C_OFF=$'\033[0m'
+else
+    C_HDR=''; C_OK=''; C_SUB=''; C_ERR=''; C_OFF=''
+fi
 
-log "user=${RUN_USER} home=${RUN_HOME} repo=${REPO_ROOT}"
+_fmt_time() { local s=$1; printf '%02d:%02d' $((s/60)) $((s%60)); }
+
+step() {  # step "Название" "ETA"
+    STEP=$((STEP+1))
+    local pct=$(( STEP * 100 / TOTAL_STEPS ))
+    local el=$(( $(date +%s) - T_START ))
+    local filled=$(( pct / 5 )) bar='' i
+    for ((i=0; i<20; i++)); do [ "$i" -lt "$filled" ] && bar+='█' || bar+='░'; done
+    printf '\n%s[%d/%d] %3d%% %s  ⏱ %s%s\n' \
+        "$C_HDR" "$STEP" "$TOTAL_STEPS" "$pct" "$bar" "$(_fmt_time "$el")" "$C_OFF"
+    printf '%s▶ %s%s%s\n' "$C_HDR" "$1" "${2:+  ${C_SUB}(${2})}" "$C_OFF"
+}
+sub()     { printf '   %s•%s %s\n' "$C_SUB" "$C_OFF" "$*"; }
+ok()      { printf '   %s✓%s %s\n' "$C_OK"  "$C_OFF" "$*"; }
+warn()    { printf '   %s!%s %s\n' "$C_ERR" "$C_OFF" "$*"; }
+
+sub "user=${RUN_USER}  home=${RUN_HOME}  repo=${REPO_ROOT}"
+
+# Оставляет в списке только реально существующие в репозиториях пакеты —
+# защищает от расхождений имён между релизами Ubuntu (напр. libasound2 на
+# jammy vs libasound2t64 на noble).
+apt_install() {
+    local want=("$@") have=() p
+    for p in "${want[@]}"; do
+        if apt-cache show "$p" >/dev/null 2>&1; then
+            have+=("$p")
+        else
+            sub "пропуск (нет в репозитории): $p"
+        fi
+    done
+    apt-get install -y --no-install-recommends "${have[@]}" >/dev/null
+}
 
 # ---- 1. apt packages -----------------------------------------------------
-log "1/7 — apt packages"
+step "APT-пакеты (build tools, python, ffmpeg, vulkan, libs)" "~2 мин"
 apt-get update -q
-apt-get install -y --no-install-recommends \
+apt_install \
     build-essential cmake git curl wget unzip ca-certificates \
     python3 python3-pip python3-venv \
     iproute2 bridge-utils socat jq \
@@ -55,42 +102,35 @@ apt-get install -y --no-install-recommends \
     libsdl2-2.0-0 libsdl2-image-2.0-0 \
     libxss1 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
-    libgbm1 libpangocairo-1.0-0 libasound2-data libasound2t64 \
-    fonts-liberation \
-    > /dev/null
-log "   apt OK"
+    libgbm1 libpangocairo-1.0-0 libasound2-data libasound2t64 libasound2 \
+    fonts-liberation
+ok "apt OK"
 
 # ---- 2. Docker -----------------------------------------------------------
 if [ "$SKIP_DOCKER" -eq 0 ]; then
-    log "2/7 — Docker daemon"
+    step "Docker Engine + Compose" "~1 мин"
     if ! command -v docker >/dev/null; then
-        apt-get install -y docker.io docker-compose-v2 > /dev/null
+        apt_install docker.io docker-compose-v2
     fi
     if command -v systemctl >/dev/null && systemctl list-unit-files 2>/dev/null | grep -q "^docker.service"; then
         systemctl enable --now docker 2>/dev/null || true
     else
-        # WSL2 без systemd
-        service docker start 2>/dev/null || true
+        service docker start 2>/dev/null || true   # WSL2 без systemd
     fi
-    # Wait for daemon.
-    for _ in $(seq 1 15); do
-        docker info >/dev/null 2>&1 && break
-        sleep 1
-    done
-    docker info >/dev/null || { echo "Docker daemon failed to start"; exit 3; }
+    for _ in $(seq 1 15); do docker info >/dev/null 2>&1 && break; sleep 1; done
+    docker info >/dev/null 2>&1 || { warn "Docker daemon не стартовал"; exit 3; }
     usermod -aG docker "$RUN_USER" 2>/dev/null || true
-    log "   Docker $(docker --version 2>/dev/null | head -1)"
+    ok "$(docker --version 2>/dev/null | head -1)"
 else
-    log "2/7 — Docker skipped (--no-docker)"
+    step "Docker — пропущен (--no-docker)"
 fi
 
-# ---- 3. Python venv ------------------------------------------------------
-log "3/7 — Python venv (.venv)"
+# ---- 3. Python venv (.venv) ----------------------------------------------
+step "Python venv (.venv) + orchestrator/analyzer" "~1 мин"
 cd "$REPO_ROOT"
 if [ ! -x "${REPO_ROOT}/.venv/bin/python" ]; then
     sudo -u "$RUN_USER" python3 -m venv .venv
 fi
-# pip + project + extras
 sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/pip" install --quiet --upgrade pip setuptools wheel
 [ -d "${REPO_ROOT}/orchestrator" ] && \
     sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/pip" install --quiet -e "${REPO_ROOT}/orchestrator"
@@ -98,100 +138,116 @@ sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/pip" install --quiet --upgrade pip s
     sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/pip" install --quiet -e "${REPO_ROOT}/analyzer"
 sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/pip" install --quiet \
     msgpack playwright pymavlink mavproxy pyyaml requests
-log "   .venv ready"
+ok ".venv готов ($(${REPO_ROOT}/.venv/bin/python --version 2>&1))"
 
 # ---- 4. Playwright Chromium ----------------------------------------------
-log "4/7 — Playwright Chromium browser"
-# Под user и под root (для sudo-запусков auto_demo recorder).
-sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/playwright" install chromium --with-deps 2>&1 | tail -3
-"${REPO_ROOT}/.venv/bin/playwright" install chromium 2>&1 | tail -3
-log "   Playwright ready"
+step "Playwright Chromium" "~1 мин"
+# Системные зависимости ставим напрямую от root (мы уже root) — иначе
+# playwright --with-deps под обычным пользователем дёргает sudo apt и виснет
+# на запросе пароля. Браузер ставим и под user, и под root.
+"${REPO_ROOT}/.venv/bin/playwright" install-deps chromium >/dev/null 2>&1 || true
+sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/playwright" install chromium >/dev/null 2>&1 || \
+    sudo -u "$RUN_USER" "${REPO_ROOT}/.venv/bin/playwright" install chromium 2>&1 | tail -3
+"${REPO_ROOT}/.venv/bin/playwright" install chromium >/dev/null 2>&1 || true
+ok "Playwright готов ($(${REPO_ROOT}/.venv/bin/playwright --version 2>/dev/null))"
 
-# ---- 5. GPU Vulkan ICD (опционально) -------------------------------------
+# ---- 5. GPU Vulkan ICD (только WSL2) -------------------------------------
 if [ "$SKIP_GPU" -eq 0 ]; then
-    log "5/7 — GPU Vulkan ICD (Dozen for WSL2 NVIDIA)"
-    if grep -q "Microsoft" /proc/version 2>/dev/null; then
-        # WSL2 — добавляем kisak-mesa PPA для Dozen
+    step "GPU Vulkan ICD (Dozen, только WSL2)"
+    if grep -qi "microsoft" /proc/version 2>/dev/null; then
         if ! grep -rq "kisak" /etc/apt/sources.list.d/ 2>/dev/null; then
-            add-apt-repository -y ppa:kisak/kisak-mesa 2>&1 | tail -2
-            apt-get update -q
-            apt-get install -y mesa-vulkan-drivers > /dev/null
+            add-apt-repository -y ppa:kisak/kisak-mesa 2>&1 | tail -2 || true
+            apt-get update -q || true
+            apt_install mesa-vulkan-drivers || true
         fi
         if [ -f /usr/share/vulkan/icd.d/dzn_icd.json ]; then
-            log "   Dozen ICD: /usr/share/vulkan/icd.d/dzn_icd.json"
-            vulkaninfo --summary 2>/dev/null | grep deviceName | head -3 | sed 's/^/   /'
+            ok "Dozen ICD: /usr/share/vulkan/icd.d/dzn_icd.json"
         else
-            log "   Dozen ICD not found (kisak PPA might be unavailable)"
+            warn "Dozen ICD не найден (kisak PPA недоступен?)"
         fi
     else
-        log "   not WSL2, skipping Dozen"
+        sub "не WSL2 — Dozen не нужен, пропуск"
     fi
 else
-    log "5/7 — GPU skipped (--no-gpu)"
+    step "GPU — пропущен (--no-gpu)"
 fi
 
-# ---- 6. Sionna RT (опционально, --full) ----------------------------------
+# ---- 6. Sionna RT (--full) -----------------------------------------------
 if [ "$FULL" -eq 1 ]; then
-    log "6/7 — Sionna RT venv (sionna_env/)"
+    step "Sionna RT venv (sionna_env) — TensorFlow и пр." "~10 мин"
     if [ ! -x "${REPO_ROOT}/sionna_env/bin/python" ]; then
         sudo -u "$RUN_USER" python3 -m venv "${REPO_ROOT}/sionna_env"
     fi
+    sudo -u "$RUN_USER" "${REPO_ROOT}/sionna_env/bin/pip" install --quiet --upgrade pip
     if [ -f "${REPO_ROOT}/requirements_sionna.txt" ]; then
-        sudo -u "$RUN_USER" "${REPO_ROOT}/sionna_env/bin/pip" install --quiet --upgrade pip
         sudo -u "$RUN_USER" "${REPO_ROOT}/sionna_env/bin/pip" install --quiet \
             -r "${REPO_ROOT}/requirements_sionna.txt"
     else
         sudo -u "$RUN_USER" "${REPO_ROOT}/sionna_env/bin/pip" install --quiet \
             sionna mitsuba drjit numpy tensorflow
     fi
-    log "   Sionna RT ready"
+    ok "Sionna RT готов"
 else
-    log "6/7 — Sionna RT skipped (use --full to install)"
+    step "Sionna RT — пропущен (добавьте --full для установки)"
 fi
 
 # ---- 7. Docker images build ----------------------------------------------
+# ВАЖНО: build-секции и теги образов лежат в docker-compose.yml
+# (docker-compose.shared-netns.yml только запускает уже собранные образы).
 if [ "$SKIP_DOCKER" -eq 0 ]; then
-    log "7/7 — Docker images build (gazebo/sitl/ns3/video/mavros)"
+    step "Сборка Docker-образов (ns3 ~10 мин, остальные быстрее)" "~10–15 мин"
     cd "$REPO_ROOT"
-    # bas/ns3:dev — основной (включает ns-3 build, ~10 мин)
-    if ! docker image inspect bas/ns3:dev >/dev/null 2>&1; then
-        log "   building bas/ns3:dev (~10 мин)..."
-        sg docker -c "docker compose -f docker-compose.shared-netns.yml build ns3 2>&1" | tail -3 || true
-    fi
-    # Остальные образы быстрее
-    for svc in gazebo sitl video mavros; do
-        if ! docker image inspect bas/${svc}:dev >/dev/null 2>&1; then
-            log "   building bas/${svc}:dev..."
-            sg docker -c "docker compose -f docker-compose.shared-netns.yml build ${svc} 2>&1" | tail -3 || true
+    # service -> итоговый тег образа (для idempotent-проверки)
+    declare -A IMG=(
+        [orchestrator]="bas/orchestrator:dev"
+        [video]="bas/video:dev"
+        [gazebo]="bas/gazebo-harmonic:dev"
+        [sitl]="bas/ardupilot-sitl:dev"
+        [ns3]="bas/ns3:dev"
+    )
+    # Порядок: от быстрых к долгим (ns3 последним).
+    for svc in orchestrator video gazebo sitl ns3; do
+        tag="${IMG[$svc]}"
+        if docker image inspect "$tag" >/dev/null 2>&1; then
+            ok "уже собран: $tag"
+            continue
+        fi
+        sub "сборка $svc → $tag ..."
+        if docker compose -f docker-compose.yml build "$svc"; then
+            ok "$tag собран"
+        else
+            warn "не удалось собрать $svc (см. вывод выше)"
         fi
     done
-    sg docker -c "docker images bas/* --format '{{.Repository}}:{{.Tag}}\\t{{.Size}}'" 2>&1 | head -10
+    echo
+    docker images 'bas/*' --format '   {{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null | head -10
 else
-    log "7/7 — Docker images build skipped"
+    step "Сборка Docker-образов — пропущена (--no-docker)"
 fi
 
 # ---- Verify --------------------------------------------------------------
-log "Verify install:"
-echo "  - .venv python: $(${REPO_ROOT}/.venv/bin/python --version 2>&1)"
-[ "$FULL" -eq 1 ] && echo "  - sionna_env python: $(${REPO_ROOT}/sionna_env/bin/python --version 2>&1)"
-echo "  - ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
-echo "  - Docker: $(docker --version 2>/dev/null)"
-echo "  - Vulkan: $(vulkaninfo --summary 2>/dev/null | grep deviceName | head -1 | tr -s ' ')"
-echo "  - Playwright: $(${REPO_ROOT}/.venv/bin/playwright --version 2>/dev/null)"
+TOTAL_EL=$(( $(date +%s) - T_START ))
+printf '\n%s══ Проверка установки ══%s\n' "$C_HDR" "$C_OFF"
+echo "  - .venv python : $(${REPO_ROOT}/.venv/bin/python --version 2>&1)"
+[ "$FULL" -eq 1 ] && echo "  - sionna_env   : $(${REPO_ROOT}/sionna_env/bin/python --version 2>&1)"
+echo "  - ffmpeg       : $(ffmpeg -version 2>/dev/null | head -1 | cut -d' ' -f1-3)"
+[ "$SKIP_DOCKER" -eq 0 ] && echo "  - Docker       : $(docker --version 2>/dev/null)"
+echo "  - Vulkan       : $(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName | tr -s ' ' | sed 's/^ *//')"
+echo "  - Playwright   : $(${REPO_ROOT}/.venv/bin/playwright --version 2>/dev/null)"
 
-cat <<'EOF'
+cat <<EOF
 
-[bootstrap] DONE. Next steps:
+$(printf '%s' "$C_OK")[bootstrap] ГОТОВО за $(_fmt_time "$TOTAL_EL").$(printf '%s' "$C_OFF") Следующие шаги:
 
-  1. Smoke test:
+  1) Smoke-тест:
      sudo bash scripts/run_stage_1_5_2_mission.sh wifi_good
 
-  2. Full demo с авто-записью:
+  2) Демо с авто-записью:
      sudo bash scripts/run_stage_2_4_auto_demo.sh
 
-  3. Web GCS интерактивный:
+  3) Веб-GCS (интерактивно):
      sudo bash scripts/run_stage_2_4_fpv_rf_demo.sh
      open http://127.0.0.1:8765/
 
-См. docs/QUICKSTART.md для полного каталога команд.
+Полный каталог команд: docs/QUICKSTART.md
 EOF

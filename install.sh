@@ -50,14 +50,26 @@ die() {
 }
 
 sudo_cmd=()
+_sudo_keepalive_pid=""
 ensure_sudo() {
     if [ "$EUID" -eq 0 ]; then
         sudo_cmd=()
         return
     fi
     command -v sudo >/dev/null 2>&1 || die "sudo is required for system package/bootstrap steps"
-    sudo -v
+    if ! sudo -n true 2>/dev/null; then
+        printf '\n[bas-install] Для установки системных пакетов и Docker нужны права root.\n'
+        printf '[bas-install] Введите пароль sudo (один раз):\n'
+    fi
+    sudo -v || die "не удалось получить права sudo"
     sudo_cmd=(sudo)
+    # keep-alive: освежаем кэш sudo, пока идёт долгая установка (сборка образов
+    # может занять >15 мин — дефолтного таймаута sudo не хватит).
+    if [ -z "$_sudo_keepalive_pid" ]; then
+        ( while true; do sudo -n true 2>/dev/null || exit; sleep 60; done ) &
+        _sudo_keepalive_pid="$!"
+        trap '[ -n "$_sudo_keepalive_pid" ] && kill "$_sudo_keepalive_pid" 2>/dev/null || true' EXIT
+    fi
 }
 
 run_as_user() {
