@@ -1,5 +1,9 @@
 # BAS Prototype — стенд моделирования беспилотных авиационных систем
 
+<p align="center">
+  <img src="docs/assets/portfolio-cover.svg" alt="BAS simulation prototype cover" width="100%">
+</p>
+
 [![CI](https://github.com/AFETZ/bas/actions/workflows/ci.yml/badge.svg)](https://github.com/AFETZ/bas/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/AFETZ/bas/actions/workflows/codeql.yml/badge.svg)](https://github.com/AFETZ/bas/actions/workflows/codeql.yml)
 [![Wiki](https://img.shields.io/badge/wiki-interfaces_%26_scenarios-blue)](https://github.com/AFETZ/bas/wiki)

@@ -1,0 +1,29 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">BAS simulation prototype cover</title>
+  <desc id="desc">Research simulation stand for UAV systems with ns-3, Sionna, Gazebo, ArduPilot, and AirSim.</desc>
+  <rect width="1200" height="360" rx="24" fill="#111827"/>
+  <rect x="44" y="44" width="1112" height="272" rx="20" fill="#182236" stroke="#2d3b57" stroke-width="2"/>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="82" y="112" fill="#ffffff" font-size="46" font-weight="700">BAS Prototype</text>
+    <text x="84" y="152" fill="#b7c3d9" font-size="22">UAV simulation stand: ArduPilot SITL, Gazebo, ns-3, Sionna RT, AirSim and Web GCS</text>
+  </g>
+  <g stroke="#f6d365" stroke-width="5" stroke-linecap="round">
+    <path d="M144 252c156-110 292-120 408-34 112 83 220 36 344-72 72-63 139-75 220-38"/>
+    <path d="M238 142c90-42 173-44 250-7 69 34 140 24 212-29"/>
+  </g>
+  <g fill="#e2e8f0">
+    <path d="M170 244l34 12-34 12-34-12 34-12Z"/>
+    <path d="M548 210l34 12-34 12-34-12 34-12Z"/>
+    <path d="M910 128l34 12-34 12-34-12 34-12Z"/>
+  </g>
+  <g transform="translate(84 216)" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="700">
+    <rect width="118" height="42" rx="12" fill="#25334d"/>
+    <text x="24" y="27" fill="#dbeafe">ns-3</text>
+    <rect x="132" width="132" height="42" rx="12" fill="#25334d"/>
+    <text x="156" y="27" fill="#dbeafe">Sionna RT</text>
+    <rect x="278" width="118" height="42" rx="12" fill="#25334d"/>
+    <text x="302" y="27" fill="#dbeafe">Gazebo</text>
+    <rect x="410" width="128" height="42" rx="12" fill="#25334d"/>
+    <text x="434" y="27" fill="#dbeafe">AirSim</text>
+  </g>
+</svg>
